@@ -1,0 +1,283 @@
+// Stones4U Control Center — central data model (Phase 1)
+//
+// Shopify remains the commercial source of truth for customer identity
+// (name, email, phone, addresses, orders) — see docs/architecture/ADR-002.
+// CustomerProfile is a thin, Control-Center-owned record keyed by a stable
+// Shopify Customer GID, carrying only CRM-specific data (status, account
+// manager, tags) plus a denormalized snapshot for fast search/display.
+//
+// Task and Note are new, centrally-owned models (docs/architecture/ADR-003)
+// — not a reuse of TelefoonSysteem's Task/Note tables. See
+// docs/platform-discovery/21-TASKS-NOTES-REUSE-ANALYSIS.md for the referenced
+// (not copied) business rules.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  AGENT
+  VIEWER
+}
+
+enum CrmStatus {
+  LEAD
+  ACTIVE
+  INACTIVE
+  AT_RISK
+  VIP
+}
+
+enum TaskStatus {
+  OPEN
+  IN_PROGRESS
+  WAITING
+  DONE
+  CANCELLED
+}
+
+enum TaskPriority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
+// A > B split per docs/platform-discovery/24: CONTROL_CENTER activities are
+// owned rows in this database; all other sourceTypes are external/projected
+// — see src/modules/activity for the adapter/projection layer that renders
+// non-CONTROL_CENTER activity from source data without duplicating storage,
+// with the sole current exception of Shopify orders (fetched live and
+// projected into the timeline without ever being persisted here either).
+enum ActivitySourceType {
+  CONTROL_CENTER
+  SHOPIFY
+  TELEFOONSYSTEEM
+  EXACT
+}
+
+enum ActivityType {
+  NOTE_CREATED
+  NOTE_UPDATED
+  NOTE_DELETED
+  TASK_CREATED
+  TASK_STATUS_CHANGED
+  TASK_ASSIGNED
+  TASK_COMPLETED
+  TASK_CANCELLED
+  CUSTOMER_PROFILE_UPDATED
+  SHOPIFY_ORDER
+  CALL
+  INVOICE
+}
+
+model User {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  passwordHash String
+  name         String
+  role         Role      @default(AGENT)
+  active       Boolean   @default(true)
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  sessions           Session[]
+  tasksCreated       Task[]          @relation("TasksCreated")
+  tasksAssigned      Task[]          @relation("TasksAssigned")
+  notesAuthored      Note[]
+  auditEvents        AuditEvent[]
+  activities         Activity[]
+  managedCustomers   CustomerProfile[] @relation("AccountManager")
+
+  @@index([role])
+}
+
+// Server-side session record — deliberately DB-backed (not a stateless JWT),
+// so a session can be revoked instantly. See docs/platform-discovery/14 and
+// 19 for why TelefoonSysteem's stateless-JWT approach was not repeated here.
+model Session {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash    String   @unique
+  userAgent    String?
+  ipAddress    String?
+  expiresAt    DateTime
+  lastUsedAt   DateTime @default(now())
+  createdAt    DateTime @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+// The Control Center's own, thin customer record. Shopify remains the
+// commercial identity source (name/email/phone/addresses/orders) — this
+// model exists only to carry CRM-specific ownership and a stable local id
+// that Note/Task/Activity can point to. shopifyCustomerGid is the one
+// required, unique link back to Shopify (docs/architecture/ADR-002).
+model CustomerProfile {
+  id                String    @id @default(cuid())
+  shopifyCustomerGid String   @unique
+  // Denormalized snapshot for fast local search — refreshed opportunistically
+  // whenever the profile is loaded from Shopify; never the source of truth.
+  displayName       String?
+  companyName       String?
+  email             String?
+  phone             String?
+  phoneNormalized   String?
+  crmStatus         CrmStatus @default(LEAD)
+  accountManagerId  String?
+  accountManager    User?     @relation("AccountManager", fields: [accountManagerId], references: [id])
+  tags              String[]  @default([])
+  lastSyncedAt      DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  notes      Note[]
+  tasks      Task[]
+  activities Activity[]
+
+  @@index([phoneNormalized])
+  @@index([email])
+  @@index([crmStatus])
+}
+
+// Centrally-owned CRM note (docs/architecture/ADR-003). Structured body
+// (bodyJson, a small constrained node-tree — see
+// src/platform/security/rich-text.ts) so a future rich renderer never has to
+// interpret raw HTML. bodyText is a always-derived plain-text projection,
+// kept for search/preview. Unlike TelefoonSysteem's CallNote/ContactNote,
+// notes here are editable and soft-deletable, both audited.
+model Note {
+  id                String    @id @default(cuid())
+  customerProfileId String
+  customerProfile   CustomerProfile @relation(fields: [customerProfileId], references: [id], onDelete: Cascade)
+  authorId          String
+  author            User      @relation(fields: [authorId], references: [id])
+  bodyJson          Json
+  bodyText          String    @db.Text
+  tags              String[]  @default([])
+  editedAt          DateTime?
+  deletedAt         DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  activities Activity[]
+
+  @@index([customerProfileId])
+  @@index([authorId])
+}
+
+// Centrally-owned Task (docs/architecture/ADR-003). Relations beyond
+// customerProfileId are prepared for later phases (Phase 3-6) and are
+// intentionally unused/unenforced in Phase 1 business logic.
+model Task {
+  id                String       @id @default(cuid())
+  title             String
+  description       String?      @db.Text
+  status            TaskStatus   @default(OPEN)
+  priority          TaskPriority @default(NORMAL)
+  assignedToId      String
+  assignedTo        User         @relation("TasksAssigned", fields: [assignedToId], references: [id])
+  createdById       String
+  createdBy         User         @relation("TasksCreated", fields: [createdById], references: [id])
+  customerProfileId String?
+  customerProfile   CustomerProfile? @relation(fields: [customerProfileId], references: [id])
+
+  // Prepared for later phases (docs/platform-discovery/25 §4) — not read or
+  // written by any Phase 1 code path.
+  shopifyOrderGid  String?
+  quoteRef         String?
+  callRef          String?
+  supplierId       String?
+  purchaseOrderId  String?
+  productionJobId  String?
+  complaintId      String?
+
+  dueAt       DateTime?
+  completedAt DateTime?
+  cancelledAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  activities Activity[]
+
+  @@index([assignedToId])
+  @@index([createdById])
+  @@index([customerProfileId])
+  @@index([status])
+  @@index([dueAt])
+}
+
+// The unified Activity Timeline. sourceType = CONTROL_CENTER rows are
+// created directly by this app's own actions (notes/tasks/profile changes —
+// "A" activities per docs/platform-discovery/24). All other sourceType rows
+// are NOT written by this schema in Phase 1 — Shopify orders, and any future
+// TelefoonSysteem/Exact/email activity, are projected at render time by the
+// adapters under src/integrations/*, never persisted here ("B" activities).
+// This table therefore only ever contains CONTROL_CENTER-sourced rows today;
+// the enum's other values exist so the timeline-rendering code has one
+// shared shape, not because this table stores them.
+model Activity {
+  id                String             @id @default(cuid())
+  customerProfileId String
+  customerProfile   CustomerProfile    @relation(fields: [customerProfileId], references: [id], onDelete: Cascade)
+  type              ActivityType
+  sourceType        ActivitySourceType @default(CONTROL_CENTER)
+  title             String
+  summary           String?
+  occurredAt        DateTime
+  actorId           String?
+  actor             User?              @relation(fields: [actorId], references: [id])
+  relatedNoteId     String?
+  relatedNote       Note?              @relation(fields: [relatedNoteId], references: [id])
+  relatedTaskId     String?
+  relatedTask       Task?              @relation(fields: [relatedTaskId], references: [id])
+  metadata          Json?
+  createdAt         DateTime           @default(now())
+
+  @@index([customerProfileId, occurredAt])
+}
+
+// Generic, append-only audit log — every mutating Control Center action
+// writes one row here. Never logs secret values (see
+// src/platform/audit/audit.ts).
+model AuditEvent {
+  id         String   @id @default(cuid())
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id])
+  action     String
+  entityType String
+  entityId   String?
+  metadata   Json?
+  ipAddress  String?
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([userId])
+  @@index([createdAt])
+}
+
+// Prepared for Phase 2 (docs/architecture/ADR-005) — Cloudflare R2 object
+// storage + Postgres metadata. No upload/storage code exists in Phase 1;
+// this model exists only so the later migration is additive, not breaking.
+model File {
+  id                String   @id @default(cuid())
+  customerProfileId String?
+  fileName          String
+  mimeType          String
+  sizeBytes         Int
+  storageKey        String   @unique
+  uploadedById      String
+  createdAt         DateTime @default(now())
+
+  @@index([customerProfileId])
+}
