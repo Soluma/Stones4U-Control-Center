@@ -6,6 +6,9 @@ import type { RichTextDoc, RichTextInlineNode } from "@/platform/security/rich-t
 // there is nothing to sanitize at render time, only to map.
 
 function InlineNode({ node, key }: { node: RichTextInlineNode; key: number }) {
+  if (node.type === "hardBreak") {
+    return <br key={key} />;
+  }
   if (node.type === "link") {
     return (
       <a key={key} href={node.href} target="_blank" rel="noreferrer noopener" className="text-accent-600 underline underline-offset-2">

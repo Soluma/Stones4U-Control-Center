@@ -26,7 +26,12 @@ const linkNodeSchema = z.object({
   text: z.string().max(500),
 });
 
-const inlineNodeSchema = z.union([textNodeSchema, linkNodeSchema]);
+// Single line break within a paragraph (Shift+Enter-equivalent) — kept
+// distinct from a paragraph boundary (blank line) so "hallo\nhallo" renders
+// as two lines instead of being silently joined into "hallo hallo".
+const hardBreakNodeSchema = z.object({ type: z.literal("hardBreak") });
+
+const inlineNodeSchema = z.union([textNodeSchema, linkNodeSchema, hardBreakNodeSchema]);
 
 const paragraphNodeSchema = z.object({
   type: z.literal("paragraph"),
@@ -64,7 +69,8 @@ export function parsePlainTextToRichDoc(input: string): RichTextDoc {
   const chunks = normalized.split(/\n{2,}/);
 
   for (const chunk of chunks) {
-    const lines = chunk.split("\n").filter((l) => l.length > 0);
+    const rawLines = chunk.split("\n");
+    const lines = rawLines.filter((l) => l.length > 0);
     const isBulletList = lines.length > 0 && lines.every((l) => /^[-*]\s+/.test(l));
 
     if (isBulletList) {
@@ -73,7 +79,12 @@ export function parsePlainTextToRichDoc(input: string): RichTextDoc {
         items: lines.map((line) => parseInline(line.replace(/^[-*]\s+/, ""))),
       });
     } else {
-      blocks.push({ type: "paragraph", children: parseInline(chunk.replace(/\n/g, " ")) });
+      const children: RichTextInlineNode[] = [];
+      rawLines.forEach((line, index) => {
+        if (index > 0) children.push({ type: "hardBreak" });
+        children.push(...parseInline(line));
+      });
+      blocks.push({ type: "paragraph", children });
     }
   }
 
@@ -123,5 +134,6 @@ export function richDocToPlainText(doc: RichTextDoc): string {
 }
 
 function inlineToText(node: RichTextInlineNode): string {
-  return node.type === "text" ? node.text : node.text;
+  if (node.type === "hardBreak") return "\n";
+  return node.text;
 }

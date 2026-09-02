@@ -24,4 +24,41 @@ describe("rich text", () => {
     const malicious = { type: "doc", content: [{ type: "html", raw: "<script>alert(1)</script>" }] };
     expect(() => richTextDocSchema.parse(malicious)).toThrow();
   });
+
+  it("preserves a single line break within a paragraph as a hardBreak node instead of joining with a space", () => {
+    const doc = parsePlainTextToRichDoc("hallo\nhallo");
+    expect(() => richTextDocSchema.parse(doc)).not.toThrow();
+
+    expect(doc.content).toHaveLength(1);
+    const paragraph = doc.content[0];
+    expect(paragraph?.type).toBe("paragraph");
+    expect(paragraph?.type === "paragraph" && paragraph.children).toEqual([
+      { type: "text", text: "hallo" },
+      { type: "hardBreak" },
+      { type: "text", text: "hallo" },
+    ]);
+
+    expect(richDocToPlainText(doc)).toBe("hallo\nhallo");
+  });
+
+  it("preserves three lines within one paragraph as two hardBreak nodes", () => {
+    const doc = parsePlainTextToRichDoc("regel1\nregel2\nregel3");
+    expect(doc.content).toHaveLength(1);
+    expect(richDocToPlainText(doc)).toBe("regel1\nregel2\nregel3");
+  });
+
+  it("still treats a blank line (double newline) as a paragraph break, not a hardBreak", () => {
+    const doc = parsePlainTextToRichDoc("regel1\n\nregel2");
+    expect(doc.content).toHaveLength(2);
+    expect(doc.content[0]?.type).toBe("paragraph");
+    expect(doc.content[1]?.type).toBe("paragraph");
+    expect(richDocToPlainText(doc)).toBe("regel1\n\nregel2");
+  });
+
+  it("keeps line breaks stable across an edit round-trip (parse -> plain text -> parse again)", () => {
+    const original = parsePlainTextToRichDoc("hallo\nhallo");
+    const editedDraft = richDocToPlainText(original); // what the edit textarea is seeded with
+    const reparsed = parsePlainTextToRichDoc(editedDraft);
+    expect(reparsed).toEqual(original);
+  });
 });
