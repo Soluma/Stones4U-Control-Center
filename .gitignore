@@ -14,6 +14,10 @@ dist/
 .env
 .env.local
 .env.*.local
+# any other ad-hoc dotenv-shaped file used to stage secrets locally (e.g.
+# .env.r2-staging) — .env.example stays tracked since it was already
+# committed before this pattern existed and holds no real values.
+.env.*
 
 # prisma generated client (includes platform-specific native binaries —
 # schema.prisma generator output = "../src/generated/prisma", NOT

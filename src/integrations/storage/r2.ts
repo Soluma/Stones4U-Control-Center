@@ -29,13 +29,36 @@ function readConfig() {
   const accessKeyId = process.env.R2_ACCESS_KEY_ID?.trim();
   const secretAccessKey = process.env.R2_SECRET_ACCESS_KEY?.trim();
   const bucket = process.env.R2_BUCKET_NAME?.trim();
+  // Optional — a bucket created under Cloudflare's EU jurisdiction is only
+  // reachable via the eu.r2.cloudflarestorage.com endpoint, not the default
+  // global one (see buildR2Endpoint below). Absent/blank means "default",
+  // so every configuration that predates this variable keeps working
+  // unchanged.
+  const jurisdiction = process.env.R2_JURISDICTION?.trim();
 
   if (!accountId || !accessKeyId || !secretAccessKey || !bucket) return null;
-  return { accountId, accessKeyId, secretAccessKey, bucket };
+  return { accountId, accessKeyId, secretAccessKey, bucket, jurisdiction };
 }
 
 export function isStorageConfigured(): boolean {
   return readConfig() !== null;
+}
+
+/** Pure and exported so the endpoint logic is directly unit-testable
+ * without constructing a real S3Client (docs: Cloudflare R2 buckets are
+ * created under a jurisdiction — "default" or "eu" today — and the S3 API
+ * endpoint differs per jurisdiction; see
+ * https://developers.cloudflare.com/r2/reference/data-location/#available-jurisdictions).
+ * Any value other than "eu" (including unset/blank) resolves to the
+ * default global endpoint — not a hardcoded one-off special case, but the
+ * one jurisdiction this deployment actually needs today; extending to a
+ * further jurisdiction is a one-line addition here. */
+export function buildR2Endpoint(accountId: string, jurisdiction?: string): string {
+  const normalized = jurisdiction?.trim().toLowerCase();
+  if (normalized === "eu") {
+    return `https://${accountId}.eu.r2.cloudflarestorage.com`;
+  }
+  return `https://${accountId}.r2.cloudflarestorage.com`;
 }
 
 let cachedClient: { client: S3Client; bucket: string } | null = null;
@@ -48,8 +71,11 @@ function getClient(): { client: S3Client; bucket: string } {
     cachedClient = {
       bucket: config.bucket,
       client: new S3Client({
+        // "auto" remains correct for R2 regardless of jurisdiction — R2
+        // ignores the region value and routes purely off the endpoint
+        // hostname (see the jurisdiction doc link above).
         region: "auto",
-        endpoint: `https://${config.accountId}.r2.cloudflarestorage.com`,
+        endpoint: buildR2Endpoint(config.accountId, config.jurisdiction),
         credentials: { accessKeyId: config.accessKeyId, secretAccessKey: config.secretAccessKey },
       }),
     };
