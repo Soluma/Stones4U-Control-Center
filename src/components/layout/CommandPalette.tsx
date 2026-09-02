@@ -2,11 +2,19 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Search, Loader2, LayoutDashboard, Users, CheckSquare, UserCog, Settings, ShoppingBag } from "lucide-react";
+import { Search, Loader2, LayoutDashboard, Users, CheckSquare, UserCog, Settings, ShoppingBag, FileText } from "lucide-react";
 import { Avatar } from "@/components/ui/Avatar";
 import { cn } from "@/lib/cn";
 
-type SearchItem = { id: string; kind: "customer" | "task" | "order"; title: string; subtitle: string; shopifyGid?: string; href?: string };
+type SearchItem = {
+  id: string;
+  kind: "customer" | "task" | "order" | "quote";
+  title: string;
+  subtitle: string;
+  shopifyGid?: string;
+  href?: string;
+  customerProfileId?: string;
+};
 type SearchGroup = { key: string; label: string; items: SearchItem[] };
 
 type NavItem = { id: string; title: string; subtitle: string; href: string };
@@ -100,6 +108,11 @@ export function CommandPalette() {
       router.push(searchItem.href);
       return;
     }
+    if (searchItem.kind === "quote" && searchItem.customerProfileId) {
+      setOpen(false);
+      router.push(`/customers/${searchItem.customerProfileId}?tab=orders`);
+      return;
+    }
     if ((searchItem.kind === "customer" || searchItem.kind === "order") && searchItem.shopifyGid) {
       setOpening(true);
       const response = await fetch("/api/customers/resolve", {
@@ -190,7 +203,13 @@ export function CommandPalette() {
                 renderedIndex += 1;
                 const isActive = renderedIndex === activeIndex;
                 const Icon: typeof LayoutDashboard | null =
-                  "icon" in item ? (item.icon as typeof LayoutDashboard) : "kind" in item && item.kind === "order" ? ShoppingBag : null;
+                  "icon" in item
+                    ? (item.icon as typeof LayoutDashboard)
+                    : "kind" in item && item.kind === "order"
+                      ? ShoppingBag
+                      : "kind" in item && item.kind === "quote"
+                        ? FileText
+                        : null;
                 return (
                   <button
                     key={item.id}

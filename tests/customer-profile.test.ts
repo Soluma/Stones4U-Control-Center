@@ -3,6 +3,7 @@ import { prisma } from "@/platform/db/prisma";
 
 const FAKE_GID = "gid://shopify/Customer/999000111";
 
+const mockSearchShopifyCustomers = vi.fn(async () => [] as unknown[]);
 vi.mock("@/integrations/shopify/customers", () => ({
   getShopifyCustomerByGid: vi.fn(async (gid: string) => ({
     gid,
@@ -17,7 +18,7 @@ vi.mock("@/integrations/shopify/customers", () => ({
     numberOfOrders: 2,
     amountSpent: { amount: "150.00", currencyCode: "EUR" },
   })),
-  searchShopifyCustomers: vi.fn(async () => []),
+  searchShopifyCustomers: (...args: Parameters<typeof mockSearchShopifyCustomers>) => mockSearchShopifyCustomers(...args),
 }));
 
 describe("getOrCreateCustomerProfile", () => {
@@ -51,5 +52,33 @@ describe("getOrCreateCustomerProfile", () => {
 
     const count = await prisma.customerProfile.count({ where: { shopifyCustomerGid: FAKE_GID } });
     expect(count).toBe(1);
+  });
+});
+
+describe("searchCustomers — phone-shaped term normalization", () => {
+  beforeEach(() => {
+    mockSearchShopifyCustomers.mockClear();
+  });
+
+  it("normalizes a raw Dutch '06...' term before querying Shopify — that raw form matches nothing on Shopify's side (confirmed empirically), but the normalized '316...' form does", async () => {
+    const { searchCustomers } = await import("@/modules/crm/customer-profile.service");
+    await searchCustomers("0649899477");
+    expect(mockSearchShopifyCustomers).toHaveBeenCalledWith("31649899477", 15);
+  });
+
+  it("normalizes a '+31...' or bare '31...' term identically, so all phone-shaped inputs converge on one Shopify query form", async () => {
+    const { searchCustomers } = await import("@/modules/crm/customer-profile.service");
+    await searchCustomers("+31649899477");
+    expect(mockSearchShopifyCustomers).toHaveBeenCalledWith("31649899477", 15);
+
+    mockSearchShopifyCustomers.mockClear();
+    await searchCustomers("31649899477");
+    expect(mockSearchShopifyCustomers).toHaveBeenCalledWith("31649899477", 15);
+  });
+
+  it("leaves a non-phone-shaped term (a name) untouched", async () => {
+    const { searchCustomers } = await import("@/modules/crm/customer-profile.service");
+    await searchCustomers("Fons Verkoelen");
+    expect(mockSearchShopifyCustomers).toHaveBeenCalledWith("Fons Verkoelen", 15);
   });
 });

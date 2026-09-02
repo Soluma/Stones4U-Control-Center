@@ -8,6 +8,8 @@ import { listAppointmentsForCustomer } from "@/modules/appointments/appointment.
 import { listFilesForCustomer } from "@/modules/files/file.service";
 import { listTagsForCustomer, listCustomerTags } from "@/modules/crm/customer-tag.service";
 import { getShopifyCustomerDraftOrders } from "@/integrations/shopify/draft-orders";
+import { createTelephonyAdapter, type TelephonyActivityItem } from "@/integrations/telephony/adapter";
+import { createQuotesAdapter, type QuoteSummary } from "@/integrations/quotes/adapter";
 import { prisma } from "@/platform/db/prisma";
 import { normalizeDutchPhone } from "@/lib/phone";
 import { formatDate, formatDateTime } from "@/lib/format";
@@ -16,6 +18,8 @@ import { Tabs } from "@/components/ui/Tabs";
 import { CustomerHeader } from "./CustomerHeader";
 import { OrdersTable } from "./OrdersTable";
 import { DraftOrdersTable } from "./DraftOrdersTable";
+import { QuotesTable } from "./QuotesTable";
+import { RecentCallsBlock } from "./RecentCallsBlock";
 import { ActivityTimelineView } from "./ActivityTimelineView";
 import { AdapterStatusBanner } from "./AdapterStatusBanner";
 import { NotesPanel } from "./NotesPanel";
@@ -88,6 +92,28 @@ export default async function CustomerDetailPage({ params, searchParams }: PageP
   }
 
   const phoneNumbers = [normalizeDutchPhone(data.profile.phone)].filter((p): p is string => !!p);
+  const quoteMatchRefs = {
+    shopifyCustomerGid: data.profile.shopifyCustomerGid,
+    email: data.profile.email ?? undefined,
+    phone: data.profile.phoneNormalized ?? undefined,
+  };
+
+  // Phase 3b — fetched once here (not per-tab), same fail-isolation pattern
+  // as draftOrders above: a telephony/quotes hiccup must not take down the
+  // rest of Customer 360, and vice versa.
+  let quotes: QuoteSummary[] = [];
+  try {
+    quotes = await createQuotesAdapter().getQuotesForCustomer({ customerProfileId: id, ...quoteMatchRefs });
+  } catch (error) {
+    console.error("quotes_fetch_failed", error);
+  }
+
+  let recentCalls: TelephonyActivityItem[] = [];
+  try {
+    recentCalls = await createTelephonyAdapter().getActivityForPhoneNumbers(phoneNumbers);
+  } catch (error) {
+    console.error("telephony_fetch_failed", error);
+  }
 
   return (
     <div className="space-y-5">
@@ -95,16 +121,35 @@ export default async function CustomerDetailPage({ params, searchParams }: PageP
       <Tabs items={tabItems} active={tab} hrefFor={(key) => `/customers/${id}?tab=${key}`} />
 
       {tab === "overview" && (
-        <OverviewTab id={id} shopifyOrders={data.orders.orders} draftOrders={draftOrders} phoneNumbers={phoneNumbers} />
+        <OverviewTab
+          id={id}
+          shopifyOrders={data.orders.orders}
+          draftOrders={draftOrders}
+          phoneNumbers={phoneNumbers}
+          quoteMatchRefs={quoteMatchRefs}
+          recentCalls={recentCalls}
+        />
       )}
 
-      {tab === "orders" && <CommercialTab orders={data.orders.orders} draftOrders={draftOrders} draftOrdersUnavailable={draftOrdersUnavailable} />}
+      {tab === "orders" && (
+        <CommercialTab
+          orders={data.orders.orders}
+          draftOrders={draftOrders}
+          draftOrdersUnavailable={draftOrdersUnavailable}
+          quotes={quotes}
+        />
+      )}
 
       {tab === "activity" && (
         <div className="space-y-3">
           <AdapterStatusBanner />
           <ActivityTimelineView
-            items={await getCustomerTimeline(id, { shopifyOrders: data.orders.orders, draftOrders: draftOrders ?? [], phoneNumbers })}
+            items={await getCustomerTimeline(id, {
+              shopifyOrders: data.orders.orders,
+              draftOrders: draftOrders ?? [],
+              phoneNumbers,
+              quoteMatchRefs,
+            })}
           />
         </div>
       )}
@@ -121,10 +166,12 @@ function CommercialTab({
   orders,
   draftOrders,
   draftOrdersUnavailable,
+  quotes,
 }: {
   orders: Parameters<typeof OrdersTable>[0]["orders"];
   draftOrders: ShopifyDraftOrderSummary[] | null;
   draftOrdersUnavailable: boolean;
+  quotes: QuoteSummary[];
 }) {
   return (
     <div className="space-y-6">
@@ -136,6 +183,10 @@ function CommercialTab({
         <h2 className="text-sm font-medium text-ink-secondary">Conceptbestellingen</h2>
         <DraftOrdersTable draftOrders={draftOrders} unavailable={draftOrdersUnavailable} />
       </div>
+      <div className="space-y-3">
+        <h2 className="text-sm font-medium text-ink-secondary">Offertes</h2>
+        <QuotesTable quotes={quotes} />
+      </div>
     </div>
   );
 }
@@ -145,14 +196,18 @@ async function OverviewTab({
   shopifyOrders,
   draftOrders,
   phoneNumbers,
+  quoteMatchRefs,
+  recentCalls,
 }: {
   id: string;
   shopifyOrders: Parameters<typeof getCustomerTimeline>[1]["shopifyOrders"];
   draftOrders: ShopifyDraftOrderSummary[] | null;
   phoneNumbers: string[];
+  quoteMatchRefs: { shopifyCustomerGid?: string; email?: string; phone?: string };
+  recentCalls: TelephonyActivityItem[];
 }) {
   const [timeline, tasks, appointments, files] = await Promise.all([
-    getCustomerTimeline(id, { shopifyOrders, draftOrders: draftOrders ?? [], phoneNumbers }),
+    getCustomerTimeline(id, { shopifyOrders, draftOrders: draftOrders ?? [], phoneNumbers, quoteMatchRefs }),
     listTasksForCustomer(id),
     listAppointmentsForCustomer(id),
     listFilesForCustomer(id),
@@ -172,6 +227,7 @@ async function OverviewTab({
         <h2 className="text-sm font-medium text-ink-secondary">Recente activiteit</h2>
         <ActivityTimelineView items={timeline.slice(0, 6)} />
       </div>
+      <RecentCallsBlock calls={recentCalls} />
       <div className="space-y-3">
         <h2 className="text-sm font-medium text-ink-secondary">Openstaande taken</h2>
         {openTasks.length === 0 ? (

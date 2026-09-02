@@ -1,6 +1,7 @@
 import "server-only";
 import { prisma } from "@/platform/db/prisma";
 import { createTelephonyAdapter } from "@/integrations/telephony/adapter";
+import { createQuotesAdapter } from "@/integrations/quotes/adapter";
 import { createExactHistoryAdapter } from "@/integrations/exact/adapter";
 import type { ShopifyOrderSummary, ShopifyDraftOrderSummary } from "@/integrations/shopify/types";
 
@@ -13,7 +14,7 @@ import type { ShopifyOrderSummary, ShopifyDraftOrderSummary } from "@/integratio
 export type TimelineItem = {
   id: string;
   occurredAt: Date;
-  source: "CONTROL_CENTER" | "SHOPIFY" | "TELEFOONSYSTEEM" | "EXACT";
+  source: "CONTROL_CENTER" | "SHOPIFY" | "TELEFOONSYSTEEM" | "EXACT" | "OFFERTEAPP" | "S4U_QUOTE_APP";
   kind: string;
   title: string;
   summary?: string | null;
@@ -22,7 +23,12 @@ export type TimelineItem = {
 
 export async function getCustomerTimeline(
   customerProfileId: string,
-  context: { shopifyOrders: ShopifyOrderSummary[]; draftOrders?: ShopifyDraftOrderSummary[]; phoneNumbers: string[] },
+  context: {
+    shopifyOrders: ShopifyOrderSummary[];
+    draftOrders?: ShopifyDraftOrderSummary[];
+    phoneNumbers: string[];
+    quoteMatchRefs?: { shopifyCustomerGid?: string; email?: string; phone?: string };
+  },
 ): Promise<TimelineItem[]> {
   const ownedActivities = await prisma.activity.findMany({
     where: { customerProfileId },
@@ -64,13 +70,20 @@ export async function getCustomerTimeline(
     summary: draftOrder.status,
   }));
 
-  // Disabled in Phase 1 (see the adapters themselves) — always returns [],
-  // never throws, so the timeline degrades gracefully with no telephony/
-  // Exact data rather than failing.
+  // Degrades gracefully to [] whenever an adapter is disabled/unreachable
+  // (see the adapters themselves) — the timeline never fails because an
+  // external source is unavailable.
   const telephony = createTelephonyAdapter();
+  const quotes = createQuotesAdapter();
   const exact = createExactHistoryAdapter();
-  const [callItems, invoiceSummary] = await Promise.all([
+  const [callItems, quoteItems, invoiceSummary] = await Promise.all([
     telephony.getActivityForPhoneNumbers(context.phoneNumbers),
+    quotes.getQuotesForCustomer({
+      customerProfileId,
+      shopifyCustomerGid: context.quoteMatchRefs?.shopifyCustomerGid,
+      email: context.quoteMatchRefs?.email,
+      phone: context.quoteMatchRefs?.phone,
+    }),
     exact.getSummaryForCustomer({}),
   ]);
 
@@ -81,6 +94,19 @@ export async function getCustomerTimeline(
     kind: "CALL",
     title: call.title,
     summary: call.summary ?? null,
+  }));
+
+  // One QUOTE_CREATED event per quote — never a synthesized QUOTE_UPDATED,
+  // since neither source system exposes an update history this could
+  // attribute meaningfully (ADR-008: project live data, never invent
+  // events the source can't actually support).
+  const quoteTimelineItems: TimelineItem[] = quoteItems.map((quote) => ({
+    id: `${quote.sourceSystem.toLowerCase()}-${quote.externalId}`,
+    occurredAt: new Date(quote.createdAt),
+    source: quote.sourceSystem,
+    kind: "QUOTE_CREATED",
+    title: `Offerte ${quote.displayNumber}`,
+    summary: `${quote.status} · €${quote.total}`,
   }));
 
   const invoiceItems: TimelineItem[] = invoiceSummary?.lastInvoiceAt
@@ -96,7 +122,7 @@ export async function getCustomerTimeline(
       ]
     : [];
 
-  return [...ownedItems, ...orderItems, ...draftOrderItems, ...telephonyItems, ...invoiceItems].sort(
+  return [...ownedItems, ...orderItems, ...draftOrderItems, ...telephonyItems, ...quoteTimelineItems, ...invoiceItems].sort(
     (a, b) => b.occurredAt.getTime() - a.occurredAt.getTime(),
   );
 }

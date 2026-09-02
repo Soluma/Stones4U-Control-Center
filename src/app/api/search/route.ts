@@ -4,6 +4,7 @@ import { searchCustomers } from "@/modules/crm/customer-profile.service";
 import { searchTasks } from "@/modules/tasks/task.service";
 import { searchShopifyOrders } from "@/integrations/shopify/order-search";
 import { isShopifyConfigured } from "@/integrations/shopify/client";
+import { searchQuotesByNumber } from "@/integrations/quotes/adapter";
 import { toErrorResponse } from "@/lib/api-error";
 
 // Global command-palette search (Ctrl/Cmd+K). Phase 2 scope was customers +
@@ -77,6 +78,27 @@ export async function GET(request: NextRequest) {
         // read path in this app.
         console.error("order_search_failed", error);
       }
+    }
+
+    try {
+      const quotes = await searchQuotesByNumber(term);
+      if (quotes.length > 0) {
+        groups.push({
+          key: "quotes",
+          label: "Offertes",
+          items: quotes.map((q) => ({
+            id: `${q.sourceSystem}-${q.externalId}`,
+            kind: "quote" as const,
+            title: q.displayNumber,
+            subtitle: q.customerName,
+            customerProfileId: q.customerProfileId,
+          })),
+        });
+      }
+    } catch (error) {
+      // Same fail-isolation principle as the Shopify order search above —
+      // a quote-search hiccup must not take down the rest of the palette.
+      console.error("quote_search_failed", error);
     }
 
     return NextResponse.json({ groups });

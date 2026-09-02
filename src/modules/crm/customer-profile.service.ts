@@ -14,9 +14,18 @@ export type CustomerSearchResult = {
 
 /** Read-only search — does NOT create a CustomerProfile. A profile is only
  * ever created (lazily, deduped on shopifyCustomerGid) the first time a
- * customer is actually opened — see getOrCreateCustomerProfile(). */
+ * customer is actually opened — see getOrCreateCustomerProfile().
+ *
+ * Phone-shaped terms are normalized before hitting Shopify: Shopify's
+ * customer search matches phone numbers only without a leading "0"
+ * (confirmed empirically during Phase 3b local integration testing — the
+ * raw Dutch "06..." form returns zero results, "6..."/"316..."/"+316..."
+ * all match) — normalizeDutchPhone() already produces exactly that form,
+ * so this reuses it rather than adding a second phone-format assumption. */
 export async function searchCustomers(term: string): Promise<CustomerSearchResult[]> {
-  const shopifyResults = await searchShopifyCustomers(term, 15);
+  const normalizedPhone = normalizeDutchPhone(term);
+  const searchTerm = normalizedPhone ?? term;
+  const shopifyResults = await searchShopifyCustomers(searchTerm, 15);
   if (shopifyResults.length === 0) return [];
 
   const existingProfiles = await prisma.customerProfile.findMany({
