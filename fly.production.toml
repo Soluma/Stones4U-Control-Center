@@ -1,0 +1,51 @@
+# Stones4U Control Center — production.
+# See docs/deployment/FLY-PRODUCTION.md for the full deployment procedure.
+# No secret values live here — DATABASE_URL/SESSION_SECRET/SHOPIFY_* are
+# Fly secrets, injected at runtime only.
+#
+# Deliberately a separate file from fly.toml (staging), not a shared config
+# with an env override: `fly deploy -c fly.production.toml` always targets
+# exactly this app/database, with no risk of accidentally deploying
+# production config against the staging app or vice versa.
+
+app = "stones4u-control-center"
+primary_region = "ams"
+
+[build]
+
+[env]
+  APP_ENV = "production"
+
+# Runs once, before new machines start, using the same image that's about
+# to be deployed. Serialized by Fly (not run per-machine), so migrations
+# never race each other across multiple web machines.
+[deploy]
+  release_command = "npx prisma migrate deploy"
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  # Kept running at all times rather than auto-stopped: this is an internal
+  # staff tool used during business hours but at unpredictable times, and a
+  # cold Firecracker start (image pull + Next.js boot) on the first login of
+  # the day is worse UX than the small always-on cost — same reasoning
+  # already recorded in docs/build/PHASE-1-PRODUCTION-READINESS.md §8.
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+[[http_service.checks]]
+  grace_period = "10s"
+  interval = "15s"
+  method = "GET"
+  timeout = "5s"
+  path = "/api/health"
+
+# No [[mounts]] / persistent volume — Phase 1 has no file storage (ADR-005,
+# deferred to Phase 2/R2); the app is fully stateless, all state lives in
+# Postgres.
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
