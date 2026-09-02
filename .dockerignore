@@ -1,0 +1,16 @@
+node_modules
+.next
+.git
+.gitignore
+*.md
+docs
+tests
+coverage
+*.tsbuildinfo
+npm-debug.log*
+.env
+.env.local
+.env.*.local
+.vscode
+.claude
+src/generated
