@@ -1,5 +1,6 @@
 import "server-only";
-import { shopifyGraphQL } from "./client";
+import { shopifyGraphQL, getShopifyConfig } from "./client";
+import { buildShopifyAdminUrl } from "./admin-links";
 import type { CustomerOrdersResult, ShopifyOrderSummary } from "./types";
 
 const CUSTOMER_ORDERS_QUERY = /* GraphQL */ `
@@ -14,6 +15,7 @@ const CUSTOMER_ORDERS_QUERY = /* GraphQL */ `
         edges {
           node {
             id
+            legacyResourceId
             name
             createdAt
             displayFinancialStatus
@@ -42,6 +44,7 @@ const CUSTOMER_ORDERS_QUERY = /* GraphQL */ `
 
 type RawOrderNode = {
   id: string;
+  legacyResourceId: string;
   name: string;
   createdAt: string;
   displayFinancialStatus: string | null;
@@ -64,6 +67,7 @@ const OPEN_FINANCIAL_STATUSES = new Set(["PENDING", "PARTIALLY_PAID", "AUTHORIZE
  * Customer 360 "Orders" tab and header summary (order count, total spent,
  * outstanding orders, last order date). */
 export async function getShopifyCustomerOrders(customerGid: string, first = 20): Promise<CustomerOrdersResult> {
+  const config = getShopifyConfig();
   const data = await shopifyGraphQL<RawCustomerOrdersResponse>(CUSTOMER_ORDERS_QUERY, {
     id: customerGid,
     first,
@@ -81,6 +85,7 @@ export async function getShopifyCustomerOrders(customerGid: string, first = 20):
     displayFulfillmentStatus: node.displayFulfillmentStatus,
     currentTotalPriceSet: node.currentTotalPriceSet.shopMoney,
     lineItemCount: node.lineItems.edges.length,
+    adminUrl: buildShopifyAdminUrl(config.domain, "orders", node.legacyResourceId),
   }));
 
   const outstandingOrders = orders.filter(

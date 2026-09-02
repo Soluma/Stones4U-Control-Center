@@ -2,7 +2,7 @@ import "server-only";
 import { prisma } from "@/platform/db/prisma";
 import { createTelephonyAdapter } from "@/integrations/telephony/adapter";
 import { createExactHistoryAdapter } from "@/integrations/exact/adapter";
-import type { ShopifyOrderSummary } from "@/integrations/shopify/types";
+import type { ShopifyOrderSummary, ShopifyDraftOrderSummary } from "@/integrations/shopify/types";
 
 // The unified Activity Timeline — combines "A" (Control-Center-owned,
 // stored in the Activity table) and "B" (external, projected at render
@@ -22,7 +22,7 @@ export type TimelineItem = {
 
 export async function getCustomerTimeline(
   customerProfileId: string,
-  context: { shopifyOrders: ShopifyOrderSummary[]; phoneNumbers: string[] },
+  context: { shopifyOrders: ShopifyOrderSummary[]; draftOrders?: ShopifyDraftOrderSummary[]; phoneNumbers: string[] },
 ): Promise<TimelineItem[]> {
   const ownedActivities = await prisma.activity.findMany({
     where: { customerProfileId },
@@ -50,6 +50,18 @@ export async function getCustomerTimeline(
     kind: "SHOPIFY_ORDER",
     title: `Bestelling ${order.name}`,
     summary: [order.displayFinancialStatus, order.displayFulfillmentStatus].filter(Boolean).join(" · ") || null,
+  }));
+
+  // Phase 3a — docs/architecture/ADR-008-EXTERNAL-COMMUNICATIONS-STRATEGY.md:
+  // category B, never persisted, stable synthetic ID mirroring the existing
+  // shopify-order-{gid} pattern so no dedup logic is ever needed.
+  const draftOrderItems: TimelineItem[] = (context.draftOrders ?? []).map((draftOrder) => ({
+    id: `shopify-draftorder-${draftOrder.gid}`,
+    occurredAt: new Date(draftOrder.createdAt),
+    source: "SHOPIFY",
+    kind: "DRAFT_ORDER_CREATED",
+    title: `Conceptbestelling ${draftOrder.name}`,
+    summary: draftOrder.status,
   }));
 
   // Disabled in Phase 1 (see the adapters themselves) — always returns [],
@@ -84,7 +96,7 @@ export async function getCustomerTimeline(
       ]
     : [];
 
-  return [...ownedItems, ...orderItems, ...telephonyItems, ...invoiceItems].sort(
+  return [...ownedItems, ...orderItems, ...draftOrderItems, ...telephonyItems, ...invoiceItems].sort(
     (a, b) => b.occurredAt.getTime() - a.occurredAt.getTime(),
   );
 }

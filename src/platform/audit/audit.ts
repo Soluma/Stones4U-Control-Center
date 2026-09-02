@@ -32,7 +32,10 @@ export type AuditAction =
   | "customer_tag.created"
   | "customer_tag.deleted"
   | "customer_tag.assigned"
-  | "customer_tag.unassigned";
+  | "customer_tag.unassigned"
+  // Phase 3a
+  | "customer_match.confirmed"
+  | "customer_match.unlinked";
 
 export type AuditEntityType =
   | "User"
@@ -45,7 +48,9 @@ export type AuditEntityType =
   | "TaskChecklistItem"
   | "Appointment"
   | "File"
-  | "CustomerTag";
+  | "CustomerTag"
+  // Phase 3a
+  | "ExternalContactMatch";
 
 type LogAuditInput = {
   userId: string | null;

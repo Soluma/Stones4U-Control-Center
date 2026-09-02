@@ -7,6 +7,7 @@ import { listTasksForCustomer } from "@/modules/tasks/task.service";
 import { listAppointmentsForCustomer } from "@/modules/appointments/appointment.service";
 import { listFilesForCustomer } from "@/modules/files/file.service";
 import { listTagsForCustomer, listCustomerTags } from "@/modules/crm/customer-tag.service";
+import { getShopifyCustomerDraftOrders } from "@/integrations/shopify/draft-orders";
 import { prisma } from "@/platform/db/prisma";
 import { normalizeDutchPhone } from "@/lib/phone";
 import { formatDate, formatDateTime } from "@/lib/format";
@@ -14,12 +15,14 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { Tabs } from "@/components/ui/Tabs";
 import { CustomerHeader } from "./CustomerHeader";
 import { OrdersTable } from "./OrdersTable";
+import { DraftOrdersTable } from "./DraftOrdersTable";
 import { ActivityTimelineView } from "./ActivityTimelineView";
 import { AdapterStatusBanner } from "./AdapterStatusBanner";
 import { NotesPanel } from "./NotesPanel";
 import { TasksPanel } from "./TasksPanel";
 import { AppointmentsPanel } from "./AppointmentsPanel";
 import { FilesPanel } from "./FilesPanel";
+import type { ShopifyDraftOrderSummary } from "@/integrations/shopify/types";
 
 type PageProps = {
   params: Promise<{ id: string }>;
@@ -51,7 +54,11 @@ export default async function CustomerDetailPage({ params, searchParams }: PageP
   const canEdit = user.role !== "VIEWER";
   const tabItems = [
     { key: "overview", label: "Overzicht" },
-    { key: "orders", label: "Orders" },
+    // Key stays "orders" (URL/bookmark-compatible with Phase 2) — label
+    // renamed per docs/platform-discovery/28-PHASE-3-ARCHITECTURE.md §4:
+    // one "Commercieel" tab with Orders + Concept-orders sub-sections
+    // instead of a new top-level tab.
+    { key: "orders", label: "Commercieel" },
     { key: "activity", label: "Activiteit" },
     { key: "notes", label: "Notities" },
     { key: "tasks", label: "Taken" },
@@ -65,29 +72,39 @@ export default async function CustomerDetailPage({ params, searchParams }: PageP
     prisma.user.findMany({ where: { active: true }, select: { id: true, name: true }, orderBy: { name: "asc" } }),
   ]);
 
+  // Phase 3a — docs/platform-discovery/28-PHASE-3-ARCHITECTURE.md §4. Fetched
+  // once here (not per-tab) so the Commercieel tab and the Timeline/Overview
+  // draft-order projection never issue two separate Shopify calls. Its own
+  // try/catch, deliberately outside the Promise.all above: a draft-order
+  // hiccup must not take down tags/managers, and vice versa (build spec §2
+  // fail-safe requirement) — degrades to "unavailable", never a page crash.
+  let draftOrders: ShopifyDraftOrderSummary[] | null = null;
+  let draftOrdersUnavailable = false;
+  try {
+    draftOrders = (await getShopifyCustomerDraftOrders(data.profile.shopifyCustomerGid)).draftOrders;
+  } catch (error) {
+    console.error("draft_orders_fetch_failed", error);
+    draftOrdersUnavailable = true;
+  }
+
+  const phoneNumbers = [normalizeDutchPhone(data.profile.phone)].filter((p): p is string => !!p);
+
   return (
     <div className="space-y-5">
       <CustomerHeader data={data} viewerRole={user.role} id={id} tags={tags} allTags={allTags} managers={managers} />
       <Tabs items={tabItems} active={tab} hrefFor={(key) => `/customers/${id}?tab=${key}`} />
 
       {tab === "overview" && (
-        <OverviewTab
-          id={id}
-          shopifyOrders={data.orders.orders}
-          phoneNumbers={[normalizeDutchPhone(data.profile.phone)].filter((p): p is string => !!p)}
-        />
+        <OverviewTab id={id} shopifyOrders={data.orders.orders} draftOrders={draftOrders} phoneNumbers={phoneNumbers} />
       )}
 
-      {tab === "orders" && <OrdersTable orders={data.orders.orders} />}
+      {tab === "orders" && <CommercialTab orders={data.orders.orders} draftOrders={draftOrders} draftOrdersUnavailable={draftOrdersUnavailable} />}
 
       {tab === "activity" && (
         <div className="space-y-3">
           <AdapterStatusBanner />
           <ActivityTimelineView
-            items={await getCustomerTimeline(id, {
-              shopifyOrders: data.orders.orders,
-              phoneNumbers: [normalizeDutchPhone(data.profile.phone)].filter((p): p is string => !!p),
-            })}
+            items={await getCustomerTimeline(id, { shopifyOrders: data.orders.orders, draftOrders: draftOrders ?? [], phoneNumbers })}
           />
         </div>
       )}
@@ -100,17 +117,42 @@ export default async function CustomerDetailPage({ params, searchParams }: PageP
   );
 }
 
+function CommercialTab({
+  orders,
+  draftOrders,
+  draftOrdersUnavailable,
+}: {
+  orders: Parameters<typeof OrdersTable>[0]["orders"];
+  draftOrders: ShopifyDraftOrderSummary[] | null;
+  draftOrdersUnavailable: boolean;
+}) {
+  return (
+    <div className="space-y-6">
+      <div className="space-y-3">
+        <h2 className="text-sm font-medium text-ink-secondary">Bestellingen</h2>
+        <OrdersTable orders={orders} />
+      </div>
+      <div className="space-y-3">
+        <h2 className="text-sm font-medium text-ink-secondary">Conceptbestellingen</h2>
+        <DraftOrdersTable draftOrders={draftOrders} unavailable={draftOrdersUnavailable} />
+      </div>
+    </div>
+  );
+}
+
 async function OverviewTab({
   id,
   shopifyOrders,
+  draftOrders,
   phoneNumbers,
 }: {
   id: string;
   shopifyOrders: Parameters<typeof getCustomerTimeline>[1]["shopifyOrders"];
+  draftOrders: ShopifyDraftOrderSummary[] | null;
   phoneNumbers: string[];
 }) {
   const [timeline, tasks, appointments, files] = await Promise.all([
-    getCustomerTimeline(id, { shopifyOrders, phoneNumbers }),
+    getCustomerTimeline(id, { shopifyOrders, draftOrders: draftOrders ?? [], phoneNumbers }),
     listTasksForCustomer(id),
     listAppointmentsForCustomer(id),
     listFilesForCustomer(id),

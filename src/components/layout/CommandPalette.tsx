@@ -2,11 +2,11 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Search, Loader2, LayoutDashboard, Users, CheckSquare, UserCog, Settings } from "lucide-react";
+import { Search, Loader2, LayoutDashboard, Users, CheckSquare, UserCog, Settings, ShoppingBag } from "lucide-react";
 import { Avatar } from "@/components/ui/Avatar";
 import { cn } from "@/lib/cn";
 
-type SearchItem = { id: string; kind: "customer" | "task"; title: string; subtitle: string; shopifyGid?: string; href?: string };
+type SearchItem = { id: string; kind: "customer" | "task" | "order"; title: string; subtitle: string; shopifyGid?: string; href?: string };
 type SearchGroup = { key: string; label: string; items: SearchItem[] };
 
 type NavItem = { id: string; title: string; subtitle: string; href: string };
@@ -100,7 +100,7 @@ export function CommandPalette() {
       router.push(searchItem.href);
       return;
     }
-    if (searchItem.kind === "customer" && searchItem.shopifyGid) {
+    if ((searchItem.kind === "customer" || searchItem.kind === "order") && searchItem.shopifyGid) {
       setOpening(true);
       const response = await fetch("/api/customers/resolve", {
         method: "POST",
@@ -110,7 +110,10 @@ export function CommandPalette() {
       const data = await response.json();
       setOpen(false);
       setOpening(false);
-      if (data.customerProfileId) router.push(`/customers/${data.customerProfileId}`);
+      if (data.customerProfileId) {
+        const tab = searchItem.kind === "order" ? "?tab=orders" : "";
+        router.push(`/customers/${data.customerProfileId}${tab}`);
+      }
     }
   }
 
@@ -168,7 +171,7 @@ export function CommandPalette() {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Zoek klanten, taken, of navigeer…"
+            placeholder="Zoek klanten, taken, orders, of navigeer…"
             className="w-full bg-transparent py-3 text-sm outline-none placeholder:text-ink-tertiary"
           />
           {(loading || opening) && <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-ink-tertiary" aria-hidden />}
@@ -186,7 +189,8 @@ export function CommandPalette() {
               {group.items.map((item) => {
                 renderedIndex += 1;
                 const isActive = renderedIndex === activeIndex;
-                const Icon: typeof LayoutDashboard | null = "icon" in item ? (item.icon as typeof LayoutDashboard) : null;
+                const Icon: typeof LayoutDashboard | null =
+                  "icon" in item ? (item.icon as typeof LayoutDashboard) : "kind" in item && item.kind === "order" ? ShoppingBag : null;
                 return (
                   <button
                     key={item.id}

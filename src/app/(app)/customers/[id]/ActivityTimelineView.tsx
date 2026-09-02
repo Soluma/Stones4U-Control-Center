@@ -18,6 +18,9 @@ import {
   CalendarX,
   MessageSquare,
   ListChecks,
+  FileClock,
+  Mail,
+  FileText,
   type LucideIcon,
 } from "lucide-react";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -53,6 +56,18 @@ const KIND_STYLE: Record<string, { icon: LucideIcon; tint: string }> = {
   TASK_UPDATED: { icon: ArrowRightLeft, tint: "bg-canvas text-ink-secondary" },
   TASK_COMMENT_ADDED: { icon: MessageSquare, tint: "bg-accent-50 text-accent-700" },
   TASK_CHECKLIST_COMPLETED: { icon: ListChecks, tint: "bg-success-50 text-success-700" },
+  // Phase 3a — docs/architecture/ADR-008-EXTERNAL-COMMUNICATIONS-STRATEGY.md.
+  // Only DRAFT_ORDER_CREATED has a live producer today; CALL_*/EMAIL_*/
+  // QUOTE_* are mapped so the timeline renders correctly the moment their
+  // Phase 3b/3c adapters start producing items — no UI change needed then.
+  DRAFT_ORDER_CREATED: { icon: FileClock, tint: "bg-warning-50 text-warning-700" },
+  CALL_INBOUND: { icon: Phone, tint: "bg-warning-50 text-warning-700" },
+  CALL_OUTBOUND: { icon: Phone, tint: "bg-canvas text-ink-secondary" },
+  CALL_MISSED: { icon: Phone, tint: "bg-danger-50 text-danger-700" },
+  EMAIL_INBOUND: { icon: Mail, tint: "bg-accent-50 text-accent-700" },
+  EMAIL_OUTBOUND: { icon: Mail, tint: "bg-canvas text-ink-secondary" },
+  QUOTE_CREATED: { icon: FileText, tint: "bg-accent-50 text-accent-700" },
+  QUOTE_UPDATED: { icon: FileText, tint: "bg-canvas text-ink-secondary" },
 };
 
 function dayKey(date: Date): string {
