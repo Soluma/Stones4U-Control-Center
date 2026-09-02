@@ -76,6 +76,23 @@ enum ActivityType {
   SHOPIFY_ORDER
   CALL
   INVOICE
+  // Phase 2
+  FILE_UPLOADED
+  FILE_REMOVED
+  APPOINTMENT_CREATED
+  APPOINTMENT_UPDATED
+  APPOINTMENT_COMPLETED
+  APPOINTMENT_CANCELLED
+  TASK_UPDATED
+  TASK_COMMENT_ADDED
+  TASK_CHECKLIST_COMPLETED
+}
+
+// Phase 2 — docs/platform-discovery/26-PHASE-2-BUILD-SPEC.md
+enum AppointmentStatus {
+  SCHEDULED
+  COMPLETED
+  CANCELLED
 }
 
 model User {
@@ -89,13 +106,21 @@ model User {
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
-  sessions           Session[]
-  tasksCreated       Task[]          @relation("TasksCreated")
-  tasksAssigned      Task[]          @relation("TasksAssigned")
-  notesAuthored      Note[]
-  auditEvents        AuditEvent[]
-  activities         Activity[]
-  managedCustomers   CustomerProfile[] @relation("AccountManager")
+  sessions         Session[]
+  tasksCreated     Task[]            @relation("TasksCreated")
+  tasksAssigned    Task[]            @relation("TasksAssigned")
+  notesAuthored    Note[]
+  auditEvents      AuditEvent[]
+  activities       Activity[]
+  managedCustomers CustomerProfile[] @relation("AccountManager")
+
+  // Phase 2
+  taskComments         TaskComment[]
+  appointmentsAssigned Appointment[]           @relation("AppointmentsAssigned")
+  appointmentsCreated  Appointment[]           @relation("AppointmentsCreated")
+  filesUploaded        File[]
+  customerTagsCreated  CustomerTag[]
+  tagAssignmentsMade   CustomerTagAssignment[]
 
   @@index([role])
 }
@@ -104,15 +129,15 @@ model User {
 // so a session can be revoked instantly. See docs/platform-discovery/14 and
 // 19 for why TelefoonSysteem's stateless-JWT approach was not repeated here.
 model Session {
-  id           String   @id @default(cuid())
-  userId       String
-  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  tokenHash    String   @unique
-  userAgent    String?
-  ipAddress    String?
-  expiresAt    DateTime
-  lastUsedAt   DateTime @default(now())
-  createdAt    DateTime @default(now())
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash  String   @unique
+  userAgent  String?
+  ipAddress  String?
+  expiresAt  DateTime
+  lastUsedAt DateTime @default(now())
+  createdAt  DateTime @default(now())
 
   @@index([userId])
   @@index([expiresAt])
@@ -124,26 +149,31 @@ model Session {
 // that Note/Task/Activity can point to. shopifyCustomerGid is the one
 // required, unique link back to Shopify (docs/architecture/ADR-002).
 model CustomerProfile {
-  id                String    @id @default(cuid())
-  shopifyCustomerGid String   @unique
+  id                 String    @id @default(cuid())
+  shopifyCustomerGid String    @unique
   // Denormalized snapshot for fast local search — refreshed opportunistically
   // whenever the profile is loaded from Shopify; never the source of truth.
-  displayName       String?
-  companyName       String?
-  email             String?
-  phone             String?
-  phoneNormalized   String?
-  crmStatus         CrmStatus @default(LEAD)
-  accountManagerId  String?
-  accountManager    User?     @relation("AccountManager", fields: [accountManagerId], references: [id])
-  tags              String[]  @default([])
-  lastSyncedAt      DateTime?
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
+  displayName        String?
+  companyName        String?
+  email              String?
+  phone              String?
+  phoneNormalized    String?
+  crmStatus          CrmStatus @default(LEAD)
+  accountManagerId   String?
+  accountManager     User?     @relation("AccountManager", fields: [accountManagerId], references: [id])
+  lastSyncedAt       DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
-  notes      Note[]
-  tasks      Task[]
-  activities Activity[]
+  notes          Note[]
+  tasks          Task[]
+  activities     Activity[]
+  // Phase 2 — replaces the never-populated Phase-1 `tags String[]` field
+  // (no tag UI ever existed to write it, see docs/platform-discovery/26 §3)
+  // with a real, reusable, relational tag model.
+  tagAssignments CustomerTagAssignment[]
+  files          File[]
+  appointments   Appointment[]
 
   @@index([phoneNormalized])
   @@index([email])
@@ -157,18 +187,18 @@ model CustomerProfile {
 // kept for search/preview. Unlike TelefoonSysteem's CallNote/ContactNote,
 // notes here are editable and soft-deletable, both audited.
 model Note {
-  id                String    @id @default(cuid())
+  id                String          @id @default(cuid())
   customerProfileId String
   customerProfile   CustomerProfile @relation(fields: [customerProfileId], references: [id], onDelete: Cascade)
   authorId          String
-  author            User      @relation(fields: [authorId], references: [id])
+  author            User            @relation(fields: [authorId], references: [id])
   bodyJson          Json
-  bodyText          String    @db.Text
-  tags              String[]  @default([])
+  bodyText          String          @db.Text
+  tags              String[]        @default([])
   editedAt          DateTime?
   deletedAt         DateTime?
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
 
   activities Activity[]
 
@@ -180,33 +210,41 @@ model Note {
 // customerProfileId are prepared for later phases (Phase 3-6) and are
 // intentionally unused/unenforced in Phase 1 business logic.
 model Task {
-  id                String       @id @default(cuid())
+  id                String           @id @default(cuid())
   title             String
-  description       String?      @db.Text
-  status            TaskStatus   @default(OPEN)
-  priority          TaskPriority @default(NORMAL)
+  description       String?          @db.Text
+  status            TaskStatus       @default(OPEN)
+  priority          TaskPriority     @default(NORMAL)
   assignedToId      String
-  assignedTo        User         @relation("TasksAssigned", fields: [assignedToId], references: [id])
+  assignedTo        User             @relation("TasksAssigned", fields: [assignedToId], references: [id])
   createdById       String
-  createdBy         User         @relation("TasksCreated", fields: [createdById], references: [id])
+  createdBy         User             @relation("TasksCreated", fields: [createdById], references: [id])
   customerProfileId String?
   customerProfile   CustomerProfile? @relation(fields: [customerProfileId], references: [id])
 
   // Prepared for later phases (docs/platform-discovery/25 §4) — not read or
   // written by any Phase 1 code path.
-  shopifyOrderGid  String?
-  quoteRef         String?
-  callRef          String?
-  supplierId       String?
-  purchaseOrderId  String?
-  productionJobId  String?
-  complaintId      String?
+  shopifyOrderGid String?
+  quoteRef        String?
+  callRef         String?
+  supplierId      String?
+  purchaseOrderId String?
+  productionJobId String?
+  complaintId     String?
 
   dueAt       DateTime?
   completedAt DateTime?
   cancelledAt DateTime?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
+
+  // Phase 2 — additive; a pre-existing Phase-1 task simply has an empty
+  // tags array, no comments, and no checklist items (full backwards
+  // compatibility, see docs/platform-discovery/26 §4).
+  tags           String[]            @default([])
+  reminderAt     DateTime?
+  comments       TaskComment[]
+  checklistItems TaskChecklistItem[]
 
   activities Activity[]
 
@@ -215,6 +253,93 @@ model Task {
   @@index([customerProfileId])
   @@index([status])
   @@index([dueAt])
+}
+
+// Append-only task updates/comments (docs/platform-discovery/26 §3) — no
+// edit/delete in Phase 2, mirroring TelefoonSysteem's TaskUpdate concept
+// (referenced, not reused as code, per ADR-003).
+model TaskComment {
+  id        String   @id @default(cuid())
+  taskId    String
+  task      Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  authorId  String
+  author    User     @relation(fields: [authorId], references: [id])
+  body      String   @db.Text
+  createdAt DateTime @default(now())
+
+  @@index([taskId])
+}
+
+model TaskChecklistItem {
+  id          String    @id @default(cuid())
+  taskId      String
+  task        Task      @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  title       String
+  done        Boolean   @default(false)
+  position    Int       @default(0)
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([taskId])
+}
+
+// Phase 2 — docs/platform-discovery/26-PHASE-2-BUILD-SPEC.md §3. externalId
+// is prepared, unused in Phase 2 (no Microsoft Graph/Google Calendar sync
+// yet — same "prepared field, no behavior" pattern as Task's Phase-1 fields).
+model Appointment {
+  id                 String            @id @default(cuid())
+  customerProfileId  String
+  customerProfile    CustomerProfile   @relation(fields: [customerProfileId], references: [id], onDelete: Cascade)
+  title              String
+  description        String?           @db.Text
+  startsAt           DateTime
+  endsAt             DateTime?
+  assignedToId       String
+  assignedTo         User              @relation("AppointmentsAssigned", fields: [assignedToId], references: [id])
+  createdById        String
+  createdBy          User              @relation("AppointmentsCreated", fields: [createdById], references: [id])
+  status             AppointmentStatus @default(SCHEDULED)
+  externalCalendarId String?
+  completedAt        DateTime?
+  cancelledAt        DateTime?
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+
+  activities Activity[]
+
+  @@index([customerProfileId])
+  @@index([assignedToId])
+  @@index([startsAt])
+  @@index([status])
+}
+
+// Reusable Control Center CRM tags (docs/platform-discovery/26 §3) —
+// distinct from any Shopify customer tag, never read from or written to
+// Shopify.
+model CustomerTag {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  color       String?
+  createdById String
+  createdBy   User     @relation(fields: [createdById], references: [id])
+  createdAt   DateTime @default(now())
+
+  assignments CustomerTagAssignment[]
+}
+
+model CustomerTagAssignment {
+  id                String          @id @default(cuid())
+  customerProfileId String
+  customerProfile   CustomerProfile @relation(fields: [customerProfileId], references: [id], onDelete: Cascade)
+  tagId             String
+  tag               CustomerTag     @relation(fields: [tagId], references: [id], onDelete: Cascade)
+  assignedById      String
+  assignedBy        User            @relation(fields: [assignedById], references: [id])
+  assignedAt        DateTime        @default(now())
+
+  @@unique([customerProfileId, tagId])
+  @@index([tagId])
 }
 
 // The unified Activity Timeline. sourceType = CONTROL_CENTER rows are
@@ -227,22 +352,27 @@ model Task {
 // the enum's other values exist so the timeline-rendering code has one
 // shared shape, not because this table stores them.
 model Activity {
-  id                String             @id @default(cuid())
-  customerProfileId String
-  customerProfile   CustomerProfile    @relation(fields: [customerProfileId], references: [id], onDelete: Cascade)
-  type              ActivityType
-  sourceType        ActivitySourceType @default(CONTROL_CENTER)
-  title             String
-  summary           String?
-  occurredAt        DateTime
-  actorId           String?
-  actor             User?              @relation(fields: [actorId], references: [id])
-  relatedNoteId     String?
-  relatedNote       Note?              @relation(fields: [relatedNoteId], references: [id])
-  relatedTaskId     String?
-  relatedTask       Task?              @relation(fields: [relatedTaskId], references: [id])
-  metadata          Json?
-  createdAt         DateTime           @default(now())
+  id                   String             @id @default(cuid())
+  customerProfileId    String
+  customerProfile      CustomerProfile    @relation(fields: [customerProfileId], references: [id], onDelete: Cascade)
+  type                 ActivityType
+  sourceType           ActivitySourceType @default(CONTROL_CENTER)
+  title                String
+  summary              String?
+  occurredAt           DateTime
+  actorId              String?
+  actor                User?              @relation(fields: [actorId], references: [id])
+  relatedNoteId        String?
+  relatedNote          Note?              @relation(fields: [relatedNoteId], references: [id])
+  relatedTaskId        String?
+  relatedTask          Task?              @relation(fields: [relatedTaskId], references: [id])
+  // Phase 2
+  relatedFileId        String?
+  relatedFile          File?              @relation(fields: [relatedFileId], references: [id])
+  relatedAppointmentId String?
+  relatedAppointment   Appointment?       @relation(fields: [relatedAppointmentId], references: [id])
+  metadata             Json?
+  createdAt            DateTime           @default(now())
 
   @@index([customerProfileId, occurredAt])
 }
@@ -266,18 +396,29 @@ model AuditEvent {
   @@index([createdAt])
 }
 
-// Prepared for Phase 2 (docs/architecture/ADR-005) — Cloudflare R2 object
-// storage + Postgres metadata. No upload/storage code exists in Phase 1;
-// this model exists only so the later migration is additive, not breaking.
+// Cloudflare R2 object storage + Postgres metadata (docs/architecture/ADR-005,
+// docs/platform-discovery/26 §10). Content lives only in R2, identified by
+// the random, non-guessable storageKey — never derived from the original
+// filename (src/integrations/storage/r2.ts). This table never held a real
+// row before Phase 2 (schema-only in Phase 1), so this reshape is
+// zero-data-risk — verified before migrating.
 model File {
-  id                String   @id @default(cuid())
-  customerProfileId String?
-  fileName          String
+  id                String           @id @default(cuid())
+  storageKey        String           @unique
+  originalFilename  String
   mimeType          String
-  sizeBytes         Int
-  storageKey        String   @unique
+  byteSize          Int
+  title             String?
+  description       String?          @db.Text
+  customerProfileId String?
+  customerProfile   CustomerProfile? @relation(fields: [customerProfileId], references: [id], onDelete: Cascade)
   uploadedById      String
-  createdAt         DateTime @default(now())
+  uploadedBy        User             @relation(fields: [uploadedById], references: [id])
+  deletedAt         DateTime?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  activities Activity[]
 
   @@index([customerProfileId])
 }

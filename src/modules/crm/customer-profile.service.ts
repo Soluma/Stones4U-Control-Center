@@ -93,7 +93,7 @@ export async function getCustomer360(customerProfileId: string): Promise<Custome
 
 export async function updateCustomerCrmFields(
   customerProfileId: string,
-  changes: { crmStatus?: CrmStatus; accountManagerId?: string | null; tags?: string[] },
+  changes: { crmStatus?: CrmStatus; accountManagerId?: string | null },
   actor: { id: string },
 ) {
   const before = await prisma.customerProfile.findUniqueOrThrow({ where: { id: customerProfileId } });

@@ -1,13 +1,30 @@
 import Link from "next/link";
-import { StickyNote, CheckSquare } from "lucide-react";
+import { StickyNote, CheckSquare, CalendarPlus, Paperclip } from "lucide-react";
 import { Avatar } from "@/components/ui/Avatar";
-import { Badge } from "@/components/ui/Badge";
 import { formatDate, formatMoney } from "@/lib/format";
 import { CrmStatusControl } from "./CrmStatusControl";
+import { AccountManagerControl } from "./AccountManagerControl";
+import { CustomerTagsControl } from "./CustomerTagsControl";
 import type { Customer360 } from "@/modules/crm/customer-profile.service";
 import type { Role } from "@/generated/prisma";
 
-export function CustomerHeader({ data, viewerRole, id }: { data: Customer360; viewerRole: Role; id: string }) {
+type TagOption = { id: string; name: string; color: string | null };
+
+export function CustomerHeader({
+  data,
+  viewerRole,
+  id,
+  tags,
+  allTags,
+  managers,
+}: {
+  data: Customer360;
+  viewerRole: Role;
+  id: string;
+  tags: TagOption[];
+  allTags: TagOption[];
+  managers: { id: string; name: string }[];
+}) {
   const { profile, shopify, orders } = data;
   const canEdit = viewerRole !== "VIEWER";
 
@@ -25,13 +42,15 @@ export function CustomerHeader({ data, viewerRole, id }: { data: Customer360; vi
               {[shopify.company, shopify.email, shopify.phone, shopify.defaultAddressSummary].filter(Boolean).join(" · ") ||
                 "Geen contactgegevens bekend"}
             </p>
-            {profile.tags.length > 0 && (
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                {profile.tags.map((tag) => (
-                  <Badge key={tag}>{tag}</Badge>
-                ))}
+            <div className="mt-2 flex flex-wrap items-center gap-3">
+              <div className="flex items-center gap-1.5 text-xs text-ink-tertiary">
+                <span>Accountmanager:</span>
+                <AccountManagerControl customerProfileId={profile.id} currentManagerId={profile.accountManagerId} managers={managers} canEdit={canEdit} />
               </div>
-            )}
+            </div>
+            <div className="mt-2">
+              <CustomerTagsControl customerProfileId={profile.id} assignedTags={tags} allTags={allTags} canEdit={canEdit} />
+            </div>
           </div>
         </div>
 
@@ -48,14 +67,22 @@ export function CustomerHeader({ data, viewerRole, id }: { data: Customer360; vi
       </div>
 
       {canEdit && (
-        <div className="mt-4 flex gap-2 border-t border-border-subtle pt-4">
+        <div className="mt-4 flex flex-wrap gap-2 border-t border-border-subtle pt-4">
           <Link href={`/customers/${id}?tab=notes`} className="cc-btn-secondary">
             <StickyNote className="h-3.5 w-3.5" aria-hidden />
-            Notitie toevoegen
+            Notitie
           </Link>
           <Link href={`/customers/${id}?tab=tasks`} className="cc-btn-secondary">
             <CheckSquare className="h-3.5 w-3.5" aria-hidden />
-            Taak toevoegen
+            Taak
+          </Link>
+          <Link href={`/customers/${id}?tab=appointments`} className="cc-btn-secondary">
+            <CalendarPlus className="h-3.5 w-3.5" aria-hidden />
+            Afspraak
+          </Link>
+          <Link href={`/customers/${id}?tab=files`} className="cc-btn-secondary">
+            <Paperclip className="h-3.5 w-3.5" aria-hidden />
+            Bestand
           </Link>
         </div>
       )}

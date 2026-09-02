@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { CheckSquare, Plus } from "lucide-react";
 import { Badge, StatusDot } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -125,7 +126,9 @@ export function TasksPanel({ customerId, canEdit }: { customerId: string; canEdi
           return (
             <div key={task.id} className="cc-table-row flex items-center justify-between gap-4 px-4 py-3">
               <div className="min-w-0">
-                <p className="truncate text-sm font-medium text-ink-primary">{task.title}</p>
+                <Link href={`/tasks/${task.id}`} className="block truncate text-sm font-medium text-ink-primary hover:underline">
+                  {task.title}
+                </Link>
                 <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-ink-tertiary">
                   <StatusDot tone={PRIORITY_TONE[task.priority]}>{PRIORITY_LABEL[task.priority]}</StatusDot>
                   <span>·</span>

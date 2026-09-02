@@ -88,3 +88,35 @@ export async function getCustomerTimeline(
     (a, b) => b.occurredAt.getTime() - a.occurredAt.getTime(),
   );
 }
+
+export type RecentActivityItem = TimelineItem & {
+  customerProfileId: string;
+  customerName: string | null;
+};
+
+/** Most recent Control-Center-owned activity across *all* customers, for
+ * the dashboard's "recente CRM-activiteit" (docs/platform-discovery/26 §10)
+ * — deliberately CONTROL_CENTER-only (no live Shopify fetch needed here,
+ * unlike the per-customer timeline). */
+export async function getRecentActivity(limit = 8): Promise<RecentActivityItem[]> {
+  const activities = await prisma.activity.findMany({
+    orderBy: { occurredAt: "desc" },
+    take: limit,
+    include: {
+      actor: { select: { name: true } },
+      customerProfile: { select: { id: true, displayName: true, companyName: true } },
+    },
+  });
+
+  return activities.map((activity) => ({
+    id: activity.id,
+    occurredAt: activity.occurredAt,
+    source: "CONTROL_CENTER",
+    kind: activity.type,
+    title: activity.title,
+    summary: activity.summary,
+    actorName: activity.actor?.name ?? null,
+    customerProfileId: activity.customerProfileId,
+    customerName: activity.customerProfile.displayName ?? activity.customerProfile.companyName ?? null,
+  }));
+}

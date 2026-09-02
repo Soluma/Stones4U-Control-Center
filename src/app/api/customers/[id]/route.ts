@@ -21,7 +21,6 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
 const patchSchema = z.object({
   crmStatus: z.enum(["LEAD", "ACTIVE", "INACTIVE", "AT_RISK", "VIP"]).optional(),
   accountManagerId: z.string().nullable().optional(),
-  tags: z.array(z.string().min(1).max(40)).max(20).optional(),
 });
 
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {

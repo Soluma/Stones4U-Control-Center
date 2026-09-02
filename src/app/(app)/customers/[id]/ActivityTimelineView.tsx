@@ -10,6 +10,14 @@ import {
   UserCog,
   Phone,
   Receipt,
+  Paperclip,
+  FileMinus,
+  CalendarPlus,
+  CalendarClock,
+  CalendarCheck,
+  CalendarX,
+  MessageSquare,
+  ListChecks,
   type LucideIcon,
 } from "lucide-react";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -35,6 +43,16 @@ const KIND_STYLE: Record<string, { icon: LucideIcon; tint: string }> = {
   CUSTOMER_PROFILE_UPDATED: { icon: UserCog, tint: "bg-canvas text-ink-secondary" },
   CALL: { icon: Phone, tint: "bg-warning-50 text-warning-700" },
   INVOICE: { icon: Receipt, tint: "bg-warning-50 text-warning-700" },
+  // Phase 2
+  FILE_UPLOADED: { icon: Paperclip, tint: "bg-accent-50 text-accent-700" },
+  FILE_REMOVED: { icon: FileMinus, tint: "bg-danger-50 text-danger-700" },
+  APPOINTMENT_CREATED: { icon: CalendarPlus, tint: "bg-canvas text-ink-secondary" },
+  APPOINTMENT_UPDATED: { icon: CalendarClock, tint: "bg-canvas text-ink-secondary" },
+  APPOINTMENT_COMPLETED: { icon: CalendarCheck, tint: "bg-success-50 text-success-700" },
+  APPOINTMENT_CANCELLED: { icon: CalendarX, tint: "bg-danger-50 text-danger-700" },
+  TASK_UPDATED: { icon: ArrowRightLeft, tint: "bg-canvas text-ink-secondary" },
+  TASK_COMMENT_ADDED: { icon: MessageSquare, tint: "bg-accent-50 text-accent-700" },
+  TASK_CHECKLIST_COMPLETED: { icon: ListChecks, tint: "bg-success-50 text-success-700" },
 };
 
 function dayKey(date: Date): string {

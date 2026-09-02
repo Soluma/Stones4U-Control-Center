@@ -15,14 +15,37 @@ export type AuditAction =
   | "task.assigned"
   | "task.completed"
   | "task.cancelled"
-  | "customer_profile.updated";
+  | "customer_profile.updated"
+  // Phase 2
+  | "task.updated"
+  | "task.comment_added"
+  | "task.checklist_item_added"
+  | "task.checklist_item_toggled"
+  | "task.checklist_item_removed"
+  | "appointment.created"
+  | "appointment.updated"
+  | "appointment.completed"
+  | "appointment.cancelled"
+  | "file.uploaded"
+  | "file.metadata_updated"
+  | "file.deleted"
+  | "customer_tag.created"
+  | "customer_tag.deleted"
+  | "customer_tag.assigned"
+  | "customer_tag.unassigned";
 
 export type AuditEntityType =
   | "User"
   | "Session"
   | "Note"
   | "Task"
-  | "CustomerProfile";
+  | "CustomerProfile"
+  // Phase 2
+  | "TaskComment"
+  | "TaskChecklistItem"
+  | "Appointment"
+  | "File"
+  | "CustomerTag";
 
 type LogAuditInput = {
   userId: string | null;

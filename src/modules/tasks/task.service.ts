@@ -217,3 +217,181 @@ const taskListInclude = {
   createdBy: { select: { id: true, name: true } },
   customerProfile: { select: { id: true, displayName: true, companyName: true } },
 } as const;
+
+// ---------------------------------------------------------------------------
+// Phase 2 — Tasks 2.0 (docs/platform-discovery/26 §2)
+// ---------------------------------------------------------------------------
+
+const taskDetailInclude = {
+  ...taskListInclude,
+  comments: { include: { author: { select: { id: true, name: true } } }, orderBy: { createdAt: "asc" as const } },
+  checklistItems: { orderBy: { position: "asc" as const } },
+} as const;
+
+export async function getTaskDetail(taskId: string) {
+  return prisma.task.findUniqueOrThrow({ where: { id: taskId }, include: taskDetailInclude });
+}
+
+export async function searchTasks(actor: Actor, query: string, limit = 20) {
+  return prisma.task.findMany({
+    where: {
+      title: { contains: query, mode: "insensitive" },
+      ...(actor.role === "ADMIN" ? {} : { OR: [{ assignedToId: actor.id }, { createdById: actor.id }] }),
+    },
+    orderBy: { updatedAt: "desc" },
+    take: limit,
+    include: taskListInclude,
+  });
+}
+
+export async function updateTaskDetails(
+  taskId: string,
+  input: {
+    title?: string;
+    description?: string | null;
+    priority?: TaskPriority;
+    dueAt?: Date | null;
+    reminderAt?: Date | null;
+    tags?: string[];
+  },
+  actor: Actor,
+) {
+  const task = await prisma.task.findUniqueOrThrow({ where: { id: taskId } });
+  assertCanModify(task, actor);
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const result = await tx.task.update({ where: { id: taskId }, data: input });
+
+    if (result.customerProfileId) {
+      await tx.activity.create({
+        data: {
+          customerProfileId: result.customerProfileId,
+          type: "TASK_UPDATED",
+          sourceType: "CONTROL_CENTER",
+          title: `Taak bijgewerkt: ${result.title}`,
+          occurredAt: new Date(),
+          actorId: actor.id,
+          relatedTaskId: result.id,
+        },
+      });
+    }
+
+    return result;
+  });
+
+  await logAudit({ userId: actor.id, action: "task.updated", entityType: "Task", entityId: taskId, metadata: input });
+  return updated;
+}
+
+export async function addTaskComment(taskId: string, body: string, actor: Actor) {
+  const task = await prisma.task.findUniqueOrThrow({ where: { id: taskId } });
+  assertCanModify(task, actor);
+
+  const comment = await prisma.$transaction(async (tx) => {
+    const created = await tx.taskComment.create({
+      data: { taskId, authorId: actor.id, body },
+      include: { author: { select: { id: true, name: true } } },
+    });
+
+    if (task.customerProfileId) {
+      await tx.activity.create({
+        data: {
+          customerProfileId: task.customerProfileId,
+          type: "TASK_COMMENT_ADDED",
+          sourceType: "CONTROL_CENTER",
+          title: `Opmerking op taak: ${task.title}`,
+          summary: truncateText(body, 140),
+          occurredAt: created.createdAt,
+          actorId: actor.id,
+          relatedTaskId: taskId,
+        },
+      });
+    }
+
+    return created;
+  });
+
+  await logAudit({ userId: actor.id, action: "task.comment_added", entityType: "TaskComment", entityId: comment.id, metadata: { taskId } });
+  return comment;
+}
+
+export async function addChecklistItem(taskId: string, title: string, actor: Actor) {
+  const task = await prisma.task.findUniqueOrThrow({ where: { id: taskId } });
+  assertCanModify(task, actor);
+
+  const maxPosition = await prisma.taskChecklistItem.aggregate({ where: { taskId }, _max: { position: true } });
+  const item = await prisma.taskChecklistItem.create({
+    data: { taskId, title, position: (maxPosition._max.position ?? -1) + 1 },
+  });
+
+  await logAudit({
+    userId: actor.id,
+    action: "task.checklist_item_added",
+    entityType: "TaskChecklistItem",
+    entityId: item.id,
+    metadata: { taskId, title },
+  });
+  return item;
+}
+
+export async function toggleChecklistItem(taskId: string, itemId: string, done: boolean, actor: Actor) {
+  const task = await prisma.task.findUniqueOrThrow({ where: { id: taskId } });
+  assertCanModify(task, actor);
+
+  const item = await prisma.$transaction(async (tx) => {
+    const updated = await tx.taskChecklistItem.update({
+      where: { id: itemId },
+      data: { done, completedAt: done ? new Date() : null },
+    });
+
+    // Only surface a timeline event when the whole checklist becomes fully
+    // done — per-item toggles are audited (below) but would be too noisy
+    // for the Activity Timeline (docs/platform-discovery/26 §9).
+    if (done && task.customerProfileId) {
+      const remaining = await tx.taskChecklistItem.count({ where: { taskId, done: false } });
+      if (remaining === 0) {
+        await tx.activity.create({
+          data: {
+            customerProfileId: task.customerProfileId,
+            type: "TASK_CHECKLIST_COMPLETED",
+            sourceType: "CONTROL_CENTER",
+            title: `Checklist afgerond: ${task.title}`,
+            occurredAt: new Date(),
+            actorId: actor.id,
+            relatedTaskId: taskId,
+          },
+        });
+      }
+    }
+
+    return updated;
+  });
+
+  await logAudit({
+    userId: actor.id,
+    action: "task.checklist_item_toggled",
+    entityType: "TaskChecklistItem",
+    entityId: itemId,
+    metadata: { taskId, done },
+  });
+  return item;
+}
+
+export async function removeChecklistItem(taskId: string, itemId: string, actor: Actor) {
+  const task = await prisma.task.findUniqueOrThrow({ where: { id: taskId } });
+  assertCanModify(task, actor);
+
+  await prisma.taskChecklistItem.delete({ where: { id: itemId } });
+
+  await logAudit({
+    userId: actor.id,
+    action: "task.checklist_item_removed",
+    entityType: "TaskChecklistItem",
+    entityId: itemId,
+    metadata: { taskId },
+  });
+}
+
+function truncateText(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}

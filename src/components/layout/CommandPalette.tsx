@@ -1,19 +1,30 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Search, Loader2 } from "lucide-react";
+import { Search, Loader2, LayoutDashboard, Users, CheckSquare, UserCog, Settings } from "lucide-react";
 import { Avatar } from "@/components/ui/Avatar";
 import { cn } from "@/lib/cn";
 
-type SearchItem = { id: string; title: string; subtitle: string; shopifyGid: string };
+type SearchItem = { id: string; kind: "customer" | "task"; title: string; subtitle: string; shopifyGid?: string; href?: string };
 type SearchGroup = { key: string; label: string; items: SearchItem[] };
 
-// Ctrl/Cmd+K command palette. Phase 1 scope is customer search only (see
-// src/app/api/search/route.ts) but the group-based response shape is built
-// so Phase 2+ (orders/quotes/products/suppliers/tasks/production jobs) can
-// register additional groups without a UI rewrite — see
-// docs/platform-discovery/25 "Command Search".
+type NavItem = { id: string; title: string; subtitle: string; href: string };
+
+// Static navigation shortcuts — never fetched from the API (docs/platform-
+// discovery/26 §11: "Navigatie... statische lijst van routes"), filtered
+// client-side against the current query.
+const NAV_ITEMS: (NavItem & { icon: typeof LayoutDashboard })[] = [
+  { id: "nav-dashboard", title: "Dashboard", subtitle: "/", href: "/", icon: LayoutDashboard },
+  { id: "nav-customers", title: "Klanten", subtitle: "/customers", href: "/customers", icon: Users },
+  { id: "nav-tasks", title: "Taken", subtitle: "/tasks", href: "/tasks", icon: CheckSquare },
+  { id: "nav-users", title: "Gebruikers", subtitle: "/admin/users", href: "/admin/users", icon: UserCog },
+  { id: "nav-settings", title: "Instellingen", subtitle: "/settings", href: "/settings", icon: Settings },
+];
+
+// Ctrl/Cmd+K command palette. Phase 2 scope: customers + tasks (from the
+// API, see src/app/api/search/route.ts) + a static navigation group — see
+// docs/platform-discovery/26 §11.
 export function CommandPalette() {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -24,7 +35,13 @@ export function CommandPalette() {
   const inputRef = useRef<HTMLInputElement>(null);
   const router = useRouter();
 
-  const flatItems = groups.flatMap((g) => g.items);
+  const navMatches = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (q.length === 0) return [];
+    return NAV_ITEMS.filter((item) => item.title.toLowerCase().includes(q));
+  }, [query]);
+
+  const flatItems: (SearchItem | NavItem)[] = [...groups.flatMap((g) => g.items), ...navMatches];
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -70,17 +87,31 @@ export function CommandPalette() {
     };
   }, [query, open]);
 
-  async function openCustomer(item: SearchItem) {
-    setOpening(true);
-    const response = await fetch("/api/customers/resolve", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ shopifyGid: item.shopifyGid }),
-    });
-    const data = await response.json();
-    setOpen(false);
-    setOpening(false);
-    if (data.customerProfileId) router.push(`/customers/${data.customerProfileId}`);
+  async function selectItem(item: SearchItem | NavItem) {
+    if ("href" in item && item.href && !("kind" in item)) {
+      // static navigation item
+      setOpen(false);
+      router.push(item.href);
+      return;
+    }
+    const searchItem = item as SearchItem;
+    if (searchItem.kind === "task" && searchItem.href) {
+      setOpen(false);
+      router.push(searchItem.href);
+      return;
+    }
+    if (searchItem.kind === "customer" && searchItem.shopifyGid) {
+      setOpening(true);
+      const response = await fetch("/api/customers/resolve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ shopifyGid: searchItem.shopifyGid }),
+      });
+      const data = await response.json();
+      setOpen(false);
+      setOpening(false);
+      if (data.customerProfileId) router.push(`/customers/${data.customerProfileId}`);
+    }
   }
 
   function handleKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
@@ -98,7 +129,7 @@ export function CommandPalette() {
     } else if (event.key === "Enter") {
       event.preventDefault();
       const target = flatItems[activeIndex];
-      if (target) void openCustomer(target);
+      if (target) void selectItem(target);
     }
   }
 
@@ -113,6 +144,10 @@ export function CommandPalette() {
   }
 
   let renderedIndex = -1;
+  const allGroups: { key: string; label: string; items: (SearchItem | NavItem)[] }[] = [
+    ...groups,
+    ...(navMatches.length > 0 ? [{ key: "navigation", label: "Navigatie", items: navMatches }] : []),
+  ];
 
   return (
     <div
@@ -133,7 +168,7 @@ export function CommandPalette() {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Zoek klanten op naam, bedrijf, e-mail of telefoon…"
+            placeholder="Zoek klanten, taken, of navigeer…"
             className="w-full bg-transparent py-3 text-sm outline-none placeholder:text-ink-tertiary"
           />
           {(loading || opening) && <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-ink-tertiary" aria-hidden />}
@@ -143,7 +178,7 @@ export function CommandPalette() {
           {!loading && query.trim().length >= 2 && flatItems.length === 0 && (
             <p className="px-3 py-4 text-sm text-ink-tertiary">Geen resultaten voor &ldquo;{query}&rdquo;.</p>
           )}
-          {groups.map((group) => (
+          {allGroups.map((group) => (
             <div key={group.key} className="mb-2">
               <p className="px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-ink-disabled">
                 {group.label}
@@ -151,17 +186,24 @@ export function CommandPalette() {
               {group.items.map((item) => {
                 renderedIndex += 1;
                 const isActive = renderedIndex === activeIndex;
+                const Icon: typeof LayoutDashboard | null = "icon" in item ? (item.icon as typeof LayoutDashboard) : null;
                 return (
                   <button
                     key={item.id}
-                    onClick={() => openCustomer(item)}
+                    onClick={() => selectItem(item)}
                     onMouseEnter={() => setActiveIndex(renderedIndex)}
                     className={cn(
                       "flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-left",
                       isActive ? "bg-accent-50" : "hover:bg-surface-hover",
                     )}
                   >
-                    <Avatar name={item.title} size="sm" />
+                    {Icon ? (
+                      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-canvas text-ink-secondary">
+                        <Icon className="h-3.5 w-3.5" aria-hidden />
+                      </span>
+                    ) : (
+                      <Avatar name={item.title} size="sm" />
+                    )}
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-sm font-medium text-ink-primary">{item.title}</span>
                       {item.subtitle && <span className="block truncate text-xs text-ink-tertiary">{item.subtitle}</span>}

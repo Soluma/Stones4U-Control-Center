@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { Plus, CheckSquare } from "lucide-react";
+import { Plus, CheckSquare, Search } from "lucide-react";
 import { Badge, StatusDot } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Dialog } from "@/components/ui/Dialog";
@@ -72,6 +72,8 @@ export function TasksList({ initialTab, isAdmin, canCreate }: { initialTab: stri
   const [assignedToId, setAssignedToId] = useState("");
   const [dueAt, setDueAt] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [query, setQuery] = useState("");
+  const [sortBy, setSortBy] = useState<"dueAt" | "priority" | "createdAt">("dueAt");
 
   const tabs = isAdmin ? [...TAB_ITEMS, { key: "all", label: "Alle taken" }] : TAB_ITEMS;
 
@@ -119,9 +121,21 @@ export function TasksList({ initialTab, isAdmin, canCreate }: { initialTab: stri
     await refresh();
   }
 
+  const priorityRank: Record<Task["priority"], number> = { URGENT: 0, HIGH: 1, NORMAL: 2, LOW: 3 };
+  const filteredTasks = (tasks ?? [])
+    .filter((task) => task.title.toLowerCase().includes(query.trim().toLowerCase()))
+    .slice()
+    .sort((a, b) => {
+      if (sortBy === "priority") return priorityRank[a.priority] - priorityRank[b.priority];
+      if (sortBy === "createdAt") return b.id.localeCompare(a.id); // stable-ish fallback; list already arrives sorted per filter
+      const aDue = a.dueAt ? new Date(a.dueAt).getTime() : Infinity;
+      const bDue = b.dueAt ? new Date(b.dueAt).getTime() : Infinity;
+      return aDue - bDue;
+    });
+
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between gap-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <Tabs items={tabs} active={tab} onSelect={setTab} />
         {canCreate && (
           <Button variant="secondary" size="sm" icon={<Plus className="h-3.5 w-3.5" />} onClick={() => setDialogOpen(true)} className="shrink-0">
@@ -130,19 +144,38 @@ export function TasksList({ initialTab, isAdmin, canCreate }: { initialTab: stri
         )}
       </div>
 
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative max-w-xs flex-1">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-ink-tertiary" aria-hidden />
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Zoek op titel…"
+            className="cc-input py-1.5 pl-8 text-sm"
+          />
+        </div>
+        <select value={sortBy} onChange={(e) => setSortBy(e.target.value as typeof sortBy)} className="cc-input w-auto py-1.5 text-sm">
+          <option value="dueAt">Sorteer: deadline</option>
+          <option value="priority">Sorteer: prioriteit</option>
+          <option value="createdAt">Sorteer: nieuwste eerst</option>
+        </select>
+      </div>
+
       {tasks === null && <SkeletonList rows={4} />}
-      {tasks !== null && tasks.length === 0 && (
+      {tasks !== null && filteredTasks.length === 0 && (
         <EmptyState icon={<CheckSquare className="h-5 w-5" />} title="Geen taken" description="Er zijn hier geen taken te tonen." />
       )}
 
-      {tasks !== null && tasks.length > 0 && (
+      {tasks !== null && filteredTasks.length > 0 && (
       <div className="cc-card divide-y divide-border-subtle">
-        {tasks.map((task) => {
+        {filteredTasks.map((task) => {
           const overdue = task.dueAt && new Date(task.dueAt) < new Date() && task.status !== "DONE" && task.status !== "CANCELLED";
           return (
             <div key={task.id} className="cc-table-row flex items-center justify-between gap-4 px-4 py-3">
               <div className="min-w-0">
-                <p className="truncate text-sm font-medium text-ink-primary">{task.title}</p>
+                <Link href={`/tasks/${task.id}`} className="block truncate text-sm font-medium text-ink-primary hover:underline">
+                  {task.title}
+                </Link>
                 <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-ink-tertiary">
                   <StatusDot tone={PRIORITY_TONE[task.priority]}>{PRIORITY_LABEL[task.priority]}</StatusDot>
                   {task.customerProfile && (
