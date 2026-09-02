@@ -1,15 +1,23 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { UserPlus } from "lucide-react";
+import { Avatar } from "@/components/ui/Avatar";
 import { Badge } from "@/components/ui/Badge";
+import { Button } from "@/components/ui/Button";
+import { Dialog } from "@/components/ui/Dialog";
+import { Input, Select } from "@/components/ui/Input";
+import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell } from "@/components/ui/Table";
 import { formatDate } from "@/lib/format";
 
 type Role = "ADMIN" | "AGENT" | "VIEWER";
 type User = { id: string; email: string; name: string; role: Role; active: boolean; lastLoginAt: string | null; createdAt: string };
 
+const ROLE_LABEL: Record<Role, string> = { ADMIN: "Beheerder", AGENT: "Medewerker", VIEWER: "Alleen-lezen" };
+
 export function UsersAdmin({ currentUserId }: { currentUserId: string }) {
   const [users, setUsers] = useState<User[] | null>(null);
-  const [showForm, setShowForm] = useState(false);
+  const [dialogOpen, setDialogOpen] = useState(false);
   const [form, setForm] = useState({ email: "", name: "", password: "", role: "AGENT" as Role });
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -39,7 +47,7 @@ export function UsersAdmin({ currentUserId }: { currentUserId: string }) {
       return;
     }
     setForm({ email: "", name: "", password: "", role: "AGENT" });
-    setShowForm(false);
+    setDialogOpen(false);
     setSubmitting(false);
     await refresh();
   }
@@ -65,91 +73,91 @@ export function UsersAdmin({ currentUserId }: { currentUserId: string }) {
 
   return (
     <div className="space-y-4">
-      {!showForm ? (
-        <button onClick={() => setShowForm(true)} className="cc-btn-primary">
-          + Gebruiker toevoegen
-        </button>
-      ) : (
-        <div className="cc-card space-y-3 p-4">
-          <div className="grid gap-3 sm:grid-cols-2">
-            <input placeholder="Naam" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="cc-input" />
-            <input
-              placeholder="E-mailadres"
-              type="email"
-              value={form.email}
-              onChange={(e) => setForm({ ...form, email: e.target.value })}
-              className="cc-input"
-            />
-            <input
-              placeholder="Tijdelijk wachtwoord (min. 10 tekens)"
-              type="password"
-              value={form.password}
-              onChange={(e) => setForm({ ...form, password: e.target.value })}
-              className="cc-input"
-            />
-            <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value as Role })} className="cc-input">
-              <option value="ADMIN">Beheerder</option>
-              <option value="AGENT">Medewerker</option>
-              <option value="VIEWER">Alleen-lezen</option>
-            </select>
-          </div>
-          {error && <p className="rounded-md bg-danger-50 px-3 py-2 text-sm text-danger-700">{error}</p>}
-          <div className="flex justify-end gap-2">
-            <button onClick={() => setShowForm(false)} className="cc-btn-secondary">
-              Annuleren
-            </button>
-            <button onClick={handleCreate} disabled={submitting} className="cc-btn-primary">
-              {submitting ? "Aanmaken…" : "Gebruiker aanmaken"}
-            </button>
-          </div>
-        </div>
-      )}
+      <Button variant="primary" icon={<UserPlus className="h-3.5 w-3.5" />} onClick={() => setDialogOpen(true)}>
+        Gebruiker toevoegen
+      </Button>
 
-      <div className="cc-card overflow-hidden">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-border-subtle text-left text-xs text-ink-tertiary">
-              <th className="px-4 py-2.5 font-medium">Naam</th>
-              <th className="px-4 py-2.5 font-medium">E-mail</th>
-              <th className="px-4 py-2.5 font-medium">Rol</th>
-              <th className="px-4 py-2.5 font-medium">Laatst ingelogd</th>
-              <th className="px-4 py-2.5 font-medium" />
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-border-subtle">
-            {users?.map((u) => (
-              <tr key={u.id} className={!u.active ? "opacity-50" : undefined}>
-                <td className="px-4 py-2.5 font-medium text-ink-primary">{u.name}</td>
-                <td className="px-4 py-2.5 text-ink-secondary">{u.email}</td>
-                <td className="px-4 py-2.5">
-                  <select
-                    value={u.role}
-                    disabled={u.id === currentUserId}
-                    onChange={(e) => handleRoleChange(u.id, e.target.value as Role)}
-                    className="rounded-md border border-border bg-surface px-2 py-1 text-xs"
-                  >
-                    <option value="ADMIN">Beheerder</option>
-                    <option value="AGENT">Medewerker</option>
-                    <option value="VIEWER">Alleen-lezen</option>
-                  </select>
-                </td>
-                <td className="px-4 py-2.5 text-ink-secondary">{formatDate(u.lastLoginAt)}</td>
-                <td className="px-4 py-2.5 text-right">
-                  {u.active ? (
-                    u.id !== currentUserId && (
-                      <button onClick={() => handleDeactivate(u.id)} className="cc-btn-ghost text-xs text-danger-500">
-                        Deactiveren
-                      </button>
-                    )
-                  ) : (
-                    <Badge tone="neutral">Gedeactiveerd</Badge>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      <Table>
+        <TableHead>
+          <TableHeaderCell>Naam</TableHeaderCell>
+          <TableHeaderCell>E-mail</TableHeaderCell>
+          <TableHeaderCell>Rol</TableHeaderCell>
+          <TableHeaderCell>Laatst ingelogd</TableHeaderCell>
+          <TableHeaderCell className="text-right">Status</TableHeaderCell>
+        </TableHead>
+        <TableBody>
+          {users?.map((u) => (
+            <TableRow key={u.id} className={!u.active ? "opacity-50" : undefined}>
+              <TableCell>
+                <div className="flex items-center gap-2.5">
+                  <Avatar name={u.name} size="sm" />
+                  <span className="font-medium text-ink-primary">{u.name}</span>
+                </div>
+              </TableCell>
+              <TableCell className="text-ink-secondary">{u.email}</TableCell>
+              <TableCell>
+                <select
+                  value={u.role}
+                  disabled={u.id === currentUserId}
+                  onChange={(e) => handleRoleChange(u.id, e.target.value as Role)}
+                  className="rounded-md border border-border bg-surface px-2 py-1 text-xs disabled:opacity-50"
+                >
+                  <option value="ADMIN">Beheerder</option>
+                  <option value="AGENT">Medewerker</option>
+                  <option value="VIEWER">Alleen-lezen</option>
+                </select>
+              </TableCell>
+              <TableCell className="text-ink-secondary">{formatDate(u.lastLoginAt)}</TableCell>
+              <TableCell className="text-right">
+                {u.active ? (
+                  u.id !== currentUserId && (
+                    <Button variant="ghost" size="sm" onClick={() => handleDeactivate(u.id)} className="!text-danger-500">
+                      Deactiveren
+                    </Button>
+                  )
+                ) : (
+                  <Badge tone="neutral">Gedeactiveerd</Badge>
+                )}
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+
+      <Dialog
+        open={dialogOpen}
+        onClose={() => setDialogOpen(false)}
+        title="Gebruiker toevoegen"
+        description={`Rol: ${ROLE_LABEL[form.role]}`}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setDialogOpen(false)}>
+              Annuleren
+            </Button>
+            <Button variant="primary" loading={submitting} onClick={handleCreate}>
+              Gebruiker aanmaken
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          <Input label="Naam" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} autoFocus />
+          <Input label="E-mailadres" type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
+          <Input
+            label="Tijdelijk wachtwoord"
+            hint="Minimaal 10 tekens"
+            type="password"
+            value={form.password}
+            onChange={(e) => setForm({ ...form, password: e.target.value })}
+          />
+          <Select label="Rol" value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value as Role })}>
+            <option value="ADMIN">Beheerder</option>
+            <option value="AGENT">Medewerker</option>
+            <option value="VIEWER">Alleen-lezen</option>
+          </Select>
+          {error && <p className="rounded-md bg-danger-50 px-3 py-2 text-sm text-danger-700">{error}</p>}
+        </div>
+      </Dialog>
     </div>
   );
 }

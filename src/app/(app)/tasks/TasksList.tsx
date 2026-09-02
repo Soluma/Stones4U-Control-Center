@@ -2,8 +2,14 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { Badge } from "@/components/ui/Badge";
+import { Plus, CheckSquare } from "lucide-react";
+import { Badge, StatusDot } from "@/components/ui/Badge";
+import { Button } from "@/components/ui/Button";
+import { Dialog } from "@/components/ui/Dialog";
+import { Input, Select } from "@/components/ui/Input";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { SkeletonList } from "@/components/ui/Skeleton";
+import { Tabs } from "@/components/ui/Tabs";
 import { formatDate } from "@/lib/format";
 
 type Task = {
@@ -17,6 +23,8 @@ type Task = {
   customerProfile: { id: string; displayName: string | null; companyName: string | null } | null;
 };
 
+type AssignableUser = { id: string; name: string };
+
 const STATUS_TONE: Record<Task["status"], "neutral" | "accent" | "success" | "danger" | "warning"> = {
   OPEN: "neutral",
   IN_PROGRESS: "accent",
@@ -25,18 +33,47 @@ const STATUS_TONE: Record<Task["status"], "neutral" | "accent" | "success" | "da
   CANCELLED: "danger",
 };
 
-const TABS: { key: string; label: string }[] = [
+const STATUS_LABEL: Record<Task["status"], string> = {
+  OPEN: "Open",
+  IN_PROGRESS: "Bezig",
+  WAITING: "Wacht",
+  DONE: "Afgerond",
+  CANCELLED: "Geannuleerd",
+};
+
+const PRIORITY_TONE: Record<Task["priority"], "neutral" | "warning" | "danger"> = {
+  LOW: "neutral",
+  NORMAL: "neutral",
+  HIGH: "warning",
+  URGENT: "danger",
+};
+
+const PRIORITY_LABEL: Record<Task["priority"], string> = {
+  LOW: "Laag",
+  NORMAL: "Normaal",
+  HIGH: "Hoog",
+  URGENT: "Urgent",
+};
+
+const TAB_ITEMS = [
   { key: "mine", label: "Mijn taken" },
   { key: "assigned", label: "Toegewezen" },
   { key: "created", label: "Aangemaakt" },
   { key: "overdue", label: "Achterstallig" },
 ];
 
-export function TasksList({ initialTab, isAdmin }: { initialTab: string; isAdmin: boolean }) {
+export function TasksList({ initialTab, isAdmin, canCreate }: { initialTab: string; isAdmin: boolean; canCreate: boolean }) {
   const [tab, setTab] = useState(initialTab);
   const [tasks, setTasks] = useState<Task[] | null>(null);
+  const [users, setUsers] = useState<AssignableUser[]>([]);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [title, setTitle] = useState("");
+  const [priority, setPriority] = useState<Task["priority"]>("NORMAL");
+  const [assignedToId, setAssignedToId] = useState("");
+  const [dueAt, setDueAt] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
-  const tabs = isAdmin ? [...TABS, { key: "all", label: "Alle taken" }] : TABS;
+  const tabs = isAdmin ? [...TAB_ITEMS, { key: "all", label: "Alle taken" }] : TAB_ITEMS;
 
   const refresh = useCallback(async () => {
     setTasks(null);
@@ -49,6 +86,14 @@ export function TasksList({ initialTab, isAdmin }: { initialTab: string; isAdmin
     void refresh();
   }, [refresh]);
 
+  useEffect(() => {
+    if (canCreate) {
+      fetch("/api/users/assignable")
+        .then((r) => r.json())
+        .then((data) => setUsers(data.users ?? []));
+    }
+  }, [canCreate]);
+
   async function handleComplete(taskId: string) {
     await fetch(`/api/tasks/${taskId}`, {
       method: "PATCH",
@@ -58,55 +103,115 @@ export function TasksList({ initialTab, isAdmin }: { initialTab: string; isAdmin
     await refresh();
   }
 
+  async function handleCreate() {
+    if (title.trim().length === 0 || !assignedToId) return;
+    setSubmitting(true);
+    await fetch("/api/tasks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title, priority, assignedToId, dueAt: dueAt ? new Date(dueAt).toISOString() : undefined }),
+    });
+    setTitle("");
+    setPriority("NORMAL");
+    setDueAt("");
+    setDialogOpen(false);
+    setSubmitting(false);
+    await refresh();
+  }
+
   return (
     <div className="space-y-4">
-      <div className="flex gap-1 border-b border-border-subtle">
-        {tabs.map((t) => (
-          <button
-            key={t.key}
-            onClick={() => setTab(t.key)}
-            className={`px-3 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px ${
-              tab === t.key ? "border-accent-500 text-ink-primary" : "border-transparent text-ink-tertiary hover:text-ink-primary"
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
+      <div className="flex items-center justify-between gap-4">
+        <Tabs items={tabs} active={tab} onSelect={setTab} />
+        {canCreate && (
+          <Button variant="secondary" size="sm" icon={<Plus className="h-3.5 w-3.5" />} onClick={() => setDialogOpen(true)} className="shrink-0">
+            Nieuwe taak
+          </Button>
+        )}
       </div>
 
-      {tasks === null && <p className="text-sm text-ink-tertiary">Taken laden…</p>}
-      {tasks !== null && tasks.length === 0 && <EmptyState title="Geen taken" description="Er zijn hier geen taken te tonen." />}
+      {tasks === null && <SkeletonList rows={4} />}
+      {tasks !== null && tasks.length === 0 && (
+        <EmptyState icon={<CheckSquare className="h-5 w-5" />} title="Geen taken" description="Er zijn hier geen taken te tonen." />
+      )}
 
+      {tasks !== null && tasks.length > 0 && (
       <div className="cc-card divide-y divide-border-subtle">
-        {tasks?.map((task) => {
+        {tasks.map((task) => {
           const overdue = task.dueAt && new Date(task.dueAt) < new Date() && task.status !== "DONE" && task.status !== "CANCELLED";
           return (
-            <div key={task.id} className="flex items-center justify-between gap-4 px-4 py-3">
+            <div key={task.id} className="cc-table-row flex items-center justify-between gap-4 px-4 py-3">
               <div className="min-w-0">
                 <p className="truncate text-sm font-medium text-ink-primary">{task.title}</p>
-                <p className="text-xs text-ink-tertiary">
+                <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-ink-tertiary">
+                  <StatusDot tone={PRIORITY_TONE[task.priority]}>{PRIORITY_LABEL[task.priority]}</StatusDot>
                   {task.customerProfile && (
-                    <Link href={`/customers/${task.customerProfile.id}`} className="text-accent-600 hover:underline">
-                      {task.customerProfile.displayName ?? task.customerProfile.companyName ?? "Klant"}
-                    </Link>
+                    <>
+                      <span>·</span>
+                      <Link href={`/customers/${task.customerProfile.id}`} className="text-accent-600 hover:underline">
+                        {task.customerProfile.displayName ?? task.customerProfile.companyName ?? "Klant"}
+                      </Link>
+                    </>
                   )}
-                  {task.customerProfile && " · "}
-                  {task.assignedTo.name} · {task.dueAt ? formatDate(task.dueAt) : "geen deadline"}
-                  {overdue && <span className="ml-1 font-medium text-danger-500">achterstallig</span>}
-                </p>
+                  <span>·</span>
+                  <span>{task.assignedTo.name}</span>
+                  <span>·</span>
+                  <span className={overdue ? "font-medium text-danger-500" : undefined}>
+                    {task.dueAt ? formatDate(task.dueAt) : "geen deadline"}
+                    {overdue && " (achterstallig)"}
+                  </span>
+                </div>
               </div>
-              <div className="flex items-center gap-2 shrink-0">
-                <Badge tone={STATUS_TONE[task.status]}>{task.status}</Badge>
+              <div className="flex shrink-0 items-center gap-2">
+                <Badge tone={STATUS_TONE[task.status]}>{STATUS_LABEL[task.status]}</Badge>
                 {task.status !== "DONE" && task.status !== "CANCELLED" && (
-                  <button onClick={() => handleComplete(task.id)} className="cc-btn-ghost text-xs">
+                  <Button variant="ghost" size="sm" onClick={() => handleComplete(task.id)}>
                     Afronden
-                  </button>
+                  </Button>
                 )}
               </div>
             </div>
           );
         })}
       </div>
+      )}
+
+      <Dialog
+        open={dialogOpen}
+        onClose={() => setDialogOpen(false)}
+        title="Nieuwe taak"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setDialogOpen(false)}>
+              Annuleren
+            </Button>
+            <Button variant="primary" loading={submitting} disabled={title.trim().length === 0 || !assignedToId} onClick={handleCreate}>
+              Taak aanmaken
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          <Input label="Titel" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Taakomschrijving" autoFocus />
+          <div className="grid grid-cols-2 gap-3">
+            <Select label="Toewijzen aan" value={assignedToId} onChange={(e) => setAssignedToId(e.target.value)}>
+              <option value="">Kies medewerker…</option>
+              {users.map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.name}
+                </option>
+              ))}
+            </Select>
+            <Select label="Prioriteit" value={priority} onChange={(e) => setPriority(e.target.value as Task["priority"])}>
+              <option value="LOW">Laag</option>
+              <option value="NORMAL">Normaal</option>
+              <option value="HIGH">Hoog</option>
+              <option value="URGENT">Urgent</option>
+            </Select>
+          </div>
+          <Input label="Deadline (optioneel)" type="date" value={dueAt} onChange={(e) => setDueAt(e.target.value)} />
+        </div>
+      </Dialog>
     </div>
   );
 }

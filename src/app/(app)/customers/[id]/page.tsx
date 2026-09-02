@@ -4,8 +4,8 @@ import { getCustomer360 } from "@/modules/crm/customer-profile.service";
 import { getCustomerTimeline } from "@/modules/activity/timeline";
 import { normalizeDutchPhone } from "@/lib/phone";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { Tabs } from "@/components/ui/Tabs";
 import { CustomerHeader } from "./CustomerHeader";
-import { Tabs } from "./Tabs";
 import { OrdersTable } from "./OrdersTable";
 import { ActivityTimelineView } from "./ActivityTimelineView";
 import { AdapterStatusBanner } from "./AdapterStatusBanner";
@@ -40,11 +40,18 @@ export default async function CustomerDetailPage({ params, searchParams }: PageP
   if (!data) notFound();
 
   const canEdit = user.role !== "VIEWER";
+  const tabItems = [
+    { key: "overview", label: "Overzicht" },
+    { key: "orders", label: "Orders" },
+    { key: "activity", label: "Activiteit" },
+    { key: "notes", label: "Notities" },
+    { key: "tasks", label: "Taken" },
+  ];
 
   return (
     <div className="space-y-5">
-      <CustomerHeader data={data} viewerRole={user.role} />
-      <Tabs customerId={id} active={tab} />
+      <CustomerHeader data={data} viewerRole={user.role} id={id} />
+      <Tabs items={tabItems} active={tab} hrefFor={(key) => `/customers/${id}?tab=${key}`} />
 
       {tab === "overview" && (
         <div className="grid gap-5 md:grid-cols-2">

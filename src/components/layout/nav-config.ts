@@ -1,6 +1,22 @@
+import {
+  LayoutDashboard,
+  Users,
+  CheckSquare,
+  FileText,
+  ShoppingCart,
+  Truck,
+  Factory,
+  PackageCheck,
+  LifeBuoy,
+  UserCog,
+  Settings,
+  type LucideIcon,
+} from "lucide-react";
+
 export type NavItem = {
   label: string;
   href?: string;
+  icon: LucideIcon;
   comingSoon?: boolean;
 };
 
@@ -14,35 +30,35 @@ export type NavSection = {
 // fasering) but render as clearly disabled "Binnenkort" rows, never as a
 // fake-functional page.
 export const NAV_SECTIONS: NavSection[] = [
-  { label: null, items: [{ label: "Dashboard", href: "/" }] },
+  { label: null, items: [{ label: "Dashboard", href: "/", icon: LayoutDashboard }] },
   {
     label: "CRM",
     items: [
-      { label: "Klanten", href: "/customers" },
-      { label: "Taken", href: "/tasks" },
+      { label: "Klanten", href: "/customers", icon: Users },
+      { label: "Taken", href: "/tasks", icon: CheckSquare },
     ],
   },
   {
     label: "Sales",
     items: [
-      { label: "Offertes", comingSoon: true },
-      { label: "Orders", comingSoon: true },
+      { label: "Offertes", icon: FileText, comingSoon: true },
+      { label: "Orders", icon: ShoppingCart, comingSoon: true },
     ],
   },
   {
     label: "Operations",
     items: [
-      { label: "Inkoop", comingSoon: true },
-      { label: "Productie", comingSoon: true },
-      { label: "Leveringen", comingSoon: true },
+      { label: "Inkoop", icon: Truck, comingSoon: true },
+      { label: "Productie", icon: Factory, comingSoon: true },
+      { label: "Leveringen", icon: PackageCheck, comingSoon: true },
     ],
   },
-  { label: "Service", items: [{ label: "Service", comingSoon: true }] },
+  { label: "Service", items: [{ label: "Service", icon: LifeBuoy, comingSoon: true }] },
   {
     label: "Beheer",
     items: [
-      { label: "Gebruikers", href: "/admin/users" },
-      { label: "Instellingen", href: "/settings" },
+      { label: "Gebruikers", href: "/admin/users", icon: UserCog },
+      { label: "Instellingen", href: "/settings", icon: Settings },
     ],
   },
 ];

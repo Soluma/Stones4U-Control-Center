@@ -1,9 +1,12 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { Search } from "lucide-react";
+import { Avatar } from "@/components/ui/Avatar";
 import { EmptyState } from "@/components/ui/EmptyState";
-import { Skeleton } from "@/components/ui/Skeleton";
+import { SkeletonList } from "@/components/ui/Skeleton";
+import { cn } from "@/lib/cn";
 
 type SearchResult = {
   shopify: {
@@ -25,11 +28,11 @@ export function CustomerSearch() {
   const [activeIndex, setActiveIndex] = useState(0);
   const [opening, setOpening] = useState<string | null>(null);
   const router = useRouter();
-  const rowRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
   useEffect(() => {
     if (term.trim().length < 2) {
       setResults([]);
+      setError(null);
       return;
     }
     setLoading(true);
@@ -88,26 +91,26 @@ export function CustomerSearch() {
 
   return (
     <div className="space-y-4">
-      <input
-        autoFocus
-        value={term}
-        onChange={(e) => setTerm(e.target.value)}
-        onKeyDown={handleKeyDown}
-        placeholder="Zoek op naam, bedrijf, e-mail of telefoonnummer…"
-        className="cc-input text-base py-3"
-      />
+      <div className="relative">
+        <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-tertiary" aria-hidden />
+        <input
+          autoFocus
+          value={term}
+          onChange={(e) => setTerm(e.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder="Zoek op naam, bedrijf, e-mail of telefoonnummer…"
+          aria-label="Klanten zoeken"
+          className="cc-input py-3 pl-10 text-base"
+        />
+      </div>
 
-      {error && <p className="rounded-md bg-danger-50 px-3 py-2 text-sm text-danger-700">{error}</p>}
-
-      {loading && (
-        <div className="space-y-2">
-          {[0, 1, 2].map((i) => (
-            <Skeleton key={i} className="h-14 w-full" />
-          ))}
-        </div>
+      {error && (
+        <EmptyState tone="error" title="Zoeken mislukt" description={error} />
       )}
 
-      {!loading && term.trim().length >= 2 && results.length === 0 && !error && (
+      {loading && <SkeletonList rows={4} />}
+
+      {!loading && !error && term.trim().length >= 2 && results.length === 0 && (
         <EmptyState
           title="Geen klanten gevonden"
           description="Probeer te zoeken op naam, e-mailadres, telefoonnummer, of bedrijfsnaam."
@@ -115,32 +118,34 @@ export function CustomerSearch() {
       )}
 
       {!loading && term.trim().length < 2 && (
-        <EmptyState title="Zoek een klant" description="Typ minimaal 2 tekens om te beginnen met zoeken." />
+        <EmptyState icon={<Search className="h-5 w-5" />} title="Zoek een klant" description="Typ minimaal 2 tekens om te beginnen met zoeken." />
       )}
 
-      {results.length > 0 && (
-        <div className="cc-card divide-y divide-border-subtle overflow-hidden">
+      {!loading && results.length > 0 && (
+        <div role="listbox" aria-label="Zoekresultaten" className="cc-card divide-y divide-border-subtle overflow-hidden">
           {results.map((result, index) => (
             <button
               key={result.shopify.gid}
-              ref={(el) => {
-                rowRefs.current[index] = el;
-              }}
+              role="option"
+              aria-selected={index === activeIndex}
               onClick={() => openCustomer(result)}
+              onMouseEnter={() => setActiveIndex(index)}
               disabled={opening === result.shopify.gid}
-              className={`flex w-full items-center justify-between px-4 py-3 text-left transition-colors ${
-                index === activeIndex ? "bg-accent-50" : "hover:bg-canvas"
-              }`}
+              className={cn(
+                "flex w-full items-center gap-3 px-4 py-3 text-left transition-colors disabled:opacity-60",
+                index === activeIndex ? "bg-accent-50" : "hover:bg-surface-hover",
+              )}
             >
-              <div>
-                <p className="text-sm font-medium text-ink-primary">{result.shopify.displayName}</p>
-                <p className="text-xs text-ink-tertiary">
-                  {[result.shopify.company, result.shopify.email, result.shopify.phone].filter(Boolean).join(" · ")}
+              <Avatar name={result.shopify.displayName} />
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-medium text-ink-primary">{result.shopify.displayName}</p>
+                <p className="truncate text-xs text-ink-tertiary">
+                  {[result.shopify.company, result.shopify.email, result.shopify.phone].filter(Boolean).join(" · ") || "Geen contactgegevens"}
                 </p>
               </div>
-              <div className="flex items-center gap-3">
-                <span className="text-xs text-ink-tertiary">{result.shopify.numberOfOrders} orders</span>
-                {opening === result.shopify.gid && <span className="text-xs text-ink-tertiary">Openen…</span>}
+              <div className="shrink-0 text-right">
+                <p className="text-xs font-medium tabular-nums text-ink-secondary">{result.shopify.numberOfOrders}</p>
+                <p className="text-[10px] text-ink-tertiary">orders</p>
               </div>
             </button>
           ))}

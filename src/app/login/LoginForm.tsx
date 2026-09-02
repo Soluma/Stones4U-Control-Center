@@ -2,6 +2,8 @@
 
 import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
+import { Button } from "@/components/ui/Button";
+import { Input } from "@/components/ui/Input";
 
 export function LoginForm() {
   const router = useRouter();
@@ -34,42 +36,32 @@ export function LoginForm() {
 
   return (
     <form onSubmit={handleSubmit} className="w-full max-w-sm space-y-4">
-      <div>
-        <label className="cc-label" htmlFor="email">
-          E-mailadres
-        </label>
-        <input
-          id="email"
-          type="email"
-          required
-          autoFocus
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          className="cc-input"
-          placeholder="naam@stones4u.eu"
-        />
-      </div>
-      <div>
-        <label className="cc-label" htmlFor="password">
-          Wachtwoord
-        </label>
-        <input
-          id="password"
-          type="password"
-          required
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          className="cc-input"
-        />
-      </div>
+      <Input
+        label="E-mailadres"
+        id="email"
+        type="email"
+        required
+        autoFocus
+        value={email}
+        onChange={(e) => setEmail(e.target.value)}
+        placeholder="naam@stones4u.eu"
+      />
+      <Input
+        label="Wachtwoord"
+        id="password"
+        type="password"
+        required
+        value={password}
+        onChange={(e) => setPassword(e.target.value)}
+      />
       {error && (
         <p role="alert" className="rounded-md bg-danger-50 px-3 py-2 text-sm text-danger-700">
           {error}
         </p>
       )}
-      <button type="submit" disabled={loading} className="cc-btn-primary w-full">
-        {loading ? "Bezig met inloggen…" : "Inloggen"}
-      </button>
+      <Button type="submit" variant="primary" loading={loading} className="w-full">
+        Inloggen
+      </Button>
     </form>
   );
 }

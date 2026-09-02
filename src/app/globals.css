@@ -24,27 +24,48 @@
 
   .cc-input {
     @apply w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-ink-primary placeholder:text-ink-tertiary
-      focus:outline-none focus:ring-2 focus:ring-accent-400 focus:border-accent-400 transition-colors;
+      focus:outline-none focus:ring-2 focus:ring-accent-400 focus:border-accent-400 transition-colors
+      disabled:opacity-50 disabled:pointer-events-none;
   }
 
   .cc-btn {
     @apply inline-flex items-center justify-center gap-1.5 rounded-md text-sm font-medium transition-colors
-      focus:outline-none focus:ring-2 focus:ring-accent-400 focus:ring-offset-1 disabled:opacity-50 disabled:pointer-events-none;
+      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-400 focus-visible:ring-offset-1
+      disabled:opacity-50 disabled:pointer-events-none whitespace-nowrap;
   }
 
   .cc-btn-primary {
-    @apply cc-btn bg-accent-500 text-white hover:bg-accent-600 px-3.5 py-2;
+    @apply cc-btn bg-accent-500 text-white hover:bg-accent-600 active:bg-accent-700 px-3.5 py-2;
   }
 
   .cc-btn-secondary {
-    @apply cc-btn bg-surface text-ink-primary border border-border hover:bg-canvas px-3.5 py-2;
+    @apply cc-btn bg-surface text-ink-primary border border-border hover:bg-surface-hover active:bg-border-subtle px-3.5 py-2;
   }
 
   .cc-btn-ghost {
-    @apply cc-btn text-ink-secondary hover:bg-canvas hover:text-ink-primary px-2.5 py-1.5;
+    @apply cc-btn text-ink-secondary hover:bg-surface-hover hover:text-ink-primary px-2.5 py-1.5;
+  }
+
+  .cc-btn-danger {
+    @apply cc-btn bg-danger-500 text-white hover:bg-danger-700 px-3.5 py-2;
+  }
+
+  .cc-icon-btn {
+    @apply inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-tertiary transition-colors
+      hover:bg-surface-hover hover:text-ink-primary
+      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-400
+      disabled:opacity-40 disabled:pointer-events-none;
   }
 
   .cc-label {
     @apply text-xs font-medium text-ink-secondary mb-1.5 block;
+  }
+
+  .cc-table-row {
+    @apply transition-colors hover:bg-surface-hover;
+  }
+
+  .cc-focus-ring {
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-400 focus-visible:ring-offset-1;
   }
 }

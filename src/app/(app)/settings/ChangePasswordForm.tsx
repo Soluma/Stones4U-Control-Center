@@ -1,6 +1,8 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
+import { Button } from "@/components/ui/Button";
+import { Input } from "@/components/ui/Input";
 
 export function ChangePasswordForm() {
   const [currentPassword, setCurrentPassword] = useState("");
@@ -32,22 +34,16 @@ export function ChangePasswordForm() {
 
   return (
     <form onSubmit={handleSubmit} className="cc-card max-w-sm space-y-3 p-5">
-      <div>
-        <label className="cc-label">Huidig wachtwoord</label>
-        <input type="password" required value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} className="cc-input" />
-      </div>
-      <div>
-        <label className="cc-label">Nieuw wachtwoord</label>
-        <input type="password" required value={newPassword} onChange={(e) => setNewPassword(e.target.value)} className="cc-input" />
-      </div>
+      <Input label="Huidig wachtwoord" type="password" required value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} />
+      <Input label="Nieuw wachtwoord" type="password" required hint="Minimaal 10 tekens" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} />
       {status && (
         <p className={`rounded-md px-3 py-2 text-sm ${status.type === "error" ? "bg-danger-50 text-danger-700" : "bg-success-50 text-success-700"}`}>
           {status.message}
         </p>
       )}
-      <button type="submit" disabled={submitting} className="cc-btn-primary">
-        {submitting ? "Bezig…" : "Wachtwoord wijzigen"}
-      </button>
+      <Button type="submit" variant="primary" loading={submitting}>
+        Wachtwoord wijzigen
+      </Button>
     </form>
   );
 }

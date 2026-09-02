@@ -1,3 +1,4 @@
+import { Info } from "lucide-react";
 import { createTelephonyAdapter } from "@/integrations/telephony/adapter";
 import { createExactHistoryAdapter } from "@/integrations/exact/adapter";
 
@@ -14,9 +15,12 @@ export function AdapterStatusBanner() {
   if (telephony.available && exact.available) return null;
 
   return (
-    <div className="rounded-md border border-border-subtle bg-canvas px-3 py-2 text-xs text-ink-tertiary">
-      {!telephony.available && <p>Gespreksgeschiedenis (TelefoonSysteem) is nog niet gekoppeld.</p>}
-      {!exact.available && <p>Facturatiehistorie (Exact) is nog niet gekoppeld.</p>}
+    <div className="flex items-start gap-2 rounded-md border border-border-subtle bg-canvas px-3 py-2 text-xs text-ink-tertiary">
+      <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
+      <div className="space-y-0.5">
+        {!telephony.available && <p>Gespreksgeschiedenis (TelefoonSysteem) is nog niet gekoppeld.</p>}
+        {!exact.available && <p>Facturatiehistorie (Exact) is nog niet gekoppeld.</p>}
+      </div>
     </div>
   );
 }

@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect } from "react";
+import { AlertTriangle } from "lucide-react";
+import { Button } from "@/components/ui/Button";
 
 // Root error boundary — catches any unhandled error from a Server/Client
 // Component render (e.g. a database outage) so the user always sees a safe,
@@ -17,13 +19,16 @@ export default function GlobalError({ error, reset }: { error: Error & { digest?
   return (
     <div className="flex min-h-screen items-center justify-center bg-canvas px-4">
       <div className="w-full max-w-sm text-center">
+        <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-danger-50 text-danger-500">
+          <AlertTriangle className="h-5 w-5" aria-hidden />
+        </div>
         <p className="text-lg font-semibold text-ink-primary">Er is iets misgegaan</p>
         <p className="mt-2 text-sm text-ink-tertiary">
           Probeer het opnieuw. Als dit blijft gebeuren, neem contact op met beheer.
         </p>
-        <button onClick={() => reset()} className="cc-btn-primary mt-4">
+        <Button variant="primary" onClick={() => reset()} className="mt-4">
           Opnieuw proberen
-        </button>
+        </Button>
       </div>
     </div>
   );

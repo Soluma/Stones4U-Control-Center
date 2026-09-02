@@ -1,7 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { StickyNote, Pencil, Trash2 } from "lucide-react";
+import { Avatar } from "@/components/ui/Avatar";
+import { Button } from "@/components/ui/Button";
+import { IconButton } from "@/components/ui/IconButton";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { SkeletonList } from "@/components/ui/Skeleton";
 import { RichTextView } from "@/components/ui/RichTextView";
 import { formatDateTime } from "@/lib/format";
 import type { RichTextDoc } from "@/platform/security/rich-text";
@@ -71,59 +76,70 @@ export function NotesPanel({ customerId, canEdit }: { customerId: string; canEdi
             onChange={(e) => setDraft(e.target.value)}
             rows={3}
             placeholder="Nieuwe notitie… (**vet**, *cursief*, `code`, of regels beginnend met &quot;- &quot; voor een lijst)"
-            className="cc-input resize-none"
+            className="cc-input resize-none leading-relaxed"
           />
-          <div className="mt-2 flex justify-end">
-            <button onClick={handleCreate} disabled={submitting || draft.trim().length === 0} className="cc-btn-primary">
-              {submitting ? "Opslaan…" : "Notitie toevoegen"}
-            </button>
+          <div className="mt-2.5 flex justify-end">
+            <Button variant="primary" onClick={handleCreate} loading={submitting} disabled={draft.trim().length === 0}>
+              Notitie toevoegen
+            </Button>
           </div>
         </div>
       )}
 
-      {notes === null && <p className="text-sm text-ink-tertiary">Notities laden…</p>}
+      {notes === null && <SkeletonList rows={2} />}
 
       {notes !== null && notes.length === 0 && (
-        <EmptyState title="Nog geen notities voor deze klant" description="Voeg de eerste notitie hierboven toe." />
+        <EmptyState icon={<StickyNote className="h-5 w-5" />} title="Nog geen notities voor deze klant" description="Voeg de eerste notitie hierboven toe." />
       )}
 
       <div className="space-y-3">
         {notes?.map((note) => (
           <div key={note.id} className="cc-card p-4">
             {editingId === note.id ? (
-              <div className="space-y-2">
-                <textarea value={editDraft} onChange={(e) => setEditDraft(e.target.value)} rows={3} className="cc-input resize-none" />
+              <div className="space-y-2.5">
+                <textarea
+                  value={editDraft}
+                  onChange={(e) => setEditDraft(e.target.value)}
+                  rows={3}
+                  className="cc-input resize-none leading-relaxed"
+                  autoFocus
+                />
                 <div className="flex justify-end gap-2">
-                  <button onClick={() => setEditingId(null)} className="cc-btn-secondary">
+                  <Button variant="secondary" size="sm" onClick={() => setEditingId(null)}>
                     Annuleren
-                  </button>
-                  <button onClick={() => handleUpdate(note.id)} className="cc-btn-primary">
+                  </Button>
+                  <Button variant="primary" size="sm" onClick={() => handleUpdate(note.id)}>
                     Opslaan
-                  </button>
+                  </Button>
                 </div>
               </div>
             ) : (
               <>
                 <RichTextView doc={note.bodyJson} />
                 <div className="mt-3 flex items-center justify-between">
-                  <p className="text-xs text-ink-tertiary">
-                    {note.author.name} · {formatDateTime(note.createdAt)}
-                    {note.editedAt ? " · bewerkt" : ""}
-                  </p>
+                  <div className="flex items-center gap-2">
+                    <Avatar name={note.author.name} size="sm" />
+                    <p className="text-xs text-ink-tertiary">
+                      <span className="font-medium text-ink-secondary">{note.author.name}</span> · {formatDateTime(note.createdAt)}
+                      {note.editedAt ? " · bewerkt" : ""}
+                    </p>
+                  </div>
                   {canEdit && (
-                    <div className="flex gap-2">
-                      <button
+                    <div className="flex gap-1">
+                      <IconButton
+                        icon={<Pencil className="h-3.5 w-3.5" />}
+                        label="Notitie bewerken"
                         onClick={() => {
                           setEditingId(note.id);
                           setEditDraft(note.bodyText);
                         }}
-                        className="cc-btn-ghost text-xs"
-                      >
-                        Bewerken
-                      </button>
-                      <button onClick={() => handleDelete(note.id)} className="cc-btn-ghost text-xs text-danger-500">
-                        Verwijderen
-                      </button>
+                      />
+                      <IconButton
+                        icon={<Trash2 className="h-3.5 w-3.5" />}
+                        label="Notitie verwijderen"
+                        tone="danger"
+                        onClick={() => handleDelete(note.id)}
+                      />
                     </div>
                   )}
                 </div>

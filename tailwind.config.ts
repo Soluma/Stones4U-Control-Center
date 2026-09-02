@@ -18,6 +18,7 @@ const config: Config = {
       colors: {
         canvas: "#fafafa",
         surface: "#ffffff",
+        "surface-hover": "#f6f6f8",
         border: {
           subtle: "#ececed",
           DEFAULT: "#e3e3e6",
@@ -58,10 +59,15 @@ const config: Config = {
           from: { transform: "translateX(8px)", opacity: "0" },
           to: { transform: "translateX(0)", opacity: "1" },
         },
+        "scale-in": {
+          from: { transform: "scale(0.98)", opacity: "0" },
+          to: { transform: "scale(1)", opacity: "1" },
+        },
       },
       animation: {
         "fade-in": "fade-in 120ms ease-out",
         "slide-in-right": "slide-in-right 160ms ease-out",
+        "scale-in": "scale-in 120ms ease-out",
       },
     },
   },

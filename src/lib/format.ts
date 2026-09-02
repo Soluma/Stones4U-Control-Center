@@ -40,3 +40,12 @@ export function formatDateTime(value: string | Date | null | undefined): string 
     timeZone: AMSTERDAM_TZ,
   }).format(date);
 }
+
+/** Time-only (HH:mm), Europe/Amsterdam — used where the date is already
+ * shown separately (e.g. a day-grouped Activity Timeline), so parsing
+ * `formatDateTime`'s output string was never needed for this. */
+export function formatTime(value: string | Date | null | undefined): string {
+  if (!value) return "—";
+  const date = typeof value === "string" ? new Date(value) : value;
+  return new Intl.DateTimeFormat("nl-NL", { hour: "2-digit", minute: "2-digit", timeZone: AMSTERDAM_TZ }).format(date);
+}
