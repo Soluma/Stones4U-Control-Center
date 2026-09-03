@@ -170,6 +170,17 @@ describe("matching.service", () => {
     expect(unlinkedAudit).not.toBeNull();
   });
 
+  it("accepts MatchSource.EMAIL — the provider-independent email matchsource (docs/architecture/ADR-007 correction, doc 30 §6)", async () => {
+    const profile = await createProfileWithContact({ email: "email-source-test@voorbeeld.nl" });
+    profileIds.push(profile.id);
+
+    const result = await resolveAndRecordByEmail("email-source-test@voorbeeld.nl", "EMAIL", "m365-mailbox-1-msg-1");
+    expect(result).toEqual({ status: "exact", customerProfileId: profile.id, matchId: expect.any(String) });
+
+    const rows = await prisma.externalContactMatch.findMany({ where: { customerProfileId: profile.id, source: "EMAIL" } });
+    expect(rows).toHaveLength(1);
+  });
+
   it("enforces the (customerProfileId, source, externalRef) uniqueness constraint at the database level", async () => {
     const profile = await createProfileWithContact({});
     profileIds.push(profile.id);

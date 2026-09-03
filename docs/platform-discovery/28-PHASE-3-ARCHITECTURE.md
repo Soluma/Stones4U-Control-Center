@@ -11,7 +11,12 @@ src/integrations/
   telephony/adapter.ts      (bestaat al — DisabledTelephonyAdapter — Phase 3 voegt een echte
                               implementatie toe ZODRA de TelefoonSysteem-zijdige service-auth bestaat;
                               tot die tijd blijft de Disabled-variant actief)
-  email/adapter.ts          (nieuw — Gmail-adapter, per verbonden mailbox)
+  email/adapter.ts          (nieuw — provider-onafhankelijke, samenstellende EmailAdapter)
+  email/microsoft365-adapter.ts (nieuw — Microsoft Graph, voor info@stones4u.nl)
+  email/imap-adapter.ts     (nieuw — IMAP, voor info@stones4u.eu, ontworpen maar nog niet
+                              configureerbaar — host/poort/auth onbekend)
+                             (twee providers achter één interface, geen providerdetail lekt
+                              buiten deze map — zie 30-PHASE-3C-EMAIL-INTEGRATION-DISCOVERY.md)
   quotes/adapter.ts         (bestaat al als lege placeholder — Phase 3 voegt OfferteApp- en
                               s4u-quote-app-implementaties toe ZODRA hun service-auth bestaat)
   shopify/draft-orders.ts   (nieuw — geen adapter-interface nodig, dezelfde client-credentials-
@@ -45,7 +50,7 @@ Elke adapter roept de centrale matching-laag aan om zijn externe records aan een
 
 **Praktische matching-flow per adapter**:
 - **Telefonie**: `CustomerProfile.phoneNormalized` (al bestaand veld) ↔ TelefoonSysteem `Call.callerNumber` genormaliseerd via `normalizeDutchPhone()`. Bij meerdere `CustomerProfile`'s met hetzelfde genormaliseerde nummer: `AMBIGUOUS`, tonen als keuze.
-- **E-mail**: `CustomerProfile.email` (al bestaand veld, van Shopify) ↔ Gmail `to:`/`from:`-adres, genormaliseerd via de nieuwe `normalizeEmail()`. Alternatieve adressen: alleen via `matchedBy = MANUAL` — geen automatische aanname dat een ander adres "waarschijnlijk" dezelfde persoon is.
+- **E-mail**: `CustomerProfile.email` (al bestaand veld, van Shopify) ↔ het genormaliseerde `from`/`to`/`cc`-adres uit het gedeelde `NormalizedEmailMessage`-model (provider-onafhankelijk — Microsoft Graph of IMAP, zie `30-PHASE-3C-EMAIL-INTEGRATION-DISCOVERY.md` §2/§7), genormaliseerd via `normalizeEmail()`. Alternatieve adressen: alleen via `matchedBy = MANUAL` — geen automatische aanname dat een ander adres "waarschijnlijk" dezelfde persoon is. Matchsource is generiek `EMAIL`, niet per provider (`30` §6).
 - **Offertes**: primair `shopifyCustomerGid` (beide offerte-apps refereren al aan Shopify-klant-ID's, zie `27` §4) — sterkste sleutel, geen ambiguïteit te verwachten zolang de offerte-app zelf een correcte Shopify-koppeling heeft; secundair e-mail als fallback voor offertes zonder Shopify-koppeling.
 
 ## 3. Activity Timeline-uitbreiding — zie ADR-008
@@ -86,5 +91,5 @@ Huidige groepen (Phase 2): `customers` (via Shopify), `tasks` (via CRM), `naviga
 
 - Geen directe databasekoppelingen naar TelefoonSysteem/OfferteApp/s4u-quote-app.
 - Geen synchronisatie/kopie van externe data naar Control Center's eigen database (behalve de dunne matchrelatie uit ADR-007).
-- Geen nieuwe auth-systemen binnen Control Center zelf — Gmail-OAuth-tokens en toekomstige sibling-service-tokens zijn per-adapter-geheimen, geen wijziging aan Control Center's eigen gebruikers-/sessiemodel.
+- Geen nieuwe auth-systemen binnen Control Center zelf — het Microsoft Graph app-registratie-credential en toekomstige sibling-service-tokens zijn per-adapter-geheimen, geen wijziging aan Control Center's eigen gebruikers-/sessiemodel.
 - Geen mailclient, geen bellen-vanuit-browser, geen offerte-editor — bevestigt de expliciete out-of-scope-lijst uit de opdracht, zie `29-PHASE-3-BUILD-SPEC.md` §15.

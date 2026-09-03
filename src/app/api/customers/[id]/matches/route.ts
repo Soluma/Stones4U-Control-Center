@@ -25,7 +25,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
 const postSchema = z.union([
   z.object({ matchId: z.string().min(1) }),
   z.object({
-    source: z.enum(["TELEFOONSYSTEEM", "GMAIL", "OFFERTEAPP", "S4U_QUOTE_APP"]),
+    source: z.enum(["TELEFOONSYSTEEM", "GMAIL", "EMAIL", "OFFERTEAPP", "S4U_QUOTE_APP"]),
     externalRef: z.string().min(1).max(320),
   }),
 ]);

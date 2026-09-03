@@ -450,9 +450,18 @@ model File {
 // TELEFOONSYSTEEM/GMAIL/OFFERTEAPP/S4U_QUOTE_APP have no live producer yet
 // in Phase 3a (docs/platform-discovery/29-PHASE-3-BUILD-SPEC.md §1) — the
 // model must be production-grade now, not a placeholder.
+//
+// GMAIL is legacy/unused — an earlier Phase 3c design assumed Gmail as the
+// email source; that was corrected (docs/platform-discovery/30-PHASE-3C-EMAIL-INTEGRATION-DISCOVERY.md
+// §6/§9) to a provider-independent EMAIL value instead (Microsoft 365 +
+// IMAP both write EMAIL, never a provider-specific source — a customer's
+// email address means the same thing regardless of which Stones4U mailbox
+// observed it). GMAIL is kept, not removed, per that same correction — no
+// row has ever referenced it.
 enum MatchSource {
   TELEFOONSYSTEEM
   GMAIL
+  EMAIL
   OFFERTEAPP
   S4U_QUOTE_APP
 }
@@ -499,4 +508,24 @@ model ExternalContactMatch {
 
   @@unique([customerProfileId, source, externalRef])
   @@index([source, externalRef])
+}
+
+// Phase 3C-A — docs/platform-discovery/30-PHASE-3C-EMAIL-INTEGRATION-DISCOVERY.md
+// §5. Provider-independent: which Stones4U mailboxes the EmailAdapter reads,
+// and via which provider — never any credential. Microsoft 365 auth is a
+// tenant-wide app credential (env vars, not a database row); IMAP auth (once
+// built) is a server-side secret per mailbox — neither is ever stored here.
+enum EmailProvider {
+  MICROSOFT365
+  IMAP
+}
+
+model MonitoredMailbox {
+  id           String         @id @default(cuid())
+  emailAddress String         @unique
+  displayName  String?
+  provider     EmailProvider
+  enabled      Boolean        @default(true)
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
 }

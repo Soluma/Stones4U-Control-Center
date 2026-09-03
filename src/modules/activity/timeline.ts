@@ -4,6 +4,8 @@ import { createTelephonyAdapter } from "@/integrations/telephony/adapter";
 import { createQuotesAdapter } from "@/integrations/quotes/adapter";
 import { createExactHistoryAdapter } from "@/integrations/exact/adapter";
 import type { ShopifyOrderSummary, ShopifyDraftOrderSummary } from "@/integrations/shopify/types";
+import { stableEmailId } from "@/integrations/email/types";
+import type { NormalizedEmailMessage } from "@/integrations/email/types";
 
 // The unified Activity Timeline — combines "A" (Control-Center-owned,
 // stored in the Activity table) and "B" (external, projected at render
@@ -14,7 +16,7 @@ import type { ShopifyOrderSummary, ShopifyDraftOrderSummary } from "@/integratio
 export type TimelineItem = {
   id: string;
   occurredAt: Date;
-  source: "CONTROL_CENTER" | "SHOPIFY" | "TELEFOONSYSTEEM" | "EXACT" | "OFFERTEAPP" | "S4U_QUOTE_APP";
+  source: "CONTROL_CENTER" | "SHOPIFY" | "TELEFOONSYSTEEM" | "EXACT" | "OFFERTEAPP" | "S4U_QUOTE_APP" | "MICROSOFT365" | "IMAP";
   kind: string;
   title: string;
   summary?: string | null;
@@ -28,6 +30,11 @@ export async function getCustomerTimeline(
     draftOrders?: ShopifyDraftOrderSummary[];
     phoneNumbers: string[];
     quoteMatchRefs?: { shopifyCustomerGid?: string; email?: string; phone?: string };
+    // Phase 3C-A — fetched once by the caller (same fail-isolation pattern
+    // as draftOrders/quotes, see src/app/(app)/customers/[id]/page.tsx) so
+    // the Graph query and the Overview "Recente e-mails" block never issue
+    // it twice.
+    emailMessages?: NormalizedEmailMessage[];
   },
 ): Promise<TimelineItem[]> {
   const ownedActivities = await prisma.activity.findMany({
@@ -122,9 +129,32 @@ export async function getCustomerTimeline(
       ]
     : [];
 
-  return [...ownedItems, ...orderItems, ...draftOrderItems, ...telephonyItems, ...quoteTimelineItems, ...invoiceItems].sort(
+  // Phase 3C-A — docs/architecture/ADR-008-EXTERNAL-COMMUNICATIONS-STRATEGY.md:
+  // category B, never persisted. Stable synthetic ID is provider-aware
+  // (docs/platform-discovery/30 §8) so two mailboxes/providers can never
+  // collide, mirroring the existing shopify-order-{gid}/telefoon-{id}
+  // pattern.
+  const emailItems: TimelineItem[] = (context.emailMessages ?? []).map((message) => emailToTimelineItem(message));
+
+  return [...ownedItems, ...orderItems, ...draftOrderItems, ...telephonyItems, ...quoteTimelineItems, ...invoiceItems, ...emailItems].sort(
     (a, b) => b.occurredAt.getTime() - a.occurredAt.getTime(),
   );
+}
+
+export function emailToTimelineItem(message: NormalizedEmailMessage): TimelineItem {
+  const counterpart =
+    message.direction === "INBOUND"
+      ? message.from.name ?? message.from.address
+      : (message.to[0]?.name ?? message.to[0]?.address ?? "onbekend") + (message.to.length + message.cc.length > 1 ? ` (+${message.to.length + message.cc.length - 1})` : "");
+
+  return {
+    id: stableEmailId(message),
+    occurredAt: message.occurredAt,
+    source: message.provider,
+    kind: message.direction === "INBOUND" ? "EMAIL_INBOUND" : "EMAIL_OUTBOUND",
+    title: message.direction === "INBOUND" ? `E-mail van ${counterpart}` : `E-mail naar ${counterpart}`,
+    summary: message.subject ?? message.bodyPreview ?? null,
+  };
 }
 
 export type RecentActivityItem = TimelineItem & {

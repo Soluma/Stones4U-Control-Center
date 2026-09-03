@@ -10,6 +10,8 @@ import { listTagsForCustomer, listCustomerTags } from "@/modules/crm/customer-ta
 import { getShopifyCustomerDraftOrders } from "@/integrations/shopify/draft-orders";
 import { createTelephonyAdapter, type TelephonyActivityItem } from "@/integrations/telephony/adapter";
 import { createQuotesAdapter, type QuoteSummary } from "@/integrations/quotes/adapter";
+import { createEmailAdapter } from "@/integrations/email/adapter";
+import type { NormalizedEmailMessage } from "@/integrations/email/types";
 import { prisma } from "@/platform/db/prisma";
 import { normalizeDutchPhone } from "@/lib/phone";
 import { formatDate, formatDateTime } from "@/lib/format";
@@ -20,6 +22,7 @@ import { OrdersTable } from "./OrdersTable";
 import { DraftOrdersTable } from "./DraftOrdersTable";
 import { QuotesTable } from "./QuotesTable";
 import { RecentCallsBlock } from "./RecentCallsBlock";
+import { RecentEmailsBlock } from "./RecentEmailsBlock";
 import { ActivityTimelineView } from "./ActivityTimelineView";
 import { AdapterStatusBanner } from "./AdapterStatusBanner";
 import { NotesPanel } from "./NotesPanel";
@@ -115,6 +118,16 @@ export default async function CustomerDetailPage({ params, searchParams }: PageP
     console.error("telephony_fetch_failed", error);
   }
 
+  // Phase 3C-A — same fail-isolation pattern as quotes/recentCalls above; a
+  // Graph/mailbox hiccup must not take down the rest of Customer 360.
+  const emailAddresses = [data.profile.email].filter((e): e is string => !!e);
+  let emailMessages: NormalizedEmailMessage[] = [];
+  try {
+    emailMessages = await (await createEmailAdapter()).getMessagesForAddresses(emailAddresses);
+  } catch (error) {
+    console.error("email_fetch_failed", error);
+  }
+
   return (
     <div className="space-y-5">
       <CustomerHeader data={data} viewerRole={user.role} id={id} tags={tags} allTags={allTags} managers={managers} />
@@ -128,6 +141,7 @@ export default async function CustomerDetailPage({ params, searchParams }: PageP
           phoneNumbers={phoneNumbers}
           quoteMatchRefs={quoteMatchRefs}
           recentCalls={recentCalls}
+          emailMessages={emailMessages}
         />
       )}
 
@@ -149,6 +163,7 @@ export default async function CustomerDetailPage({ params, searchParams }: PageP
               draftOrders: draftOrders ?? [],
               phoneNumbers,
               quoteMatchRefs,
+              emailMessages,
             })}
           />
         </div>
@@ -198,6 +213,7 @@ async function OverviewTab({
   phoneNumbers,
   quoteMatchRefs,
   recentCalls,
+  emailMessages,
 }: {
   id: string;
   shopifyOrders: Parameters<typeof getCustomerTimeline>[1]["shopifyOrders"];
@@ -205,9 +221,10 @@ async function OverviewTab({
   phoneNumbers: string[];
   quoteMatchRefs: { shopifyCustomerGid?: string; email?: string; phone?: string };
   recentCalls: TelephonyActivityItem[];
+  emailMessages: NormalizedEmailMessage[];
 }) {
   const [timeline, tasks, appointments, files] = await Promise.all([
-    getCustomerTimeline(id, { shopifyOrders, draftOrders: draftOrders ?? [], phoneNumbers, quoteMatchRefs }),
+    getCustomerTimeline(id, { shopifyOrders, draftOrders: draftOrders ?? [], phoneNumbers, quoteMatchRefs, emailMessages }),
     listTasksForCustomer(id),
     listAppointmentsForCustomer(id),
     listFilesForCustomer(id),
@@ -228,6 +245,7 @@ async function OverviewTab({
         <ActivityTimelineView items={timeline.slice(0, 6)} />
       </div>
       <RecentCallsBlock calls={recentCalls} />
+      <RecentEmailsBlock messages={emailMessages} />
       <div className="space-y-3">
         <h2 className="text-sm font-medium text-ink-secondary">Openstaande taken</h2>
         {openTasks.length === 0 ? (

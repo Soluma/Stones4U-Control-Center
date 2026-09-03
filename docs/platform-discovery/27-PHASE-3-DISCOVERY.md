@@ -10,7 +10,7 @@ Read-only discovery voor Phase 3 ("Customer 360 als centraal overzicht van alle 
 | OfferteApp | `88dd2c8` | `88dd2c8` | Nee — identiek |
 | s4u-quote-app | `b9f23f1` (laatste bekende) | `b9f23f1` | Nee — identiek |
 
-Alle drie sibling-repo's zijn **byte-voor-byte ongewijzigd** sinds `19-TELEFOONSYSTEEM-CRM-DEEP-DIVE.md`, `20-CUSTOMER-HISTORY-DATA-MODEL.md`, `22-CUSTOMER-IDENTITY-STRATEGY.md`, `10-OFFERTEAPP-DEEP-DIVE.md`, `11-QUOTE-APP-DEEP-DIVE.md` zijn geschreven. Die rapporten worden hieronder als **geverifieerd, actueel** aangehaald — niet herhaald, wel expliciet cross-gerefereerd. Aanvullend hieronder: gerichte, verse verificatie van precies de velden/routes/scopes die Phase 3 nodig heeft, plus volledig nieuw onderzoek naar Gmail (nergens eerder gedocumenteerd) en de huidige CRM-Shopify-integratie zelf.
+Alle drie sibling-repo's zijn **byte-voor-byte ongewijzigd** sinds `19-TELEFOONSYSTEEM-CRM-DEEP-DIVE.md`, `20-CUSTOMER-HISTORY-DATA-MODEL.md`, `22-CUSTOMER-IDENTITY-STRATEGY.md`, `10-OFFERTEAPP-DEEP-DIVE.md`, `11-QUOTE-APP-DEEP-DIVE.md` zijn geschreven. Die rapporten worden hieronder als **geverifieerd, actueel** aangehaald — niet herhaald, wel expliciet cross-gerefereerd. Aanvullend hieronder: gerichte, verse verificatie van precies de velden/routes/scopes die Phase 3 nodig heeft, plus volledig nieuw onderzoek naar de e-mailbronnen (oorspronkelijk, onjuist, als één Gmail-mailbox onderzocht — per de correcties van 2026-09-03 nu twee providers, Microsoft 365 + IMAP, zie `30-PHASE-3C-EMAIL-INTEGRATION-DISCOVERY.md`) en de huidige CRM-Shopify-integratie zelf.
 
 ## 1. Telefonie (TelefoonSysteem) — huidige situatie
 
@@ -60,36 +60,39 @@ Alle bovenstaande routes lopen door `requireAuth` (`apps/api/src/middleware/auth
 
 Geen recording-referentie in het schema (herbevestigd, §1.1) — er is dus vandaag niets af te spelen, ongeacht adapterontwerp. Als recordings ooit worden toegevoegd aan TelefoonSysteem, geldt voor Phase 3 de expliciete instructie "recordings afspelen tenzij vrijwel gratis beschikbaar" — gezien er nu niets bestaat, is dit sowieso **niet in Phase 3**.
 
-## 2. E-mail (Gmail) — volledig nieuw onderzoek, geen bestaande documentatie
+## 2. E-mail (Microsoft 365 + IMAP, provider-onafhankelijk) — volledig nieuw onderzoek, geen bestaande documentatie
+
+> **Correctie (2026-09-03, tweemaal)**: dit document ging eerst onjuist uit van Gmail, daarna (kortstondig) van Microsoft 365 als enige e-mailbron. Beide waren onjuiste aannames. Stones4U heeft **twee** mailboxen op **twee verschillende providers** — `info@stones4u.nl` (Microsoft 365/Exchange Online, via Microsoft Graph) en `info@stones4u.eu` (geen Microsoft 365, waarschijnlijk IMAP). Deze sectie is vervangen door een korte, provider-onafhankelijke samenvatting; het volledige, gedetailleerde ontwerp (`EmailAdapter` met een `Microsoft365EmailAdapter`- en een `ImapEmailAdapter`-implementatie, genormaliseerd berichtmodel, authenticatie per provider, matching, timeline-projectie, fail-safe-gedrag) staat nu in `30-PHASE-3C-EMAIL-INTEGRATION-DISCOVERY.md`.
 
 Geen enkel systeem in het hele landschap heeft vandaag een e-mailkoppeling (OfferteApp verstuurt alleen SMTP-uitgaand, geen lezen; s4u-quote-app verstuurt alleen een platte meldingsmail; TelefoonSysteem heeft geen e-mailfunctionaliteit). Dit is dus zuiver nieuw ontwerp, geen "hergebruik bestaande code."
 
-### 2.1 Wat Gmail's API toestaat (extern, publiek gedocumenteerd, geen geheimen)
+### 2.1 Architectuur — provider-onafhankelijke `EmailAdapter`
 
-- **Gmail API** (`gmail.googleapis.com`), REST, OAuth 2.0. Relevante scope voor Phase 3: **`gmail.readonly`** (of het nauwere `gmail.metadata`, dat geen berichttekst teruggeeft — alleen headers/labels — als zelfs snippets niet gewenst zijn). **Nooit** `gmail.modify`/`gmail.send`/`gmail.compose` — expliciet buiten scope (geen mailclient, geen verzenden).
-- `users.messages.list` met een zoekquery (`q=to:klant@voorbeeld.nl OR from:klant@voorbeeld.nl`) — dit is een **live, gefedereerde zoekopdracht** tegen Gmail's eigen index, geen synchronisatie nodig. Retourneert bericht-ID's; `users.messages.get` (format `metadata` of `full`) haalt vervolgens subject/from/to/datum/snippet op.
-- Threads: `users.threads.get` groepeert berichten per gesprek (`threadId`), bruikbaar om een e-mailwisseling als één tijdlijn-item te tonen in plaats van elk bericht los.
-- Origineel openen: een directe Gmail-webinterface-link (`https://mail.google.com/mail/u/0/#all/{messageId}`) opent het bericht in een nieuw tabblad — **geen noodzaak om de e-mail-body zelf te renderen**, wat het grootste deel van "mailclient bouwen"-complexiteit en XSS-risico (HTML-e-mails) volledig vermijdt.
+De centrale CRM-laag (Customer 360, Activity Timeline, matching) kent **geen enkel** provider-specifiek detail — die blijven volledig ingekapseld in `src/integrations/email/{microsoft365-adapter,imap-adapter}.ts`, achter één gedeelde interface en één genormaliseerd berichtmodel. Zie `30` §1/§2 voor de volledige interface- en modeldefinitie. Elke mailbox faalt onafhankelijk van de andere (`30` §10) — Microsoft Graph-uitval blokkeert IMAP niet en omgekeerd.
 
-### 2.2 Auth-model — twee opties, een open beslissing (zie §6/build spec)
+### 2.2 Microsoft 365-pad (`info@stones4u.nl`)
 
-1. **Per-mailbox OAuth-consent** (aanbevolen startpunt): één of enkele specifieke, expliciet gekozen mailboxen (bijv. een gedeeld verkoop-/info-adres) worden **eenmalig, bewust** gekoppeld door een medewerker met toegang tot die mailbox, via de standaard Google OAuth-consentflow. Access/refresh-token server-side opgeslagen (versleuteld), nooit naar de browser. Kleine blast radius, geen Google Workspace-beheerdersrechten nodig, past bij de "klein beginnen, evolutionair"-aanpak die dit hele project al hanteert.
-2. **Domain-wide delegation (service account)**: als Stones4U Google Workspace gebruikt, kan een Workspace-beheerder een service-account-koppeling autoriseren die **elke** medewerker-mailbox binnen het domein kan lezen zonder per-mailbox-consent. Krachtiger en centraler beheersbaar, maar vereist Workspace-beheerderstoegang en -vertrouwen, en een grotere privacy-afweging (potentieel toegang tot persoonlijke e-mail van medewerkers, niet alleen klantcommunicatie). **Open beslissing voor Fons** — dit document kiest hier niet voorbarig voor.
+**Microsoft Graph**, application permissions (client-credentials, zelfde patroon als de bestaande Shopify-integratie, ADR-006), permissie `Mail.Read` (Application) — de minimale permissie die ook `bodyPreview`/snippet teruggeeft. Scoping tot uitsluitend deze mailbox via Exchange Online **RBAC for Applications** (de huidige, aanbevolen opvolger van het oudere Application Access Policy-mechanisme). Volledige onderbouwing, inclusief een kritieke configuratie-valkuil (een tenant-brede Entra-consent naast een RBAC-scope resulteert in de **vereniging** van beide, niet de kleinere scope), in `30` §3.
 
-### 2.3 Matching
+### 2.3 IMAP-pad (`info@stones4u.eu`)
 
-Primair: klant-e-mailadres zoals bekend bij Shopify (`CustomerProfile`/live Shopify `customer.email` — één veld, geen meervoud in het huidige Shopify-klantmodel zoals gebruikt door deze codebase, geverifieerd in `src/integrations/shopify/types.ts`). Secundair: eventuele **handmatig bevestigde alternatieve e-mailadressen** — dit vereist de centrale matching-laag uit §6/`28-PHASE-3-ARCHITECTURE.md`, niet iets Gmail-specifieks.
+**Nog niet configureerbaar** — host/poort/TLS/authenticatiemethode zijn onbekend. De `ImapEmailAdapter` is wél volledig ontworpen (interface, zoekmechanisme per map, richtingsbepaling via Postvak IN/Verzonden-items, authenticatie-opties met voorkeur voor een dedicated/app-specifiek credential) — zie `30` §4. Zes concrete, nog ontbrekende gegevens staan opgesomd in `30` §12.
 
-### 2.4 Caching/indexering
+### 2.4 Matching
 
-Niet nodig bij start — Gmail's eigen zoekindex is typisch sneller dan wat Control Center zelf zou kunnen opbouwen, en de verwachte belasting (één klant per Customer-360-paginabezoek) is klein. **Aanbeveling**: begin zonder cache (live `q=`-zoekopdracht bij elk paginabezoek, net als de bestaande live Shopify-orderfetch); voeg pas een lichte, kortlevende (enkele minuten) in-memory/metadata-cache toe **als** latentie in de praktijk een probleem blijkt — niet vooraf bouwen. Nooit e-mail-body's cachen/dupliceren, alleen metadata (subject/from/to/datum/snippet/thread-id).
+Ongewijzigd principe (ADR-007): klant-e-mailadres zoals bekend bij Shopify, genormaliseerd, exact vergeleken — nooit fuzzy, nooit een ambigue match automatisch definitief. Provider-onafhankelijk: een generieke `EMAIL`-matchsource (niet per provider) — zie `30` §6/§7 voor de volledige onderbouwing waarom een provider-specifieke matchsource onnodige koppeling zou creëren.
 
-### 2.5 Privacy/security — reëel, niet triviaal
+### 2.5 Caching/indexering
 
-- `gmail.readonly` geeft toegang tot een volledige mailbox, niet alleen klant-gerelateerde berichten — de query-scoping (`to:/from:` op het klant-e-mailadres) gebeurt in Control Center's eigen code, niet door Google afgedwongen. Een bug in de queryconstructie kan onbedoeld irrelevante/privé-berichten tonen.
-- Interne discussies **over** een klant (waarin de klant zelf geen to/from/cc is) worden door een strikte `to:/from:`-query terecht **niet** getoond — bewuste, geen toevallige, beperking.
+Niet nodig bij start voor beide providers — live opgehaald per Customer-360-paginabezoek (Graph `$search`, IMAP `SEARCH` per map), geen synchronisatie, geen lokale index. Zie `30` §5.
+
+### 2.6 Privacy/security — reëel, niet triviaal
+
+- Microsoft 365: `Mail.Read` (Application) is inherent breed geformuleerd door Microsoft ("alle mailboxen") — de RBAC-scoping (§2.2) is het daadwerkelijke least-privilege-mechanisme, geen optionele verharding.
+- IMAP: een dedicated/app-specifiek credential (nooit het hoofdaccountwachtwoord) is het least-privilege-equivalent — nooit in PostgreSQL opgeslagen, uitsluitend server-side secret/env.
+- Beide: de query-scoping (`from:`/`to:` op het klant-e-mailadres) gebeurt in Control Center's eigen code, niet door de provider afgedwongen — een bug in de queryconstructie kan onbedoeld irrelevante/privé-berichten tonen.
 - GDPR-relevant: e-mailinhoud over een klant is persoonsgegevens. Retentie/inzagerecht is een beleidsvraag voor Stones4U, niet iets dit document kan beslissen — gemarkeerd als open punt.
-- Credentials (OAuth refresh-tokens) zijn per-mailbox-geheimen — zelfde behandeling als elk ander secret in dit project (Fly secrets, nooit in Git, nooit getoond).
+- Geen per-mailbox OAuth-tokenopslag voor Microsoft 365 (tenant-breed credential); voor IMAP evenmin een database-credential (uitsluitend server-side secret) — zie `30` §5/§11.
 
 ## 3. Shopify commerciële context — uitbreiding van bestaande integratie
 
