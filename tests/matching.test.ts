@@ -192,4 +192,28 @@ describe("matching.service", () => {
       }),
     ).rejects.toThrow();
   });
+
+  // Phase 5a regression (build spec §22, ADR-011): customerTypeOverride and
+  // companyName must have zero effect on matching — an organization-typed
+  // profile matches exactly like an individual-typed one.
+  it("matches by phone/email identically regardless of customerTypeOverride/companyName", async () => {
+    const profile = await prisma.customerProfile.create({
+      data: {
+        shopifyCustomerGid: `gid://shopify/Customer/${crypto.randomUUID()}`,
+        displayName: "Jan Jansen",
+        companyName: "Jansen Tuinen BV",
+        customerTypeOverride: "ORGANIZATION",
+        phone: "0655544433",
+        phoneNormalized: "31655544433",
+        email: "org-match-test@voorbeeld.nl",
+      },
+    });
+    profileIds.push(profile.id);
+
+    const byPhone = await resolveAndRecordByPhone("0655544433", "TELEFOONSYSTEEM", "call-ext-org-type");
+    expect(byPhone).toEqual({ status: "exact", customerProfileId: profile.id, matchId: expect.any(String) });
+
+    const byEmail = await resolveAndRecordByEmail("org-match-test@voorbeeld.nl", "GMAIL", "msg-org-type");
+    expect(byEmail).toEqual({ status: "exact", customerProfileId: profile.id, matchId: expect.any(String) });
+  });
 });

@@ -257,7 +257,7 @@ export async function getTaskSummary(actor: Actor) {
 const taskListInclude = {
   assignedTo: { select: { id: true, name: true } },
   createdBy: { select: { id: true, name: true } },
-  customerProfile: { select: { id: true, displayName: true, companyName: true } },
+  customerProfile: { select: { id: true, displayName: true, companyName: true, customerTypeOverride: true } },
 } as const;
 
 // ---------------------------------------------------------------------------

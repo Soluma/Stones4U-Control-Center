@@ -6,6 +6,9 @@ import { formatDate, formatMoney } from "@/lib/format";
 import { CrmStatusControl } from "./CrmStatusControl";
 import { AccountManagerControl } from "./AccountManagerControl";
 import { CustomerTagsControl } from "./CustomerTagsControl";
+import { CustomerTypeControl } from "./CustomerTypeControl";
+import { CompanyNameControl } from "./CompanyNameControl";
+import { effectiveCustomerType, customerDisplayName, customerSecondaryName } from "@/modules/crm/customer-identity";
 import type { Customer360 } from "@/modules/crm/customer-profile.service";
 import type { Role } from "@/generated/prisma";
 
@@ -33,14 +36,22 @@ export function CustomerHeader({
   const { profile, shopify, orders } = data;
   const canEdit = viewerRole !== "VIEWER";
 
+  const identity = { displayName: shopify.displayName, companyName: profile.companyName, customerTypeOverride: profile.customerTypeOverride };
+  const type = effectiveCustomerType(identity);
+  const primaryName = customerDisplayName(identity);
+  const accountHolderName = customerSecondaryName(identity);
+  // Company already shown as the primary heading for an organization — omit
+  // it from the detail line then, so it isn't repeated (build spec §3).
+  const detailCompany = type === "ORGANIZATION" && profile.companyName === primaryName ? null : profile.companyName;
+
   return (
     <div className="cc-card p-5">
       <div className="flex flex-wrap items-start justify-between gap-5">
         <div className="flex min-w-0 items-start gap-3">
-          <Avatar name={shopify.displayName} size="lg" />
+          <Avatar name={primaryName} size="lg" />
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <h1 className="truncate text-lg font-semibold tracking-tight text-ink-primary">{shopify.displayName}</h1>
+              <h1 className="truncate text-lg font-semibold tracking-tight text-ink-primary">{primaryName}</h1>
               <CrmStatusControl customerProfileId={profile.id} status={profile.crmStatus} canEdit={canEdit} />
               {openOpportunitiesCount > 0 && (
                 <Link href={`/customers/${id}?tab=orders`}>
@@ -50,14 +61,28 @@ export function CustomerHeader({
                 </Link>
               )}
             </div>
+            {accountHolderName && <p className="mt-0.5 text-xs text-ink-tertiary">Accounthouder: {accountHolderName}</p>}
             <p className="mt-1 text-sm text-ink-tertiary">
-              {[shopify.company, shopify.email, shopify.phone, shopify.defaultAddressSummary].filter(Boolean).join(" · ") ||
+              {[detailCompany, shopify.email, shopify.phone, shopify.defaultAddressSummary].filter(Boolean).join(" · ") ||
                 "Geen contactgegevens bekend"}
             </p>
             <div className="mt-2 flex flex-wrap items-center gap-3">
               <div className="flex items-center gap-1.5 text-xs text-ink-tertiary">
                 <span>Accountmanager:</span>
                 <AccountManagerControl customerProfileId={profile.id} currentManagerId={profile.accountManagerId} managers={managers} canEdit={canEdit} />
+              </div>
+              <div className="flex items-center gap-1.5 text-xs text-ink-tertiary">
+                <span>Klanttype:</span>
+                <CustomerTypeControl customerProfileId={profile.id} override={profile.customerTypeOverride} canEdit={canEdit} />
+              </div>
+              <div className="flex items-center gap-1.5 text-xs text-ink-tertiary">
+                <span>Bedrijfsnaam:</span>
+                <CompanyNameControl
+                  customerProfileId={profile.id}
+                  companyName={profile.companyName}
+                  companyNameConfirmed={profile.companyNameConfirmed}
+                  canEdit={canEdit}
+                />
               </div>
             </div>
             <div className="mt-2">

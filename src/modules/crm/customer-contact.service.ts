@@ -340,7 +340,7 @@ export async function searchCustomerContacts(term: string, limit = 8) {
     },
     orderBy: { updatedAt: "desc" },
     take: limit,
-    include: { customerProfile: { select: { id: true, displayName: true, companyName: true } } },
+    include: { customerProfile: { select: { id: true, displayName: true, companyName: true, customerTypeOverride: true } } },
   });
 }
 

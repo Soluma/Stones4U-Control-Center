@@ -22,6 +22,7 @@ import { SkeletonList } from "@/components/ui/Skeleton";
 import { formatDate, formatMoney } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import { STAGE_ORDER, STAGE_LABEL, STATUS_LABEL, effectiveProbability, type OpportunityStageCode } from "@/modules/opportunities/labels";
+import { customerDisplayName } from "@/modules/crm/customer-identity";
 import { formatNextAction, type OpportunityAttention, type NextActionInfo } from "@/modules/opportunities/attention";
 import { AttentionBadge } from "./AttentionBadge";
 import { NewOpportunityDialog } from "./NewOpportunityDialog";
@@ -35,7 +36,7 @@ type OpportunityRow = {
   probability: number | null;
   expectedCloseDate: string | null;
   archivedAt: string | null;
-  customerProfile: { id: string; displayName: string | null; companyName: string | null };
+  customerProfile: { id: string; displayName: string | null; companyName: string | null; customerTypeOverride: "INDIVIDUAL" | "ORGANIZATION" | null };
   owner: { id: string; name: string };
   attention: OpportunityAttention;
   nextAction: NextActionInfo;
@@ -44,7 +45,7 @@ type OpportunityRow = {
 type AssignableUser = { id: string; name: string };
 
 function customerName(customerProfile: OpportunityRow["customerProfile"]) {
-  return customerProfile.displayName ?? customerProfile.companyName ?? "Klant";
+  return customerDisplayName(customerProfile);
 }
 
 function nextActionText(nextAction: NextActionInfo): string {

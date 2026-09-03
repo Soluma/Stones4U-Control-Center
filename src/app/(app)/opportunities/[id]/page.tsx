@@ -15,6 +15,7 @@ import { getShopifyCustomerDraftOrders } from "@/integrations/shopify/draft-orde
 import { normalizeDutchPhone } from "@/lib/phone";
 import { formatDate, formatDateTime, formatMoney } from "@/lib/format";
 import { STAGE_LABEL, STATUS_LABEL, effectiveProbability } from "@/modules/opportunities/labels";
+import { customerDisplayName } from "@/modules/crm/customer-identity";
 import {
   deriveNextAction,
   deriveOpportunityAttention,
@@ -60,7 +61,7 @@ export default async function OpportunityDetailPage({ params, searchParams }: Pa
   if (!customer) notFound();
 
   const canEdit = user.role !== "VIEWER";
-  const customerName = customer.displayName ?? customer.companyName ?? "Klant";
+  const customerName = customerDisplayName(customer);
 
   // Phase 4c — read-only, no OpportunityContact relation (architecture doc
   // §9/§10 — a concrete, aantoonbaar-needed relation was never shown, so

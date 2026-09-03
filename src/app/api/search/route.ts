@@ -7,6 +7,7 @@ import { isShopifyConfigured } from "@/integrations/shopify/client";
 import { searchQuotesByNumber } from "@/integrations/quotes/adapter";
 import { searchOpportunities } from "@/modules/opportunities/opportunity.service";
 import { searchCustomerContacts } from "@/modules/crm/customer-contact.service";
+import { customerDisplayName, shopifyCustomerDisplayName, shopifyCustomerSecondaryName } from "@/modules/crm/customer-identity";
 import { toErrorResponse } from "@/lib/api-error";
 
 // Global command-palette search (Ctrl/Cmd+K). Phase 2 scope was customers +
@@ -36,8 +37,8 @@ export async function GET(request: NextRequest) {
         items: customers.map((c) => ({
           id: c.customerProfileId ?? c.shopify.gid,
           kind: "customer" as const,
-          title: c.shopify.displayName,
-          subtitle: [c.shopify.company, c.shopify.email].filter(Boolean).join(" · "),
+          title: shopifyCustomerDisplayName(c.shopify),
+          subtitle: [shopifyCustomerSecondaryName(c.shopify), c.shopify.email].filter(Boolean).join(" · "),
           shopifyGid: c.shopify.gid,
         })),
       });
@@ -52,7 +53,7 @@ export async function GET(request: NextRequest) {
           id: t.id,
           kind: "task" as const,
           title: t.title,
-          subtitle: t.customerProfile?.displayName ?? t.customerProfile?.companyName ?? t.assignedTo.name,
+          subtitle: t.customerProfile ? customerDisplayName(t.customerProfile) : t.assignedTo.name,
           href: `/tasks/${t.id}`,
         })),
       });
@@ -115,7 +116,7 @@ export async function GET(request: NextRequest) {
             id: o.id,
             kind: "opportunity" as const,
             title: o.title,
-            subtitle: o.customerProfile.displayName ?? o.customerProfile.companyName ?? "Klant",
+            subtitle: customerDisplayName(o.customerProfile),
             href: `/opportunities/${o.id}`,
           })),
         });
@@ -138,7 +139,7 @@ export async function GET(request: NextRequest) {
             id: c.id,
             kind: "contact" as const,
             title: c.displayName,
-            subtitle: [c.customerProfile.displayName ?? c.customerProfile.companyName, c.email].filter(Boolean).join(" · "),
+            subtitle: [customerDisplayName(c.customerProfile), c.email].filter(Boolean).join(" · "),
             href: `/customers/${c.customerProfileId}`,
           })),
         });

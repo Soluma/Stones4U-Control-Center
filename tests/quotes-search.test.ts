@@ -76,7 +76,7 @@ describe("searchQuotesByNumber", () => {
     ]);
     expect(findUnique).toHaveBeenCalledWith({
       where: { shopifyCustomerGid: "gid://shopify/Customer/25413296554316" },
-      select: { id: true, displayName: true, companyName: true },
+      select: { id: true, displayName: true, companyName: true, customerTypeOverride: true },
     });
   });
 
@@ -119,7 +119,7 @@ describe("searchQuotesByNumber", () => {
     ]);
     expect(findFirst).toHaveBeenCalledWith({
       where: { email: { equals: "info@bouwbedrijf-x.nl", mode: "insensitive" } },
-      select: { id: true, displayName: true, companyName: true },
+      select: { id: true, displayName: true, companyName: true, customerTypeOverride: true },
     });
   });
 

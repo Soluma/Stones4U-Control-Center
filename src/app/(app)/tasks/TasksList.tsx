@@ -11,6 +11,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { SkeletonList } from "@/components/ui/Skeleton";
 import { Tabs } from "@/components/ui/Tabs";
 import { formatDate } from "@/lib/format";
+import { customerDisplayName } from "@/modules/crm/customer-identity";
 
 type Task = {
   id: string;
@@ -20,7 +21,7 @@ type Task = {
   dueAt: string | null;
   assignedTo: { id: string; name: string };
   createdBy: { id: string; name: string };
-  customerProfile: { id: string; displayName: string | null; companyName: string | null } | null;
+  customerProfile: { id: string; displayName: string | null; companyName: string | null; customerTypeOverride: "INDIVIDUAL" | "ORGANIZATION" | null } | null;
 };
 
 type AssignableUser = { id: string; name: string };
@@ -182,7 +183,7 @@ export function TasksList({ initialTab, isAdmin, canCreate }: { initialTab: stri
                     <>
                       <span>·</span>
                       <Link href={`/customers/${task.customerProfile.id}`} className="text-accent-600 hover:underline">
-                        {task.customerProfile.displayName ?? task.customerProfile.companyName ?? "Klant"}
+                        {customerDisplayName(task.customerProfile)}
                       </Link>
                     </>
                   )}

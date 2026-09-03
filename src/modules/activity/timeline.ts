@@ -9,6 +9,7 @@ import type { NormalizedEmailMessage } from "@/integrations/email/types";
 import { normalizeEmail } from "@/lib/email";
 import { normalizeDutchPhone } from "@/lib/phone";
 import { matchContactByEmail, matchContactByPhone, type ContactIdentity } from "@/modules/crm/contact-timeline";
+import { customerDisplayName } from "@/modules/crm/customer-identity";
 
 // The unified Activity Timeline — combines "A" (Control-Center-owned,
 // stored in the Activity table) and "B" (external, projected at render
@@ -220,7 +221,7 @@ export async function getRecentActivity(limit = 8): Promise<RecentActivityItem[]
     take: limit,
     include: {
       actor: { select: { name: true } },
-      customerProfile: { select: { id: true, displayName: true, companyName: true } },
+      customerProfile: { select: { id: true, displayName: true, companyName: true, customerTypeOverride: true } },
     },
   });
 
@@ -233,6 +234,6 @@ export async function getRecentActivity(limit = 8): Promise<RecentActivityItem[]
     summary: activity.summary,
     actorName: activity.actor?.name ?? null,
     customerProfileId: activity.customerProfileId,
-    customerName: activity.customerProfile.displayName ?? activity.customerProfile.companyName ?? null,
+    customerName: customerDisplayName(activity.customerProfile),
   }));
 }

@@ -119,7 +119,7 @@ async function assertCustomerExists(customerProfileId: string) {
 }
 
 export const opportunityListInclude = {
-  customerProfile: { select: { id: true, displayName: true, companyName: true } },
+  customerProfile: { select: { id: true, displayName: true, companyName: true, customerTypeOverride: true } },
   owner: { select: { id: true, name: true } },
   createdBy: { select: { id: true, name: true } },
 } as const;
@@ -376,7 +376,7 @@ export async function searchOpportunities(term: string, limit = 8) {
     },
     orderBy: { updatedAt: "desc" },
     take: limit,
-    include: { customerProfile: { select: { id: true, displayName: true, companyName: true } } },
+    include: { customerProfile: { select: { id: true, displayName: true, companyName: true, customerTypeOverride: true } } },
   });
 }
 

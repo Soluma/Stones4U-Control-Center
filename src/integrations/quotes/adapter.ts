@@ -1,6 +1,7 @@
 import "server-only";
 import { prisma } from "@/platform/db/prisma";
 import { getMatchesForCustomer } from "@/modules/matching/matching.service";
+import { customerDisplayName } from "@/modules/crm/customer-identity";
 import { normalizeEmail } from "@/lib/email";
 
 // Quotes adapter (OfferteApp + s4u-quote-app) — read-only projection into
@@ -283,7 +284,7 @@ async function resolveQuoteToCustomer(quote: QuoteSummary): Promise<QuoteSearchR
   if (quote.shopifyCustomerGid) {
     profile = await prisma.customerProfile.findUnique({
       where: { shopifyCustomerGid: quote.shopifyCustomerGid },
-      select: { id: true, displayName: true, companyName: true },
+      select: { id: true, displayName: true, companyName: true, customerTypeOverride: true },
     });
   }
 
@@ -292,7 +293,7 @@ async function resolveQuoteToCustomer(quote: QuoteSummary): Promise<QuoteSearchR
     if (normalized) {
       profile = await prisma.customerProfile.findFirst({
         where: { email: { equals: normalized, mode: "insensitive" } },
-        select: { id: true, displayName: true, companyName: true },
+        select: { id: true, displayName: true, companyName: true, customerTypeOverride: true },
       });
     }
   }
@@ -301,7 +302,7 @@ async function resolveQuoteToCustomer(quote: QuoteSummary): Promise<QuoteSearchR
 
   return {
     customerProfileId: profile.id,
-    customerName: profile.displayName ?? profile.companyName ?? "Onbekende klant",
+    customerName: customerDisplayName(profile),
     externalId: quote.externalId,
     displayNumber: quote.displayNumber,
     sourceSystem: quote.sourceSystem,

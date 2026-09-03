@@ -35,6 +35,14 @@ enum CrmStatus {
   VIP
 }
 
+// Phase 5a — docs/architecture/ADR-011-CUSTOMER-IDENTITY-TYPE.md. Only ever
+// used as an explicit human override (CustomerProfile.customerTypeOverride)
+// — the derived value is never persisted, see effectiveCustomerType().
+enum CustomerType {
+  INDIVIDUAL
+  ORGANIZATION
+}
+
 enum TaskStatus {
   OPEN
   IN_PROGRESS
@@ -197,6 +205,17 @@ model CustomerProfile {
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
 
+  // Phase 5a — docs/architecture/ADR-011-CUSTOMER-IDENTITY-TYPE.md. Both
+  // Control-Center-owned, never touched by the Shopify sync. Null override
+  // means "derive from companyName" (see effectiveCustomerType() in
+  // src/modules/crm/customer-identity.ts) — this is NOT the same as
+  // "INDIVIDUAL"; a genuinely-derived INDIVIDUAL and an unset override both
+  // read as null here, which is intentional (ADR-011 §1).
+  customerTypeOverride CustomerType?
+  // Guards companyName against being overwritten by the next Shopify sync
+  // once a human has explicitly set/confirmed it (ADR-011 §2).
+  companyNameConfirmed Boolean       @default(false)
+
   notes           Note[]
   tasks           Task[]
   activities      Activity[]
@@ -266,11 +285,6 @@ model CustomerContact {
   appointments    Appointment[]
   tasks           Task[]
   notes           Note[]
-
-  @@index([customerProfileId])
-  @@index([emailNormalized])
-  @@index([phoneNormalized])
-  @@index([customerProfileId, archivedAt])
   // NOTE: a partial unique index enforcing "at most one active primary
   // contact per customer" (WHERE isPrimary = true AND archivedAt IS NULL)
   // also exists on this table, added directly in
@@ -283,6 +297,11 @@ model CustomerContact {
   // layer's $transaction and this DB constraint work together
   // (transaction handles the normal case, the constraint closes the
   // remaining true-concurrency race).
+
+  @@index([customerProfileId])
+  @@index([emailNormalized])
+  @@index([phoneNormalized])
+  @@index([customerProfileId, archivedAt])
 }
 
 // Centrally-owned CRM note (docs/architecture/ADR-003). Structured body

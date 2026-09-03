@@ -6,6 +6,7 @@ import { listUpcomingAppointments } from "@/modules/appointments/appointment.ser
 import { getRecentActivity } from "@/modules/activity/timeline";
 import { getSalesDashboardMetrics } from "@/modules/opportunities/dashboard";
 import { formatDateTime, formatMoney } from "@/lib/format";
+import { customerDisplayName } from "@/modules/crm/customer-identity";
 
 export default async function DashboardPage() {
   const user = await getSessionUser();
@@ -50,7 +51,7 @@ export default async function DashboardPage() {
                   <span className="min-w-0 flex-1">
                     <span className="block truncate font-medium text-ink-primary">{appointment.title}</span>
                     <span className="block truncate text-xs text-ink-tertiary">
-                      {appointment.customerProfile.displayName ?? appointment.customerProfile.companyName ?? "Klant"} · {formatDateTime(appointment.startsAt)}
+                      {customerDisplayName(appointment.customerProfile)} · {formatDateTime(appointment.startsAt)}
                     </span>
                   </span>
                 </Link>

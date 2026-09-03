@@ -10,6 +10,7 @@ import { IconButton } from "@/components/ui/IconButton";
 import { Input, Select, Textarea } from "@/components/ui/Input";
 import { Avatar } from "@/components/ui/Avatar";
 import { formatDate, formatDateTime } from "@/lib/format";
+import { customerDisplayName } from "@/modules/crm/customer-identity";
 
 type TaskStatus = "OPEN" | "IN_PROGRESS" | "WAITING" | "DONE" | "CANCELLED";
 type TaskPriority = "LOW" | "NORMAL" | "HIGH" | "URGENT";
@@ -27,7 +28,7 @@ type TaskDetail = {
   tags: string[];
   assignedTo: { id: string; name: string };
   createdBy: { id: string; name: string };
-  customerProfile: { id: string; displayName: string | null; companyName: string | null } | null;
+  customerProfile: { id: string; displayName: string | null; companyName: string | null; customerTypeOverride: "INDIVIDUAL" | "ORGANIZATION" | null } | null;
   checklistItems: ChecklistItem[];
   comments: Comment[];
 };
@@ -175,7 +176,7 @@ export function TaskDetailView({ initialTask, canEdit }: { initialTask: TaskDeta
               {task.dueAt && <span className="text-ink-tertiary">Deadline: <span className="font-medium text-ink-secondary">{formatDate(task.dueAt)}</span></span>}
               {task.customerProfile && (
                 <Link href={`/customers/${task.customerProfile.id}`} className="text-accent-600 hover:underline">
-                  {task.customerProfile.displayName ?? task.customerProfile.companyName ?? "Klant"}
+                  {customerDisplayName(task.customerProfile)}
                 </Link>
               )}
             </div>

@@ -14,7 +14,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
       include: {
         assignedTo: { select: { id: true, name: true } },
         createdBy: { select: { id: true, name: true } },
-        customerProfile: { select: { id: true, displayName: true, companyName: true } },
+        customerProfile: { select: { id: true, displayName: true, companyName: true, customerTypeOverride: true } },
       },
     });
     return NextResponse.json(appointment);

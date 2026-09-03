@@ -4,6 +4,7 @@ import { Prisma } from "@/generated/prisma";
 import type { OpportunityStage } from "@/generated/prisma";
 import { STAGE_DEFAULT_PROBABILITY } from "./labels";
 import { listOpportunities } from "./opportunity.service";
+import { customerDisplayName } from "@/modules/crm/customer-identity";
 
 // Phase 4B sales dashboard metrics (docs/platform-discovery/35-PHASE-4B-
 // SALES-ACTIVATION-ARCHITECTURE.md §9, docs/platform-discovery/36 §8-11).
@@ -108,7 +109,7 @@ export async function getSalesDashboardMetrics(filter: SalesDashboardFilter = {}
         title: true,
         finalValue: true,
         wonAt: true,
-        customerProfile: { select: { displayName: true, companyName: true } },
+        customerProfile: { select: { displayName: true, companyName: true, customerTypeOverride: true } },
       },
     }),
 
@@ -121,7 +122,7 @@ export async function getSalesDashboardMetrics(filter: SalesDashboardFilter = {}
         title: true,
         estimatedValue: true,
         lostAt: true,
-        customerProfile: { select: { displayName: true, companyName: true } },
+        customerProfile: { select: { displayName: true, companyName: true, customerTypeOverride: true } },
       },
     }),
   ]);
@@ -144,8 +145,6 @@ export async function getSalesDashboardMetrics(filter: SalesDashboardFilter = {}
     (o) => o.expectedCloseDate && o.expectedCloseDate.getTime() >= now.getTime() && o.expectedCloseDate.getTime() <= in30Days.getTime(),
   ).length;
 
-  const customerName = (c: { displayName: string | null; companyName: string | null }) => c.displayName ?? c.companyName ?? "Klant";
-
   return {
     openPipelineValue: (openSumAgg._sum.estimatedValue ?? new Prisma.Decimal(0)).toString(),
     weightedPipelineValue: weighted.toString(),
@@ -159,14 +158,14 @@ export async function getSalesDashboardMetrics(filter: SalesDashboardFilter = {}
     recentWon: recentWonRows.map((o) => ({
       id: o.id,
       title: o.title,
-      customerName: customerName(o.customerProfile),
+      customerName: customerDisplayName(o.customerProfile),
       value: o.finalValue?.toString() ?? null,
       closedAt: o.wonAt!.toISOString(),
     })),
     recentLost: recentLostRows.map((o) => ({
       id: o.id,
       title: o.title,
-      customerName: customerName(o.customerProfile),
+      customerName: customerDisplayName(o.customerProfile),
       value: o.estimatedValue?.toString() ?? null,
       closedAt: o.lostAt!.toISOString(),
     })),

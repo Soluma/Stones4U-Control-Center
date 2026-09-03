@@ -7,6 +7,7 @@ import { Avatar } from "@/components/ui/Avatar";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { SkeletonList } from "@/components/ui/Skeleton";
 import { cn } from "@/lib/cn";
+import { shopifyCustomerDisplayName, shopifyCustomerSecondaryName } from "@/modules/crm/customer-identity";
 
 type SearchResult = {
   shopify: {
@@ -136,11 +137,12 @@ export function CustomerSearch() {
                 index === activeIndex ? "bg-accent-50" : "hover:bg-surface-hover",
               )}
             >
-              <Avatar name={result.shopify.displayName} />
+              <Avatar name={shopifyCustomerDisplayName(result.shopify)} />
               <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-medium text-ink-primary">{result.shopify.displayName}</p>
+                <p className="truncate text-sm font-medium text-ink-primary">{shopifyCustomerDisplayName(result.shopify)}</p>
                 <p className="truncate text-xs text-ink-tertiary">
-                  {[result.shopify.company, result.shopify.email, result.shopify.phone].filter(Boolean).join(" · ") || "Geen contactgegevens"}
+                  {[shopifyCustomerSecondaryName(result.shopify), result.shopify.email, result.shopify.phone].filter(Boolean).join(" · ") ||
+                    "Geen contactgegevens"}
                 </p>
               </div>
               <div className="shrink-0 text-right">

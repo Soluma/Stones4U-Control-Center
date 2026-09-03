@@ -20,7 +20,7 @@ function assertCanModify(appointment: { assignedToId: string; createdById: strin
 const appointmentInclude = {
   assignedTo: { select: { id: true, name: true } },
   createdBy: { select: { id: true, name: true } },
-  customerProfile: { select: { id: true, displayName: true, companyName: true } },
+  customerProfile: { select: { id: true, displayName: true, companyName: true, customerTypeOverride: true } },
 } as const;
 
 export async function listAppointmentsForCustomer(customerProfileId: string) {

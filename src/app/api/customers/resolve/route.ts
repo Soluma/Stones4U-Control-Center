@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { requireUser } from "@/platform/auth/guards";
-import { getOrCreateCustomerProfile } from "@/modules/crm/customer-profile.service";
+import { syncCustomerIdentityFromShopify } from "@/modules/crm/customer-profile.service";
 import { toErrorResponse } from "@/lib/api-error";
 
 const bodySchema = z.object({ shopifyGid: z.string().min(1) });
@@ -16,7 +16,7 @@ export async function POST(request: NextRequest) {
     await requireUser();
     const { shopifyGid } = bodySchema.parse(await request.json());
 
-    const profile = await getOrCreateCustomerProfile(shopifyGid);
+    const profile = await syncCustomerIdentityFromShopify(shopifyGid);
     if (!profile) {
       return NextResponse.json({ error: "Shopify-klant niet gevonden." }, { status: 404 });
     }
