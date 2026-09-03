@@ -1,7 +1,9 @@
 # ADR-011 — Customer identity: persoon vs. organisatie, source-of-truth
 
-**Status**: Voorgesteld (2026-09-04), onderdeel van Phase 5A-discovery. Nog
-niet geïmplementeerd.
+**Status**: Geïmplementeerd, staging-geverifieerd (2026-09-04). Zie
+`docs/build/PHASE-5A-CUSTOMER-IDENTITY-STAGING.md` voor het volledige
+bouwrapport. Dit ADR is ongewijzigd geïmplementeerd zoals hieronder
+beschreven.
 
 ## Context
 
@@ -96,15 +98,16 @@ enige dat verandert is welk veld **primair** getoond wordt, afhankelijk van
   `CustomerType { INDIVIDUAL, ORGANIZATION }`. Geen bestaande kolom
   gewijzigd, geen backfill nodig — bestaande rijen vallen automatisch en
   correct terug op de afgeleide waarde.
-- Vijftien bestaande plekken die vandaag `displayName ?? companyName`
-  dupliceren, worden vervangen door één gedeelde `customerDisplayName()`-
+- Vijftien bestaande plekken die `displayName ?? companyName`
+  dupliceerden, zijn vervangen door één gedeelde `customerDisplayName()`-
   helper die `effectiveCustomerType()` gebruikt — een presentatie-only
-  wijziging, geen nieuwe query nodig (alle vijftien plekken selecteren
+  wijziging, geen nieuwe query nodig (alle vijftien plekken selecteerden
   `companyName` al).
-- `getOrCreateCustomerProfile()`/de sync-functie krijgt de
-  `companyNameConfirmed`-guard; `getCustomer360()` kan voortaan ook
-  synchroniseren met de Shopify-data die het toch al live ophaalt voor
-  weergave — nul nieuwe Shopify-aanroepen (zie architectuurdoc §8/§9).
+- De sync-functie (hernoemd van `getOrCreateCustomerProfile()` naar
+  `syncCustomerIdentityFromShopify()`) heeft de `companyNameConfirmed`-guard
+  gekregen; `getCustomer360()` synchroniseert nu ook met de Shopify-data
+  die het toch al live ophaalt voor weergave — nul nieuwe Shopify-
+  aanroepen (zie architectuurdoc §8/§9).
 - Matching (ADR-007), `CustomerContact` (ADR-010), en Opportunity-koppeling
   (ADR-009) blijven volledig ongewijzigd — `customerType`/`companyName`
   hebben geen enkele rol in identiteitsmatching, uitsluitend in presentatie.
