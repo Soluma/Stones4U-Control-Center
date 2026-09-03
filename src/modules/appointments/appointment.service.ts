@@ -3,6 +3,7 @@ import { prisma } from "@/platform/db/prisma";
 import { logAudit } from "@/platform/audit/audit";
 import { ForbiddenError } from "@/platform/auth/guards";
 import { resolveCustomerProfileIdForOpportunity } from "@/modules/opportunities/opportunity.service";
+import { assertContactBelongsToCustomer } from "@/modules/crm/customer-contact.service";
 import type { Role } from "@/generated/prisma";
 
 // Central Appointment model (docs/platform-discovery/26 §6). Same
@@ -68,12 +69,19 @@ export async function createAppointment(
     // Phase 4a — when set, customerProfileId is ALWAYS derived from the
     // opportunity, never the caller-supplied value.
     opportunityId?: string | null;
+    // Phase 4c — optional, server-verified against the resolved
+    // customerProfileId (build spec §22). UI may show "Afspraak met: {naam}".
+    customerContactId?: string | null;
   },
   actor: Actor,
 ) {
   const customerProfileId = input.opportunityId
     ? await resolveCustomerProfileIdForOpportunity(input.opportunityId)
     : input.customerProfileId!;
+
+  if (input.customerContactId) {
+    await assertContactBelongsToCustomer(input.customerContactId, customerProfileId);
+  }
 
   const appointment = await prisma.$transaction(async (tx) => {
     const created = await tx.appointment.create({
@@ -86,6 +94,7 @@ export async function createAppointment(
         assignedToId: input.assignedToId,
         createdById: actor.id,
         opportunityId: input.opportunityId ?? null,
+        customerContactId: input.customerContactId ?? null,
       },
       include: appointmentInclude,
     });
@@ -113,11 +122,23 @@ export async function createAppointment(
 
 export async function updateAppointment(
   appointmentId: string,
-  input: { title?: string; description?: string | null; startsAt?: Date; endsAt?: Date | null; assignedToId?: string },
+  input: {
+    title?: string;
+    description?: string | null;
+    startsAt?: Date;
+    endsAt?: Date | null;
+    assignedToId?: string;
+    // Phase 4c — optional, same invariant as createAppointment above.
+    customerContactId?: string | null;
+  },
   actor: Actor,
 ) {
   const appointment = await prisma.appointment.findUniqueOrThrow({ where: { id: appointmentId } });
   assertCanModify(appointment, actor);
+
+  if (input.customerContactId) {
+    await assertContactBelongsToCustomer(input.customerContactId, appointment.customerProfileId);
+  }
 
   const updated = await prisma.$transaction(async (tx) => {
     const result = await tx.appointment.update({ where: { id: appointmentId }, data: input, include: appointmentInclude });

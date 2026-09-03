@@ -147,9 +147,12 @@ model User {
   confirmedMatches ExternalContactMatch[]
 
   // Phase 4a
-  opportunitiesOwned     Opportunity[]             @relation("OpportunityOwner")
-  opportunitiesCreated   Opportunity[]             @relation("OpportunityCreatedBy")
-  opportunityLinksMade   OpportunityExternalLink[] @relation("OpportunityLinksMade")
+  opportunitiesOwned   Opportunity[]             @relation("OpportunityOwner")
+  opportunitiesCreated Opportunity[]             @relation("OpportunityCreatedBy")
+  opportunityLinksMade OpportunityExternalLink[] @relation("OpportunityLinksMade")
+
+  // Phase 4c
+  customerContactsCreated CustomerContact[]
 
   @@index([role])
 }
@@ -207,10 +210,79 @@ model CustomerProfile {
   externalMatches ExternalContactMatch[]
   // Phase 4a
   opportunities   Opportunity[]
+  // Phase 4c
+  contacts        CustomerContact[]
 
   @@index([phoneNormalized])
   @@index([email])
   @@index([crmStatus])
+}
+
+// Control-Center-owned person record for a business relationship at a
+// CustomerProfile (docs/architecture/ADR-010-CUSTOMER-CONTACT-MODEL.md,
+// docs/platform-discovery/38-PHASE-4C-CONTACTS-ARCHITECTURE.md §2). Never a
+// mirror of Shopify data (§14/ADR-010 §5) — a person is only ever recorded
+// here because a human explicitly added them. Belongs to exactly one
+// CustomerProfile (no many-to-many — architecture doc §1). Deliberately no
+// firstName/lastName split, no separate mobile/landline fields, no
+// `department` column, no free-text `notes` column — see architecture doc
+// §2 for why each was considered and rejected; contact-specific free text
+// belongs on Note (via Note.customerContactId) instead.
+model CustomerContact {
+  id                String          @id @default(cuid())
+  customerProfileId String
+  customerProfile   CustomerProfile @relation(fields: [customerProfileId], references: [id], onDelete: Cascade)
+
+  displayName String
+  jobTitle    String?
+
+  email           String?
+  emailNormalized String?
+  phone           String?
+  phoneNormalized String?
+
+  // Booleans, not a role enum (architecture doc §8) — the three are not
+  // mutually exclusive (an owner is often also the decision-maker and the
+  // billing contact at a small business) and jobTitle already covers
+  // free-text role description.
+  isPrimary        Boolean @default(false)
+  isDecisionMaker  Boolean @default(false)
+  isBillingContact Boolean @default(false)
+
+  // Soft-archive, never hard delete — unlike Opportunity (no restore path
+  // yet, Phase 4A), CustomerContact gets an explicit restore: archiving a
+  // contact is data-hygiene, not a commercial state transition, so a
+  // low-risk "oops" recovery is warranted (architecture doc §15, confirmed
+  // by Fons in the Phase 4C build instruction §0/A).
+  archivedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  createdById String
+  createdBy   User   @relation(fields: [createdById], references: [id])
+
+  externalMatches ExternalContactMatch[]
+  appointments    Appointment[]
+  tasks           Task[]
+  notes           Note[]
+
+  @@index([customerProfileId])
+  @@index([emailNormalized])
+  @@index([phoneNormalized])
+  @@index([customerProfileId, archivedAt])
+  // NOTE: a partial unique index enforcing "at most one active primary
+  // contact per customer" (WHERE isPrimary = true AND archivedAt IS NULL)
+  // also exists on this table, added directly in
+  // prisma/migrations/20260903174521_phase_4c_customer_contacts/migration.sql
+  // — Prisma's schema DSL has no WHERE-clause support for @@unique, so it
+  // is intentionally NOT declared here. Do not "fix" this by running
+  // `prisma db push` or regenerating this migration; both would try to
+  // reconcile the schema back to having no such index. See
+  // customer-contact.service.ts's setPrimaryContact() for how the service
+  // layer's $transaction and this DB constraint work together
+  // (transaction handles the normal case, the constraint closes the
+  // remaining true-concurrency race).
 }
 
 // Centrally-owned CRM note (docs/architecture/ADR-003). Structured body
@@ -234,8 +306,14 @@ model Note {
   updatedAt         DateTime        @updatedAt
 
   // Phase 4a — optional, same derivation invariant as Task.opportunityId.
-  opportunityId String?
-  opportunity   Opportunity? @relation(fields: [opportunityId], references: [id])
+  opportunityId     String?
+  opportunity       Opportunity?     @relation(fields: [opportunityId], references: [id])
+  // Phase 4c — optional. When set, the service layer verifies
+  // customerContact.customerProfileId equals this Note's own
+  // customerProfileId, never independently trusted from a caller (build
+  // spec §20/§21, same invariant style as opportunityId above).
+  customerContactId String?
+  customerContact   CustomerContact? @relation(fields: [customerContactId], references: [id])
 
   activities Activity[]
 
@@ -262,8 +340,13 @@ model Task {
   // Opportunity.customerProfileId by the service layer, never independently
   // trusted from a caller (ADR-009 §5, docs/platform-discovery/33 §build
   // spec — the exact invariant this column exists to support).
-  opportunityId String?
-  opportunity   Opportunity? @relation(fields: [opportunityId], references: [id])
+  opportunityId     String?
+  opportunity       Opportunity?     @relation(fields: [opportunityId], references: [id])
+  // Phase 4c — optional, same derivation/verification invariant as Note's
+  // customerContactId (build spec §20): when both opportunityId and
+  // customerContactId are set, they must imply the same CustomerProfile.
+  customerContactId String?
+  customerContact   CustomerContact? @relation(fields: [customerContactId], references: [id])
 
   // Prepared for later phases (docs/platform-discovery/25 §4) — not read or
   // written by any Phase 1 code path.
@@ -350,8 +433,11 @@ model Appointment {
   updatedAt          DateTime          @updatedAt
 
   // Phase 4a — optional, same derivation invariant as Task.opportunityId.
-  opportunityId String?
-  opportunity   Opportunity? @relation(fields: [opportunityId], references: [id])
+  opportunityId     String?
+  opportunity       Opportunity?     @relation(fields: [opportunityId], references: [id])
+  // Phase 4c — optional, same invariant style as Note/Task.
+  customerContactId String?
+  customerContact   CustomerContact? @relation(fields: [customerContactId], references: [id])
 
   activities Activity[]
 
@@ -539,11 +625,23 @@ model ExternalContactMatch {
   // hides it from active matching (ADR-007 rule 3).
   unlinkedAt        DateTime?
 
+  // Phase 4c — optional person-level enrichment of an already
+  // customer-level-resolved row (ADR-010 §2). Never part of the identity
+  // key: the unique constraint below stays (customerProfileId, source,
+  // externalRef), unchanged. onDelete: SetNull is defensive-only —
+  // CustomerContact is never hard-deleted in practice (soft-archive only,
+  // see CustomerContact.archivedAt) — but keeps this row intact rather
+  // than cascading a delete into matching history if that invariant is
+  // ever violated.
+  customerContactId String?
+  customerContact   CustomerContact? @relation(fields: [customerContactId], references: [id], onDelete: SetNull)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@unique([customerProfileId, source, externalRef])
   @@index([source, externalRef])
+  @@index([customerContactId])
 }
 
 // Phase 3C-A — docs/platform-discovery/30-PHASE-3C-EMAIL-INTEGRATION-DISCOVERY.md
@@ -557,13 +655,13 @@ enum EmailProvider {
 }
 
 model MonitoredMailbox {
-  id           String         @id @default(cuid())
-  emailAddress String         @unique
+  id           String        @id @default(cuid())
+  emailAddress String        @unique
   displayName  String?
   provider     EmailProvider
-  enabled      Boolean        @default(true)
-  createdAt    DateTime       @default(now())
-  updatedAt    DateTime       @updatedAt
+  enabled      Boolean       @default(true)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
 }
 
 // Phase 4A — docs/architecture/ADR-009-OPPORTUNITY-PIPELINE-MODEL.md,
@@ -598,9 +696,9 @@ enum OpportunityLinkType {
 }
 
 model Opportunity {
-  id                String            @id @default(cuid())
+  id                String          @id @default(cuid())
   customerProfileId String
-  customerProfile   CustomerProfile   @relation(fields: [customerProfileId], references: [id])
+  customerProfile   CustomerProfile @relation(fields: [customerProfileId], references: [id])
 
   title       String
   description String? @db.Text
@@ -611,8 +709,8 @@ model Opportunity {
   // Decimal, never a JS float — see ADR-009 §6. No currency column: this
   // whole app is single-shop EUR (formatMoney() already assumes it), so a
   // column the UI never lets you change would be premature.
-  estimatedValue Decimal? @db.Decimal(12, 2)
-  finalValue     Decimal? @db.Decimal(12, 2)
+  estimatedValue    Decimal?  @db.Decimal(12, 2)
+  finalValue        Decimal?  @db.Decimal(12, 2)
   // 0–100. Null = no explicit human value yet; the UI falls back to a
   // stage-default (architecture doc §14) for display/weighting only — that
   // default is never written back here (ADR-009: explicit human decisions
@@ -660,7 +758,7 @@ model OpportunityExternalLink {
   opportunityId String
   opportunity   Opportunity @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
 
-  linkType OpportunityLinkType
+  linkType    OpportunityLinkType
   // Meaning is linkType-dependent (offerte externalId or Shopify GID) —
   // never the external document itself, mirrors
   // ExternalContactMatch.externalRef (ADR-007).

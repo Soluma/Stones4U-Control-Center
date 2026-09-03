@@ -21,6 +21,7 @@ const createTaskSchema = z.object({
   priority: z.enum(["LOW", "NORMAL", "HIGH", "URGENT"]).optional(),
   assignedToId: z.string().min(1),
   dueAt: z.string().datetime().optional(),
+  customerContactId: z.string().nullable().optional(),
 });
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -37,6 +38,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         assignedToId: input.assignedToId,
         opportunityId: id,
         dueAt: input.dueAt ? new Date(input.dueAt) : null,
+        customerContactId: input.customerContactId,
       },
       actor,
     );

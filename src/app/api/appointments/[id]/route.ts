@@ -32,6 +32,7 @@ const patchSchema = z.union([
     startsAt: z.string().datetime().optional(),
     endsAt: z.string().datetime().nullable().optional(),
     assignedToId: z.string().min(1).optional(),
+    customerContactId: z.string().nullable().optional(),
   }),
 ]);
 
@@ -55,6 +56,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
           startsAt: input.startsAt ? new Date(input.startsAt) : undefined,
           endsAt: input.endsAt === undefined ? undefined : input.endsAt ? new Date(input.endsAt) : null,
           assignedToId: input.assignedToId,
+          customerContactId: input.customerContactId,
         },
         actor,
       );

@@ -8,6 +8,7 @@ import {
   listAppointmentsForCustomer,
   listUpcomingAppointments,
 } from "@/modules/appointments/appointment.service";
+import { createContact, CustomerContactValidationError } from "@/modules/crm/customer-contact.service";
 import { ForbiddenError } from "@/platform/auth/guards";
 import { createTestCustomerProfile, createTestUser, cleanupCustomerProfile, cleanupUser } from "./fixtures";
 
@@ -107,5 +108,48 @@ describe("appointment.service", () => {
     expect(upcoming.every((a) => a.status === "SCHEDULED")).toBe(true);
     expect(upcoming.some((a) => a.id === past.id)).toBe(false);
     expect(upcoming.every((a) => a.assignedToId === assignee.id)).toBe(true);
+  });
+
+  describe("Phase 4c — customerContactId invariant (build spec §22)", () => {
+    it("allows a contact belonging to the same customer, on create and update", async () => {
+      const { contact } = await createContact({ customerProfileId, displayName: "Jan Jansen" }, creator);
+      const appointment = await createAppointment(
+        { customerProfileId, title: "Afspraak met Jan", startsAt: new Date(Date.now() + 86_400_000), assignedToId: assignee.id, customerContactId: contact.id },
+        creator,
+      );
+      expect(appointment.customerContactId).toBe(contact.id);
+
+      const other = await createAppointment(
+        { customerProfileId, title: "Nog een afspraak", startsAt: new Date(Date.now() + 86_400_000), assignedToId: assignee.id },
+        creator,
+      );
+      const updated = await updateAppointment(other.id, { customerContactId: contact.id }, creator);
+      expect(updated.customerContactId).toBe(contact.id);
+    });
+
+    it("blocks a contact belonging to a different customer, on create and update", async () => {
+      const otherProfile = await createTestCustomerProfile();
+      try {
+        const { contact } = await createContact({ customerProfileId: otherProfile.id, displayName: "Klant B Contact" }, creator);
+
+        await expect(
+          createAppointment(
+            { customerProfileId, title: "Verkeerde klant", startsAt: new Date(Date.now() + 86_400_000), assignedToId: assignee.id, customerContactId: contact.id },
+            creator,
+          ),
+        ).rejects.toBeInstanceOf(CustomerContactValidationError);
+
+        const appointment = await createAppointment(
+          { customerProfileId, title: "Wordt fout gekoppeld", startsAt: new Date(Date.now() + 86_400_000), assignedToId: assignee.id },
+          creator,
+        );
+        await expect(updateAppointment(appointment.id, { customerContactId: contact.id }, creator)).rejects.toBeInstanceOf(
+          CustomerContactValidationError,
+        );
+      } finally {
+        await prisma.customerContact.deleteMany({ where: { customerProfileId: otherProfile.id } });
+        await cleanupCustomerProfile(otherProfile.id);
+      }
+    });
   });
 });

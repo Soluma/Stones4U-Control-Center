@@ -47,7 +47,13 @@ export type AuditAction =
   | "opportunity.reopened"
   | "opportunity.archived"
   | "opportunity.external_link_added"
-  | "opportunity.external_link_removed";
+  | "opportunity.external_link_removed"
+  // Phase 4c — docs/architecture/ADR-010-CUSTOMER-CONTACT-MODEL.md
+  | "customer_contact.created"
+  | "customer_contact.updated"
+  | "customer_contact.primary_changed"
+  | "customer_contact.archived"
+  | "customer_contact.restored";
 
 export type AuditEntityType =
   | "User"
@@ -65,7 +71,9 @@ export type AuditEntityType =
   | "ExternalContactMatch"
   // Phase 4a
   | "Opportunity"
-  | "OpportunityExternalLink";
+  | "OpportunityExternalLink"
+  // Phase 4c
+  | "CustomerContact";
 
 type LogAuditInput = {
   userId: string | null;

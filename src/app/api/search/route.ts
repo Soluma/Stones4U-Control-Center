@@ -6,6 +6,7 @@ import { searchShopifyOrders } from "@/integrations/shopify/order-search";
 import { isShopifyConfigured } from "@/integrations/shopify/client";
 import { searchQuotesByNumber } from "@/integrations/quotes/adapter";
 import { searchOpportunities } from "@/modules/opportunities/opportunity.service";
+import { searchCustomerContacts } from "@/modules/crm/customer-contact.service";
 import { toErrorResponse } from "@/lib/api-error";
 
 // Global command-palette search (Ctrl/Cmd+K). Phase 2 scope was customers +
@@ -121,6 +122,29 @@ export async function GET(request: NextRequest) {
       }
     } catch (error) {
       console.error("opportunity_search_failed", error);
+    }
+
+    // Phase 4c — docs/platform-discovery/38-PHASE-4C-CONTACTS-ARCHITECTURE.md
+    // §13. Own try/catch, same fail-isolation as orders/quotes/opportunities
+    // above. Searches only CustomerContact's own fields — never the
+    // customer's own name (that's the existing `customers` group above).
+    try {
+      const contacts = await searchCustomerContacts(term);
+      if (contacts.length > 0) {
+        groups.push({
+          key: "contacts",
+          label: "Contactpersonen",
+          items: contacts.map((c) => ({
+            id: c.id,
+            kind: "contact" as const,
+            title: c.displayName,
+            subtitle: [c.customerProfile.displayName ?? c.customerProfile.companyName, c.email].filter(Boolean).join(" · "),
+            href: `/customers/${c.customerProfileId}`,
+          })),
+        });
+      }
+    } catch (error) {
+      console.error("contact_search_failed", error);
     }
 
     return NextResponse.json({ groups });

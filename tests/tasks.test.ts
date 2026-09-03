@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/platform/db/prisma";
-import { assignTask, createTask, listTasksForCustomer, updateTaskStatus } from "@/modules/tasks/task.service";
+import { assignTask, createTask, listTasksForCustomer, updateTaskStatus, updateTaskDetails } from "@/modules/tasks/task.service";
+import { createContact, CustomerContactValidationError } from "@/modules/crm/customer-contact.service";
 import { ForbiddenError } from "@/platform/auth/guards";
 import { createTestCustomerProfile, createTestUser, cleanupCustomerProfile, cleanupUser } from "./fixtures";
 
@@ -68,5 +69,65 @@ describe("task.service", () => {
   it("forbids an unrelated agent from reassigning a task", async () => {
     const task = await createTask({ title: "Herverdelen", assignedToId: assignee.id, customerProfileId }, creator);
     await expect(assignTask(task.id, bystander.id, bystander)).rejects.toBeInstanceOf(ForbiddenError);
+  });
+
+  describe("Phase 4c — customerContactId invariant (build spec §20)", () => {
+    it("allows a contact belonging to the same customer", async () => {
+      const { contact } = await createContact({ customerProfileId, displayName: "Jan Jansen" }, creator);
+      const task = await createTask({ title: "Jan terugbellen", assignedToId: assignee.id, customerProfileId, customerContactId: contact.id }, creator);
+      expect(task.customerContactId).toBe(contact.id);
+    });
+
+    it("blocks a contact belonging to a different customer than the task's own customer", async () => {
+      const otherProfile = await createTestCustomerProfile();
+      try {
+        const { contact } = await createContact({ customerProfileId: otherProfile.id, displayName: "Klant B Contact" }, creator);
+        await expect(
+          createTask({ title: "Verkeerde klant", assignedToId: assignee.id, customerProfileId, customerContactId: contact.id }, creator),
+        ).rejects.toBeInstanceOf(CustomerContactValidationError);
+      } finally {
+        await prisma.customerContact.deleteMany({ where: { customerProfileId: otherProfile.id } });
+        await cleanupCustomerProfile(otherProfile.id);
+      }
+    });
+
+    it("blocks a contact belonging to a different customer than an opportunity-derived customer", async () => {
+      const { createOpportunity } = await import("@/modules/opportunities/opportunity.service");
+      const otherProfile = await createTestCustomerProfile();
+      try {
+        const opportunity = await createOpportunity({ customerProfileId, title: "Opportunity A", ownerUserId: creator.id }, creator);
+        const { contact } = await createContact({ customerProfileId: otherProfile.id, displayName: "Klant B Contact" }, creator);
+        await expect(
+          createTask({ title: "Opportunity A + contact B", assignedToId: assignee.id, opportunityId: opportunity.id, customerContactId: contact.id }, creator),
+        ).rejects.toBeInstanceOf(CustomerContactValidationError);
+      } finally {
+        await prisma.customerContact.deleteMany({ where: { customerProfileId: otherProfile.id } });
+        await cleanupCustomerProfile(otherProfile.id);
+      }
+    });
+
+    it("allows a contact matching the opportunity-derived customer", async () => {
+      const { createOpportunity } = await import("@/modules/opportunities/opportunity.service");
+      const opportunity = await createOpportunity({ customerProfileId, title: "Opportunity Zelfde Klant", ownerUserId: creator.id }, creator);
+      const { contact } = await createContact({ customerProfileId, displayName: "Zelfde Klant Contact" }, creator);
+      const task = await createTask(
+        { title: "Zelfde klant, ok", assignedToId: assignee.id, opportunityId: opportunity.id, customerContactId: contact.id },
+        creator,
+      );
+      expect(task.customerContactId).toBe(contact.id);
+      expect(task.customerProfileId).toBe(customerProfileId);
+    });
+
+    it("blocks setting customerContactId via updateTaskDetails when it belongs to a different customer", async () => {
+      const otherProfile = await createTestCustomerProfile();
+      try {
+        const task = await createTask({ title: "Update-test", assignedToId: assignee.id, customerProfileId }, creator);
+        const { contact } = await createContact({ customerProfileId: otherProfile.id, displayName: "Klant B" }, creator);
+        await expect(updateTaskDetails(task.id, { customerContactId: contact.id }, creator)).rejects.toBeInstanceOf(CustomerContactValidationError);
+      } finally {
+        await prisma.customerContact.deleteMany({ where: { customerProfileId: otherProfile.id } });
+        await cleanupCustomerProfile(otherProfile.id);
+      }
+    });
   });
 });

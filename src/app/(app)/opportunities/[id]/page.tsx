@@ -4,6 +4,7 @@ import { ArrowLeft } from "lucide-react";
 import { getSessionUser } from "@/platform/auth/session";
 import { prisma } from "@/platform/db/prisma";
 import { getOpportunityDetail, getOpportunityAttentionContext } from "@/modules/opportunities/opportunity.service";
+import { listContactsForCustomer } from "@/modules/crm/customer-contact.service";
 import { getOpportunityTimeline } from "@/modules/activity/timeline";
 import { createQuotesAdapter, type QuoteSummary } from "@/integrations/quotes/adapter";
 import { createTelephonyAdapter, type TelephonyActivityItem } from "@/integrations/telephony/adapter";
@@ -60,6 +61,12 @@ export default async function OpportunityDetailPage({ params, searchParams }: Pa
 
   const canEdit = user.role !== "VIEWER";
   const customerName = customer.displayName ?? customer.companyName ?? "Klant";
+
+  // Phase 4c — read-only, no OpportunityContact relation (architecture doc
+  // §9/§10 — a concrete, aantoonbaar-needed relation was never shown, so
+  // this simply reuses the customer's own contact list rather than storing
+  // a duplicate on Opportunity).
+  const contacts = await listContactsForCustomer(customer.id);
 
   // Same fail-isolation pattern as Customer 360 (src/app/(app)/customers/[id]/page.tsx)
   // — a hiccup in one federated source never takes down the rest of the page.
@@ -265,8 +272,42 @@ export default async function OpportunityDetailPage({ params, searchParams }: Pa
             estimatedValue={opportunity.estimatedValue ? opportunity.estimatedValue.toString() : null}
             canEdit={canEdit}
           />
+          <OpportunityContactsPanel customerId={customer.id} contacts={contacts} />
         </div>
       </div>
+    </div>
+  );
+}
+
+// Phase 4c — read-only (architecture doc §10): no "koppelen" action, no
+// Opportunity-level contact relation to write. Links to Customer 360 where
+// contacts are actually managed.
+function OpportunityContactsPanel({
+  customerId,
+  contacts,
+}: {
+  customerId: string;
+  contacts: Awaited<ReturnType<typeof listContactsForCustomer>>;
+}) {
+  if (contacts.length === 0) return null;
+
+  return (
+    <div className="cc-card space-y-2 p-4">
+      <h2 className="text-sm font-medium text-ink-secondary">Contactpersonen bij deze klant</h2>
+      <ul className="space-y-1.5 text-sm">
+        {contacts.map((contact) => (
+          <li key={contact.id} className="flex items-baseline justify-between gap-2">
+            <span className="truncate text-ink-primary">
+              {contact.displayName}
+              {contact.isPrimary && <span className="ml-1 text-xs text-accent-600">(primair)</span>}
+            </span>
+            {contact.jobTitle && <span className="shrink-0 truncate text-xs text-ink-tertiary">{contact.jobTitle}</span>}
+          </li>
+        ))}
+      </ul>
+      <a href={`/customers/${customerId}`} className="text-xs text-accent-600 hover:underline">
+        Beheren op Customer 360 →
+      </a>
     </div>
   );
 }

@@ -25,6 +25,7 @@ const createTaskSchema = z.object({
   priority: z.enum(["LOW", "NORMAL", "HIGH", "URGENT"]).optional(),
   assignedToId: z.string().min(1),
   customerProfileId: z.string().optional(),
+  customerContactId: z.string().nullable().optional(),
   dueAt: z.string().datetime().optional(),
 });
 
@@ -40,6 +41,7 @@ export async function POST(request: NextRequest) {
         priority: input.priority,
         assignedToId: input.assignedToId,
         customerProfileId: input.customerProfileId,
+        customerContactId: input.customerContactId,
         dueAt: input.dueAt ? new Date(input.dueAt) : null,
       },
       actor,

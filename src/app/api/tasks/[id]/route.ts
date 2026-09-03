@@ -25,6 +25,7 @@ const patchSchema = z.union([
     dueAt: z.string().datetime().nullable().optional(),
     reminderAt: z.string().datetime().nullable().optional(),
     tags: z.array(z.string().min(1).max(40)).max(20).optional(),
+    customerContactId: z.string().nullable().optional(),
   }),
 ]);
 
@@ -57,6 +58,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
           dueAt: input.dueAt === undefined ? undefined : input.dueAt ? new Date(input.dueAt) : null,
           reminderAt: input.reminderAt === undefined ? undefined : input.reminderAt ? new Date(input.reminderAt) : null,
           tags: input.tags,
+          customerContactId: input.customerContactId,
         },
         actor,
       );

@@ -6,6 +6,9 @@ import { createExactHistoryAdapter } from "@/integrations/exact/adapter";
 import type { ShopifyOrderSummary, ShopifyDraftOrderSummary } from "@/integrations/shopify/types";
 import { stableEmailId } from "@/integrations/email/types";
 import type { NormalizedEmailMessage } from "@/integrations/email/types";
+import { normalizeEmail } from "@/lib/email";
+import { normalizeDutchPhone } from "@/lib/phone";
+import { matchContactByEmail, matchContactByPhone, type ContactIdentity } from "@/modules/crm/contact-timeline";
 
 // The unified Activity Timeline — combines "A" (Control-Center-owned,
 // stored in the Activity table) and "B" (external, projected at render
@@ -35,6 +38,11 @@ export async function getCustomerTimeline(
     // the Graph query and the Overview "Recente e-mails" block never issue
     // it twice.
     emailMessages?: NormalizedEmailMessage[];
+    // Phase 4c — active CustomerContact rows for this customer, fetched
+    // once by the caller (already needed for the Contactpersonen section
+    // itself) and reused here purely for in-memory title enrichment
+    // (architecture doc §12) — never a new query, never a new external call.
+    contacts?: ContactIdentity[];
   },
 ): Promise<TimelineItem[]> {
   const ownedActivities = await prisma.activity.findMany({
@@ -94,14 +102,18 @@ export async function getCustomerTimeline(
     exact.getSummaryForCustomer({}),
   ]);
 
-  const telephonyItems: TimelineItem[] = callItems.map((call) => ({
-    id: `telefoon-${call.id}`,
-    occurredAt: new Date(call.occurredAt),
-    source: "TELEFOONSYSTEEM",
-    kind: "CALL",
-    title: call.title,
-    summary: call.summary ?? null,
-  }));
+  const contacts = context.contacts ?? [];
+  const telephonyItems: TimelineItem[] = callItems.map((call) => {
+    const contact = call.phoneNumber ? matchContactByPhone(contacts, normalizeDutchPhone(call.phoneNumber)) : null;
+    return {
+      id: `telefoon-${call.id}`,
+      occurredAt: new Date(call.occurredAt),
+      source: "TELEFOONSYSTEEM",
+      kind: "CALL",
+      title: contact ? `${call.title} — ${contact.displayName}` : call.title,
+      summary: call.summary ?? null,
+    };
+  });
 
   // One QUOTE_CREATED event per quote — never a synthesized QUOTE_UPDATED,
   // since neither source system exposes an update history this could
@@ -134,18 +146,29 @@ export async function getCustomerTimeline(
   // (docs/platform-discovery/30 §8) so two mailboxes/providers can never
   // collide, mirroring the existing shopify-order-{gid}/telefoon-{id}
   // pattern.
-  const emailItems: TimelineItem[] = (context.emailMessages ?? []).map((message) => emailToTimelineItem(message));
+  const emailItems: TimelineItem[] = (context.emailMessages ?? []).map((message) => emailToTimelineItem(message, contacts));
 
   return [...ownedItems, ...orderItems, ...draftOrderItems, ...telephonyItems, ...quoteTimelineItems, ...invoiceItems, ...emailItems].sort(
     (a, b) => b.occurredAt.getTime() - a.occurredAt.getTime(),
   );
 }
 
-export function emailToTimelineItem(message: NormalizedEmailMessage): TimelineItem {
+/** `contacts` optional (defaults to none) — every existing caller that
+ * doesn't yet know about Phase 4C contacts keeps working unchanged. When
+ * provided, a normalized-exact match on the relevant participant's address
+ * replaces the raw header name — headers are often generic/unreliable
+ * ("Info", a shared mailbox display name), while a matched CustomerContact
+ * name is a verified, human-entered identity (architecture doc §12). */
+export function emailToTimelineItem(message: NormalizedEmailMessage, contacts: ContactIdentity[] = []): TimelineItem {
+  const participant = message.direction === "INBOUND" ? message.from : message.to[0];
+  const matchedContact = matchContactByEmail(contacts, participant ? normalizeEmail(participant.address) : null);
+  const extraRecipientsSuffix =
+    message.direction === "OUTBOUND" && message.to.length + message.cc.length > 1 ? ` (+${message.to.length + message.cc.length - 1})` : "";
+
   const counterpart =
     message.direction === "INBOUND"
-      ? message.from.name ?? message.from.address
-      : (message.to[0]?.name ?? message.to[0]?.address ?? "onbekend") + (message.to.length + message.cc.length > 1 ? ` (+${message.to.length + message.cc.length - 1})` : "");
+      ? matchedContact?.displayName ?? message.from.name ?? message.from.address
+      : (matchedContact?.displayName ?? message.to[0]?.name ?? message.to[0]?.address ?? "onbekend") + extraRecipientsSuffix;
 
   return {
     id: stableEmailId(message),

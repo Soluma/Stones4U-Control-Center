@@ -3,6 +3,7 @@ import { prisma } from "@/platform/db/prisma";
 import { logAudit } from "@/platform/audit/audit";
 import { ForbiddenError } from "@/platform/auth/guards";
 import { resolveCustomerProfileIdForOpportunity } from "@/modules/opportunities/opportunity.service";
+import { assertContactBelongsToCustomer, CustomerContactValidationError } from "@/modules/crm/customer-contact.service";
 import type { TaskPriority, TaskStatus, Role } from "@/generated/prisma";
 
 type Actor = { id: string; role: Role };
@@ -28,11 +29,21 @@ export async function createTask(input: {
   // an opportunity of customer A can never end up attached to a task that
   // also claims customer B.
   opportunityId?: string | null;
+  // Phase 4c — optional, same server-verified invariant style as
+  // opportunityId above (build spec §20): must belong to the same customer
+  // as this task (whether that came from customerProfileId directly or was
+  // derived from opportunityId).
+  customerContactId?: string | null;
   dueAt?: Date | null;
 }, actor: Actor) {
   const customerProfileId = input.opportunityId
     ? await resolveCustomerProfileIdForOpportunity(input.opportunityId)
     : input.customerProfileId ?? null;
+
+  if (input.customerContactId) {
+    if (!customerProfileId) throw new CustomerContactValidationError("Een contactpersoon vereist een klantcontext.");
+    await assertContactBelongsToCustomer(input.customerContactId, customerProfileId);
+  }
 
   const task = await prisma.$transaction(async (tx) => {
     const created = await tx.task.create({
@@ -44,6 +55,7 @@ export async function createTask(input: {
         createdById: actor.id,
         customerProfileId,
         opportunityId: input.opportunityId ?? null,
+        customerContactId: input.customerContactId ?? null,
         dueAt: input.dueAt ?? null,
       },
     });
@@ -283,11 +295,19 @@ export async function updateTaskDetails(
     dueAt?: Date | null;
     reminderAt?: Date | null;
     tags?: string[];
+    // Phase 4c — optional, same server-verified invariant as createTask's
+    // customerContactId (build spec §20).
+    customerContactId?: string | null;
   },
   actor: Actor,
 ) {
   const task = await prisma.task.findUniqueOrThrow({ where: { id: taskId } });
   assertCanModify(task, actor);
+
+  if (input.customerContactId) {
+    if (!task.customerProfileId) throw new CustomerContactValidationError("Een contactpersoon vereist een klantcontext.");
+    await assertContactBelongsToCustomer(input.customerContactId, task.customerProfileId);
+  }
 
   const updated = await prisma.$transaction(async (tx) => {
     const result = await tx.task.update({ where: { id: taskId }, data: input });

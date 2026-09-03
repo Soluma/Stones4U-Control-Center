@@ -8,7 +8,7 @@ import { cn } from "@/lib/cn";
 
 type SearchItem = {
   id: string;
-  kind: "customer" | "task" | "order" | "quote" | "opportunity";
+  kind: "customer" | "task" | "order" | "quote" | "opportunity" | "contact";
   title: string;
   subtitle: string;
   shopifyGid?: string;
@@ -103,7 +103,7 @@ export function CommandPalette() {
       return;
     }
     const searchItem = item as SearchItem;
-    if ((searchItem.kind === "task" || searchItem.kind === "opportunity") && searchItem.href) {
+    if ((searchItem.kind === "task" || searchItem.kind === "opportunity" || searchItem.kind === "contact") && searchItem.href) {
       setOpen(false);
       router.push(searchItem.href);
       return;
@@ -211,7 +211,9 @@ export function CommandPalette() {
                         ? FileText
                         : "kind" in item && item.kind === "opportunity"
                           ? TrendingUp
-                          : null;
+                          : "kind" in item && item.kind === "contact"
+                            ? Users
+                            : null;
                 return (
                   <button
                     key={item.id}

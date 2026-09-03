@@ -21,6 +21,7 @@ const createSchema = z.object({
   startsAt: z.string().datetime(),
   endsAt: z.string().datetime().optional(),
   assignedToId: z.string().min(1),
+  customerContactId: z.string().nullable().optional(),
 });
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -37,6 +38,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         startsAt: new Date(input.startsAt),
         endsAt: input.endsAt ? new Date(input.endsAt) : null,
         assignedToId: input.assignedToId,
+        customerContactId: input.customerContactId,
       },
       actor,
     );

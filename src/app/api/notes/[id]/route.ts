@@ -7,6 +7,7 @@ import { toErrorResponse } from "@/lib/api-error";
 const updateSchema = z.object({
   bodyPlainText: z.string().min(1).max(20_000),
   tags: z.array(z.string().min(1).max(40)).max(20).optional(),
+  customerContactId: z.string().nullable().optional(),
 });
 
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {

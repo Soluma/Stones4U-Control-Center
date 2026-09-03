@@ -4,6 +4,7 @@ import { logAudit } from "@/platform/audit/audit";
 import { ForbiddenError } from "@/platform/auth/guards";
 import { parsePlainTextToRichDoc, richDocToPlainText, richTextDocSchema, type RichTextDoc } from "@/platform/security/rich-text";
 import { resolveCustomerProfileIdForOpportunity } from "@/modules/opportunities/opportunity.service";
+import { assertContactBelongsToCustomer } from "@/modules/crm/customer-contact.service";
 import type { Role } from "@/generated/prisma";
 
 type Actor = { id: string; role: Role };
@@ -45,12 +46,19 @@ export async function createNote(input: {
   // Phase 4a — when set, customerProfileId is ALWAYS derived from the
   // opportunity, never the caller-supplied value.
   opportunityId?: string | null;
+  // Phase 4c — optional, server-verified against the resolved
+  // customerProfileId (build spec §21).
+  customerContactId?: string | null;
 }) {
   const bodyJson = parsePlainTextToRichDoc(input.bodyPlainText);
   const bodyText = richDocToPlainText(bodyJson);
   const customerProfileId = input.opportunityId
     ? await resolveCustomerProfileIdForOpportunity(input.opportunityId)
     : input.customerProfileId!;
+
+  if (input.customerContactId) {
+    await assertContactBelongsToCustomer(input.customerContactId, customerProfileId);
+  }
 
   const note = await prisma.$transaction(async (tx) => {
     const created = await tx.note.create({
@@ -61,6 +69,7 @@ export async function createNote(input: {
         bodyText,
         tags: input.tags ?? [],
         opportunityId: input.opportunityId ?? null,
+        customerContactId: input.customerContactId ?? null,
       },
     });
 
@@ -94,11 +103,15 @@ export async function createNote(input: {
 
 export async function updateNote(
   noteId: string,
-  input: { bodyPlainText: string; tags?: string[] },
+  input: { bodyPlainText: string; tags?: string[]; customerContactId?: string | null },
   actor: Actor,
 ) {
   const existing = await prisma.note.findUniqueOrThrow({ where: { id: noteId } });
   assertCanModifyNote(existing, actor);
+
+  if (input.customerContactId) {
+    await assertContactBelongsToCustomer(input.customerContactId, existing.customerProfileId);
+  }
 
   const bodyJson = parsePlainTextToRichDoc(input.bodyPlainText);
   const bodyText = richDocToPlainText(bodyJson);
@@ -106,7 +119,13 @@ export async function updateNote(
   const note = await prisma.$transaction(async (tx) => {
     const updated = await tx.note.update({
       where: { id: noteId },
-      data: { bodyJson: bodyJson as never, bodyText, tags: input.tags, editedAt: new Date() },
+      data: {
+        bodyJson: bodyJson as never,
+        bodyText,
+        tags: input.tags,
+        editedAt: new Date(),
+        customerContactId: input.customerContactId !== undefined ? input.customerContactId : undefined,
+      },
     });
 
     await tx.activity.create({

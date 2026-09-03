@@ -22,10 +22,12 @@ export type MatchResolution =
   | { status: "exact"; customerProfileId: string; matchId: string }
   | { status: "ambiguous"; candidateCustomerProfileIds: string[] };
 
-/** Looks up CustomerProfile candidates for a raw phone number and records
- * the result as ExternalContactMatch row(s) — never returns/exposes an
- * AMBIGUOUS result as usable data (ADR-007 rule 2); callers must resolve
- * ambiguity via confirmMatch() before treating it as a real match. */
+/** Looks up CustomerProfile candidates for a raw phone number (both the
+ * profile's own phoneNormalized AND every active CustomerContact's
+ * phoneNormalized, Phase 4C — ADR-010 §3) and records the result as
+ * ExternalContactMatch row(s) — never returns/exposes an AMBIGUOUS result
+ * as usable data (ADR-007 rule 2); callers must resolve ambiguity via
+ * confirmMatch() before treating it as a real match. */
 export async function resolveAndRecordByPhone(
   phoneRaw: string,
   source: MatchSource,
@@ -33,11 +35,12 @@ export async function resolveAndRecordByPhone(
 ): Promise<MatchResolution> {
   const normalized = normalizeDutchPhone(phoneRaw);
   if (!normalized) return { status: "unmatched" };
-  const candidates = await prisma.customerProfile.findMany({
-    where: { phoneNormalized: normalized },
-    select: { id: true },
-  });
-  return recordCandidates(candidates.map((c) => c.id), source, externalRef, "PHONE");
+  const [profileCandidates, contactCandidates] = await Promise.all([
+    prisma.customerProfile.findMany({ where: { phoneNormalized: normalized }, select: { id: true } }),
+    prisma.customerContact.findMany({ where: { phoneNormalized: normalized }, select: { id: true, customerProfileId: true, archivedAt: true } }),
+  ]);
+  const { customerProfileIds, activeContactIdsByCustomer } = buildCandidateSets(profileCandidates, contactCandidates);
+  return recordCandidates(customerProfileIds, activeContactIdsByCustomer, source, externalRef, "PHONE");
 }
 
 /** Same as resolveAndRecordByPhone, keyed on email instead. */
@@ -48,15 +51,46 @@ export async function resolveAndRecordByEmail(
 ): Promise<MatchResolution> {
   const normalized = normalizeEmail(emailRaw);
   if (!normalized) return { status: "unmatched" };
-  const candidates = await prisma.customerProfile.findMany({
-    where: { email: { equals: normalized, mode: "insensitive" } },
-    select: { id: true },
-  });
-  return recordCandidates(candidates.map((c) => c.id), source, externalRef, "EMAIL");
+  const [profileCandidates, contactCandidates] = await Promise.all([
+    prisma.customerProfile.findMany({ where: { email: { equals: normalized, mode: "insensitive" } }, select: { id: true } }),
+    prisma.customerContact.findMany({ where: { emailNormalized: normalized }, select: { id: true, customerProfileId: true, archivedAt: true } }),
+  ]);
+  const { customerProfileIds, activeContactIdsByCustomer } = buildCandidateSets(profileCandidates, contactCandidates);
+  return recordCandidates(customerProfileIds, activeContactIdsByCustomer, source, externalRef, "EMAIL");
+}
+
+/** Merges CustomerProfile-level and CustomerContact-level candidates into
+ * one deduplicated customer-candidate set (Phase 4C, ADR-010 §3) — a
+ * customer is "found" whether the identity matched the profile's own
+ * Shopify-snapshot address/number OR one of its contacts', archived or not
+ * (an archived contact's address is still evidence of which CUSTOMER an
+ * inbound identity belongs to — ADR-010 §4's "klant blijft bekend"). The
+ * separately-tracked activeContactIdsByCustomer map, however, only ever
+ * contains NON-archived contacts — an archived contact must never become
+ * the automatically-matched *specific person* (build instruction §8
+ * scenario E, a deliberate refinement of ADR-010's original wording, see
+ * docs/build/PHASE-4C-CONTACTS-STAGING.md). */
+function buildCandidateSets(
+  profileCandidates: { id: string }[],
+  contactCandidates: { id: string; customerProfileId: string; archivedAt: Date | null }[],
+): { customerProfileIds: string[]; activeContactIdsByCustomer: Map<string, Set<string>> } {
+  const customerProfileIdSet = new Set(profileCandidates.map((c) => c.id));
+  const activeContactIdsByCustomer = new Map<string, Set<string>>();
+
+  for (const contact of contactCandidates) {
+    customerProfileIdSet.add(contact.customerProfileId);
+    if (contact.archivedAt) continue;
+    const set = activeContactIdsByCustomer.get(contact.customerProfileId) ?? new Set<string>();
+    set.add(contact.id);
+    activeContactIdsByCustomer.set(contact.customerProfileId, set);
+  }
+
+  return { customerProfileIds: [...customerProfileIdSet], activeContactIdsByCustomer };
 }
 
 async function recordCandidates(
   customerProfileIds: string[],
+  activeContactIdsByCustomer: Map<string, Set<string>>,
   source: MatchSource,
   externalRef: string,
   matchedBy: MatchMethod,
@@ -65,18 +99,44 @@ async function recordCandidates(
 
   const [soleCandidateId] = customerProfileIds;
   if (soleCandidateId && customerProfileIds.length === 1) {
-    const match = await prisma.externalContactMatch.upsert({
+    // Phase 4C — the customer is exact; separately determine whether
+    // exactly one active contact matched too (build instruction §8
+    // scenarios A/B/C). Two or more active contacts sharing the same
+    // identity within this one customer means the PERSON is ambiguous even
+    // though the customer isn't — never guess, leave customerContactId null
+    // (ADR-010 §4).
+    const contactIds = activeContactIdsByCustomer.get(soleCandidateId);
+    const resolvedContactId = contactIds && contactIds.size === 1 ? [...contactIds][0]! : null;
+
+    const existing = await prisma.externalContactMatch.findUnique({
       where: { customerProfileId_source_externalRef: { customerProfileId: soleCandidateId, source, externalRef } },
-      create: { customerProfileId: soleCandidateId, source, externalRef, matchedBy, confidence: "EXACT" },
-      update: {}, // already recorded — do not downgrade an existing (possibly human-confirmed) row
+    });
+
+    if (existing) {
+      // Never touch a human-confirmed or manually-created row (build
+      // instruction §9: "manual/confirmed contact-specific row → niet
+      // automatisch overschrijven"), and never overwrite an already-set
+      // customerContactId — automatic enrichment is strictly monotonic
+      // (null -> set), never destructive/corrective.
+      const isHumanOwned = existing.confidence === "MANUAL" || existing.confirmedByUserId !== null;
+      const shouldEnrichContact = !isHumanOwned && existing.customerContactId === null && resolvedContactId !== null;
+      const match = shouldEnrichContact
+        ? await prisma.externalContactMatch.update({ where: { id: existing.id }, data: { customerContactId: resolvedContactId } })
+        : existing;
+      return { status: "exact", customerProfileId: soleCandidateId, matchId: match.id };
+    }
+
+    const match = await prisma.externalContactMatch.create({
+      data: { customerProfileId: soleCandidateId, source, externalRef, matchedBy, confidence: "EXACT", customerContactId: resolvedContactId },
     });
     return { status: "exact", customerProfileId: soleCandidateId, matchId: match.id };
   }
 
-  // Multiple candidates — record every one as AMBIGUOUS, resolved only by
-  // a human via confirmMatch(). Never silently pick the first (the exact
-  // failure mode ADR-007 calls out in TelefoonSysteem's Exact-history DB
-  // and its automatic call-enrichment path).
+  // Multiple candidate customers — record every one as AMBIGUOUS, resolved
+  // only by a human via confirmMatch(). Never silently pick the first (the
+  // exact failure mode ADR-007 calls out in TelefoonSysteem's Exact-history
+  // DB and its automatic call-enrichment path), and never a contact
+  // assignment at this level (build instruction §8 scenario D).
   await Promise.all(
     customerProfileIds.map((customerProfileId) =>
       prisma.externalContactMatch.upsert({

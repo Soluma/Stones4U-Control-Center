@@ -13,6 +13,7 @@ import { createQuotesAdapter, type QuoteSummary } from "@/integrations/quotes/ad
 import { createEmailAdapter } from "@/integrations/email/adapter";
 import type { NormalizedEmailMessage } from "@/integrations/email/types";
 import { listOpportunitiesForCustomer } from "@/modules/opportunities/opportunity.service";
+import { listContactsForCustomer } from "@/modules/crm/customer-contact.service";
 import { prisma } from "@/platform/db/prisma";
 import { normalizeDutchPhone } from "@/lib/phone";
 import { formatDate, formatDateTime } from "@/lib/format";
@@ -26,6 +27,7 @@ import { RecentCallsBlock } from "./RecentCallsBlock";
 import { RecentEmailsBlock } from "./RecentEmailsBlock";
 import { OpenOpportunitiesBlock } from "./OpenOpportunitiesBlock";
 import { OpportunitiesSection } from "./OpportunitiesSection";
+import { ContactsSection } from "./ContactsSection";
 import { ActivityTimelineView } from "./ActivityTimelineView";
 import { AdapterStatusBanner } from "./AdapterStatusBanner";
 import { NotesPanel } from "./NotesPanel";
@@ -97,7 +99,35 @@ export default async function CustomerDetailPage({ params, searchParams }: PageP
     draftOrdersUnavailable = true;
   }
 
-  const phoneNumbers = [normalizeDutchPhone(data.profile.phone)].filter((p): p is string => !!p);
+  // Phase 4c — active contacts fetched once here: reused for the
+  // Contactpersonen section below (§15) AND to extend the live email/call
+  // lookups so a registered contact's own communications become visible on
+  // this page (architecture doc §5) — without this, a correctly registered
+  // contact would still never show up here even after the matching-layer
+  // extension. Archived contacts are excluded (listContactsForCustomer's
+  // default) — never used as an active lookup identity (build spec §10).
+  const contacts = await listContactsForCustomer(id);
+
+  // build spec §11 — a bounded cap on how many extra contact identities get
+  // added to the live lookups. The IMAP adapter already does one connection
+  // per mailbox regardless of address count (a single SEARCH covering all
+  // addresses at once), so this cap mainly protects the telephony adapter,
+  // which issues one HTTP request per phone number (TelefoonSysteem has no
+  // batch endpoint to call instead — not rewritten here, per instruction).
+  // 10 is generous headroom over the realistic scale (a handful of contacts
+  // per business, per the discovery's own example) while keeping the
+  // worst-case concurrent request count bounded and reviewable.
+  const MAX_ADDITIONAL_LOOKUP_IDENTITIES = 10;
+  const contactPhones = contacts.map((c) => c.phone).filter((p): p is string => !!p).slice(0, MAX_ADDITIONAL_LOOKUP_IDENTITIES);
+  const contactEmails = contacts.map((c) => c.email).filter((e): e is string => !!e).slice(0, MAX_ADDITIONAL_LOOKUP_IDENTITIES);
+  // Phase 4c — reused for timeline naming enrichment (§12) both here and in
+  // OverviewTab below, so the same batched contacts query never gets fetched
+  // twice.
+  const contactIdentities = contacts.map((c) => ({ id: c.id, displayName: c.displayName, emailNormalized: c.emailNormalized, phoneNormalized: c.phoneNormalized }));
+
+  const phoneNumbers = [
+    ...new Set([data.profile.phone, ...contactPhones].map(normalizeDutchPhone).filter((p): p is string => !!p)),
+  ];
   const quoteMatchRefs = {
     shopifyCustomerGid: data.profile.shopifyCustomerGid,
     email: data.profile.email ?? undefined,
@@ -123,7 +153,8 @@ export default async function CustomerDetailPage({ params, searchParams }: PageP
 
   // Phase 3C-A — same fail-isolation pattern as quotes/recentCalls above; a
   // Graph/mailbox hiccup must not take down the rest of Customer 360.
-  const emailAddresses = [data.profile.email].filter((e): e is string => !!e);
+  // Phase 4c — extended with active contact addresses (see above).
+  const emailAddresses = [...new Set([data.profile.email, ...contactEmails].filter((e): e is string => !!e))];
   let emailMessages: NormalizedEmailMessage[] = [];
   try {
     emailMessages = await (await createEmailAdapter()).getMessagesForAddresses(emailAddresses);
@@ -165,6 +196,8 @@ export default async function CustomerDetailPage({ params, searchParams }: PageP
           recentCalls={recentCalls}
           emailMessages={emailMessages}
           openOpportunities={openOpportunities.filter((o) => o.status === "OPEN")}
+          canEdit={canEdit}
+          contacts={contactIdentities}
         />
       )}
 
@@ -190,6 +223,7 @@ export default async function CustomerDetailPage({ params, searchParams }: PageP
               phoneNumbers,
               quoteMatchRefs,
               emailMessages,
+              contacts: contactIdentities,
             })}
           />
         </div>
@@ -248,6 +282,8 @@ async function OverviewTab({
   recentCalls,
   emailMessages,
   openOpportunities,
+  canEdit,
+  contacts,
 }: {
   id: string;
   shopifyOrders: Parameters<typeof getCustomerTimeline>[1]["shopifyOrders"];
@@ -257,9 +293,11 @@ async function OverviewTab({
   recentCalls: TelephonyActivityItem[];
   emailMessages: NormalizedEmailMessage[];
   openOpportunities: Awaited<ReturnType<typeof listOpportunitiesForCustomer>>;
+  canEdit: boolean;
+  contacts: Parameters<typeof getCustomerTimeline>[1]["contacts"];
 }) {
   const [timeline, tasks, appointments, files] = await Promise.all([
-    getCustomerTimeline(id, { shopifyOrders, draftOrders: draftOrders ?? [], phoneNumbers, quoteMatchRefs, emailMessages }),
+    getCustomerTimeline(id, { shopifyOrders, draftOrders: draftOrders ?? [], phoneNumbers, quoteMatchRefs, emailMessages, contacts }),
     listTasksForCustomer(id),
     listAppointmentsForCustomer(id),
     listFilesForCustomer(id),
@@ -292,6 +330,7 @@ async function OverviewTab({
           attention: o.attention,
         }))}
       />
+      <ContactsSection customerId={id} canEdit={canEdit} />
       <div className="space-y-3">
         <h2 className="text-sm font-medium text-ink-secondary">Openstaande taken</h2>
         {openTasks.length === 0 ? (
