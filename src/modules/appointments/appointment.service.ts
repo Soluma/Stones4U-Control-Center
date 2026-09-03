@@ -131,6 +131,9 @@ export async function updateAppointment(
         occurredAt: new Date(),
         actorId: actor.id,
         relatedAppointmentId: result.id,
+        // Phase 4B — ongoing appointment updates on an opportunity-linked
+        // appointment count toward that opportunity's "last activity".
+        relatedOpportunityId: result.opportunityId,
       },
     });
 
@@ -162,6 +165,7 @@ export async function completeAppointment(appointmentId: string, actor: Actor) {
         occurredAt: now,
         actorId: actor.id,
         relatedAppointmentId: result.id,
+        relatedOpportunityId: result.opportunityId,
       },
     });
 
@@ -193,6 +197,7 @@ export async function cancelAppointment(appointmentId: string, actor: Actor) {
         occurredAt: now,
         actorId: actor.id,
         relatedAppointmentId: result.id,
+        relatedOpportunityId: result.opportunityId,
       },
     });
 

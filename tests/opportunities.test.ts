@@ -491,6 +491,35 @@ describe("opportunity.service — core", () => {
     expect(allList.some((o) => o.id === lost.id)).toBe(true);
   });
 
+  describe("drag/drop server-side guarantee — changeStage() is the sole authority (build spec §31)", () => {
+    // VIEWER-blocked / closed-blocked / archived-blocked / ownership
+    // enforcement for changeStage() are already covered above ("refuses a
+    // stage change on a closed opportunity", "archives an opportunity and
+    // refuses further mutation", and the RBAC describe block below) — the
+    // kanban drag handler calls this exact same function via the exact same
+    // PATCH /api/opportunities/[id]/stage route, so no DOM-drag simulation
+    // is needed to prove those guarantees hold for drag/drop too.
+
+    it("writes an AuditEvent with old/new stage metadata on a successful drag-triggered stage change", async () => {
+      const opportunity = await createOpportunity({ customerProfileId, title: "Drag audit-test", ownerUserId: owner.id }, creator);
+      await changeStage(opportunity.id, "NEEDS_DEFINED", owner);
+
+      const audit = await prisma.auditEvent.findFirst({ where: { entityId: opportunity.id, action: "opportunity.stage_changed" } });
+      expect(audit).not.toBeNull();
+      expect(audit!.metadata).toMatchObject({ oldStage: "NEW", newStage: "NEEDS_DEFINED" });
+    });
+
+    it("dropping a card on its own current column is a no-op — no duplicate Activity/AuditEvent", async () => {
+      const opportunity = await createOpportunity({ customerProfileId, title: "Drag no-op-test", ownerUserId: owner.id }, creator);
+      await changeStage(opportunity.id, "NEW", owner);
+
+      const activityCount = await prisma.activity.count({ where: { relatedOpportunityId: opportunity.id, type: "OPPORTUNITY_STAGE_CHANGED" } });
+      const auditCount = await prisma.auditEvent.count({ where: { entityId: opportunity.id, action: "opportunity.stage_changed" } });
+      expect(activityCount).toBe(0);
+      expect(auditCount).toBe(0);
+    });
+  });
+
   describe("RBAC", () => {
     it("lets the owner modify the opportunity", async () => {
       const opportunity = await createOpportunity({ customerProfileId, title: "RBAC eigenaar", ownerUserId: owner.id }, creator);

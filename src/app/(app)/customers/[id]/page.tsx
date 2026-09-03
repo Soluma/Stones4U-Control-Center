@@ -289,6 +289,7 @@ async function OverviewTab({
           estimatedValue: o.estimatedValue ? o.estimatedValue.toString() : null,
           probability: o.probability,
           expectedCloseDate: o.expectedCloseDate ? o.expectedCloseDate.toISOString() : null,
+          attention: o.attention,
         }))}
       />
       <div className="space-y-3">

@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 import { getSessionUser } from "@/platform/auth/session";
 import { prisma } from "@/platform/db/prisma";
-import { getOpportunityDetail } from "@/modules/opportunities/opportunity.service";
+import { getOpportunityDetail, getOpportunityAttentionContext } from "@/modules/opportunities/opportunity.service";
 import { getOpportunityTimeline } from "@/modules/activity/timeline";
 import { createQuotesAdapter, type QuoteSummary } from "@/integrations/quotes/adapter";
 import { createTelephonyAdapter, type TelephonyActivityItem } from "@/integrations/telephony/adapter";
@@ -12,8 +12,15 @@ import type { NormalizedEmailMessage } from "@/integrations/email/types";
 import { getShopifyCustomerOrders } from "@/integrations/shopify/orders";
 import { getShopifyCustomerDraftOrders } from "@/integrations/shopify/draft-orders";
 import { normalizeDutchPhone } from "@/lib/phone";
-import { formatDate, formatMoney } from "@/lib/format";
+import { formatDate, formatDateTime, formatMoney } from "@/lib/format";
 import { STAGE_LABEL, STATUS_LABEL, effectiveProbability } from "@/modules/opportunities/labels";
+import {
+  deriveNextAction,
+  deriveOpportunityAttention,
+  deriveQuoteAheadOfStageSignal,
+  deriveShopifyOrderSignal,
+  formatNextAction,
+} from "@/modules/opportunities/attention";
 import { Badge } from "@/components/ui/Badge";
 import { Tabs } from "@/components/ui/Tabs";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -26,6 +33,9 @@ import { AppointmentsPanel } from "../../customers/[id]/AppointmentsPanel";
 import { FilesPanel } from "../../customers/[id]/FilesPanel";
 import { OpportunityActions } from "./OpportunityActions";
 import { OpportunityCommercialLinks, type CandidateItem } from "./OpportunityCommercialLinks";
+import { AttentionBadge } from "../AttentionBadge";
+import { ShopifyOrderSignalBanner } from "./ShopifyOrderSignalBanner";
+import { QuoteAheadOfStageBanner } from "./QuoteAheadOfStageBanner";
 
 type PageProps = {
   params: Promise<{ id: string }>;
@@ -105,6 +115,32 @@ export default async function OpportunityDetailPage({ params, searchParams }: Pa
       adminUrl: order.adminUrl,
     })),
   ];
+
+  // Phase 4B — Shopify completed-order + quote-ahead-of-stage signals
+  // (architecture doc §6/§7, build spec §18-21): pure cross-references over
+  // the draftOrders/orders/quotes arrays already fetched above for
+  // OpportunityCommercialLinks — zero new Shopify calls. Extracted to
+  // attention.ts so they're unit-tested there without a database.
+  const shopifyOrderSignal = deriveShopifyOrderSignal(opportunity, draftOrders, orders);
+  const quoteAheadOfStageSignal = deriveQuoteAheadOfStageSignal(opportunity, quotes.length);
+
+  // Phase 4B — attention engine inputs not already on the Opportunity row
+  // (build spec §2): next open task + last opportunity Activity. Combined
+  // with the two signals above (only ever known here, on the detail page —
+  // never fetched per pipeline card, build spec §20).
+  const attentionContext = await getOpportunityAttentionContext(id);
+  const nextAction = deriveNextAction(attentionContext.nextOpenTask);
+  const attention = deriveOpportunityAttention({
+    status: opportunity.status,
+    archivedAt: opportunity.archivedAt,
+    stage: opportunity.stage,
+    expectedCloseDate: opportunity.expectedCloseDate,
+    createdAt: opportunity.createdAt,
+    nextAction,
+    lastOpportunityActivityAt: attentionContext.lastOpportunityActivityAt,
+    shopifyOrderPlacedSignal: !!shopifyOrderSignal,
+    quoteAheadOfStageSignal,
+  });
 
   const phoneNumbers = [normalizeDutchPhone(customer.phone)].filter((p): p is string => !!p);
   let recentCalls: TelephonyActivityItem[] = [];
@@ -212,6 +248,15 @@ export default async function OpportunityDetailPage({ params, searchParams }: Pa
         </div>
 
         <div className="space-y-5">
+          <OpportunityFollowUpPanel
+            attention={attention}
+            nextAction={nextAction}
+            lastOpportunityActivityAt={attentionContext.lastOpportunityActivityAt}
+            shopifyOrderSignal={shopifyOrderSignal}
+            quoteAheadOfStageSignal={quoteAheadOfStageSignal}
+            opportunityId={id}
+            canEdit={canEdit}
+          />
           <OpportunityActions
             opportunityId={id}
             stage={opportunity.stage}
@@ -222,6 +267,67 @@ export default async function OpportunityDetailPage({ params, searchParams }: Pa
           />
         </div>
       </div>
+    </div>
+  );
+}
+
+function OpportunityFollowUpPanel({
+  attention,
+  nextAction,
+  lastOpportunityActivityAt,
+  shopifyOrderSignal,
+  quoteAheadOfStageSignal,
+  opportunityId,
+  canEdit,
+}: {
+  attention: ReturnType<typeof deriveOpportunityAttention>;
+  nextAction: ReturnType<typeof deriveNextAction>;
+  lastOpportunityActivityAt: Date | null;
+  shopifyOrderSignal: { orderName: string; orderAdminUrl: string; suggestedFinalValue: string | null } | null;
+  quoteAheadOfStageSignal: boolean;
+  opportunityId: string;
+  canEdit: boolean;
+}) {
+  // BLUE signals (Shopify/quote) render as their own dedicated banners
+  // below, not duplicated in the plain reasons list.
+  const listReasons = attention.reasons.filter((r) => r.severity !== "BLUE");
+
+  return (
+    <div className="cc-card space-y-3 p-4">
+      <h2 className="text-sm font-medium text-ink-secondary">Opvolging</h2>
+
+      {listReasons.length === 0 ? (
+        <p className="text-sm text-ink-tertiary">Geen bijzonderheden.</p>
+      ) : (
+        <ul className="space-y-1.5">
+          {listReasons.map((reason) => (
+            <li key={reason.code}>
+              <AttentionBadge severity={reason.severity} primaryReason={reason} />
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <div className="space-y-1 border-t border-border-subtle pt-3 text-xs">
+        <p className="text-ink-tertiary">
+          Volgende actie: <span className="text-ink-secondary">{formatNextAction(nextAction, formatDate)}</span>
+        </p>
+        <p className="text-ink-tertiary">
+          Laatste activiteit op deze verkoopkans:{" "}
+          <span className="text-ink-secondary">{lastOpportunityActivityAt ? formatDateTime(lastOpportunityActivityAt) : "—"}</span>
+        </p>
+      </div>
+
+      {shopifyOrderSignal && (
+        <ShopifyOrderSignalBanner
+          opportunityId={opportunityId}
+          orderName={shopifyOrderSignal.orderName}
+          orderAdminUrl={shopifyOrderSignal.orderAdminUrl}
+          suggestedFinalValue={shopifyOrderSignal.suggestedFinalValue}
+          canEdit={canEdit}
+        />
+      )}
+      {quoteAheadOfStageSignal && <QuoteAheadOfStageBanner opportunityId={opportunityId} canEdit={canEdit} />}
     </div>
   );
 }

@@ -119,6 +119,9 @@ export async function updateNote(
         occurredAt: updated.updatedAt,
         actorId: actor.id,
         relatedNoteId: updated.id,
+        // Phase 4B — ongoing note edits on an opportunity-linked note count
+        // toward that opportunity's "last activity" for staleness purposes.
+        relatedOpportunityId: updated.opportunityId,
       },
     });
 
@@ -154,6 +157,7 @@ export async function deleteNote(noteId: string, actor: Actor) {
         occurredAt: new Date(),
         actorId: actor.id,
         relatedNoteId: deleted.id,
+        relatedOpportunityId: deleted.opportunityId,
       },
     });
 

@@ -5,6 +5,7 @@ import { ForbiddenError } from "@/platform/auth/guards";
 import { getShopifyCustomerOrders } from "@/integrations/shopify/orders";
 import { getShopifyCustomerDraftOrders } from "@/integrations/shopify/draft-orders";
 import { STAGE_LABEL } from "./labels";
+import { deriveNextAction, deriveOpportunityAttention, type NextActionInfo, type OpportunityAttention } from "./attention";
 import { Prisma } from "@/generated/prisma";
 import type { Role, OpportunityStage, OpportunityLinkType } from "@/generated/prisma";
 
@@ -21,8 +22,6 @@ export class OpportunityValidationError extends Error {
     this.name = "OpportunityValidationError";
   }
 }
-
-const FOLLOW_UP_INACTIVITY_DAYS = 7;
 
 // Same creator/assignee/admin shape as Task.assertCanModify and
 // Appointment.assertCanModify (architecture doc §12) — deliberately
@@ -221,6 +220,35 @@ export async function getOpportunityDetail(id: string) {
   return prisma.opportunity.findUniqueOrThrow({ where: { id }, include: opportunityDetailInclude });
 }
 
+/** The two locally-derivable inputs `deriveOpportunityAttention()` needs
+ * that aren't already on the Opportunity row itself — next open task and
+ * last opportunity Activity. Deliberately does NOT know about Shopify/quote
+ * signals: those are only available where the caller has already
+ * live-fetched them (the detail page, which already loads draftOrders/
+ * orders/quotes for the Commercieel section) — the caller combines this
+ * context with those booleans itself before calling
+ * deriveOpportunityAttention(). Two small, indexed queries — not a
+ * per-pipeline-card cost, this is only ever called once per detail-page
+ * load. */
+export async function getOpportunityAttentionContext(opportunityId: string): Promise<{
+  nextOpenTask: { id: string; title: string; dueAt: Date | null } | null;
+  lastOpportunityActivityAt: Date | null;
+}> {
+  const [nextOpenTask, lastActivity] = await Promise.all([
+    prisma.task.findFirst({
+      where: { opportunityId, status: { in: ["OPEN", "IN_PROGRESS", "WAITING"] } },
+      orderBy: { dueAt: "asc" },
+      select: { id: true, title: true, dueAt: true },
+    }),
+    prisma.activity.aggregate({
+      where: { relatedOpportunityId: opportunityId },
+      _max: { occurredAt: true },
+    }),
+  ]);
+
+  return { nextOpenTask, lastOpportunityActivityAt: lastActivity._max.occurredAt };
+}
+
 export type OpportunityListFilter = {
   status?: "OPEN" | "WON" | "LOST" | "ALL";
   stage?: OpportunityStage;
@@ -234,13 +262,22 @@ type OpportunityListRow = Prisma.OpportunityGetPayload<{
   include: typeof opportunityListInclude & { tasks: { select: { id: true; title: true; dueAt: true } } };
 }>;
 
-/** Attaches a purely-computed "needsFollowUp" flag (architecture doc §17) —
- * one batched Activity groupBy query for the whole visible page, never a
- * per-row query, and never a stored column. */
-async function attachFollowUpFlags(
+/** Attaches the purely-computed attention engine output (architecture doc
+ * §1, build spec §2) — one batched Activity groupBy query for the whole
+ * visible page, never a per-row query, and never a stored column. Replaces
+ * the Phase 4A `needsFollowUp: boolean` with the richer
+ * `{ attention, nextAction }` shape — no duplicate/legacy field kept
+ * alongside it (nothing else reads `needsFollowUp` any more). */
+async function attachAttention(
   opportunities: OpportunityListRow[],
-): Promise<(OpportunityListRow & { needsFollowUp: boolean })[]> {
+): Promise<(OpportunityListRow & { attention: OpportunityAttention; nextAction: NextActionInfo })[]> {
   const openIds = opportunities.filter((o) => o.status === "OPEN").map((o) => o.id);
+  // Every ActivityType ever written with relatedOpportunityId set counts —
+  // no type filter needed, since that field is only ever populated for
+  // genuinely opportunity-relevant events (OPPORTUNITY_*, and, since Phase
+  // 4B, the full lifecycle of an opportunity-linked Task/Note/Appointment/
+  // File — not just their creation). See attention.ts's DeriveAttentionInput
+  // doc comment for the full enumeration.
   const lastActivityRows = openIds.length
     ? await prisma.activity.groupBy({
         by: ["relatedOpportunityId"],
@@ -251,18 +288,20 @@ async function attachFollowUpFlags(
   const lastActivityMap = new Map(lastActivityRows.map((row) => [row.relatedOpportunityId, row._max.occurredAt]));
 
   const now = new Date();
-  const inactivityCutoff = new Date(now.getTime() - FOLLOW_UP_INACTIVITY_DAYS * 24 * 60 * 60 * 1000);
 
   return opportunities.map((opportunity) => {
-    if (opportunity.status !== "OPEN") return { ...opportunity, needsFollowUp: false };
-
-    const overdueOpenTask = opportunity.tasks.some((t) => t.dueAt && t.dueAt < now);
-    const closeDatePassed = !!opportunity.expectedCloseDate && opportunity.expectedCloseDate < now;
-    const lastActivityAt = lastActivityMap.get(opportunity.id) ?? null;
-    const oldEnough = opportunity.createdAt < inactivityCutoff;
-    const noRecentActivity = oldEnough && (!lastActivityAt || lastActivityAt < inactivityCutoff);
-
-    return { ...opportunity, needsFollowUp: overdueOpenTask || closeDatePassed || noRecentActivity };
+    const nextAction = deriveNextAction(opportunity.tasks[0] ?? null, now);
+    const attention = deriveOpportunityAttention({
+      status: opportunity.status,
+      archivedAt: opportunity.archivedAt,
+      stage: opportunity.stage,
+      expectedCloseDate: opportunity.expectedCloseDate,
+      createdAt: opportunity.createdAt,
+      nextAction,
+      lastOpportunityActivityAt: lastActivityMap.get(opportunity.id) ?? null,
+      now,
+    });
+    return { ...opportunity, attention, nextAction };
   });
 }
 
@@ -309,7 +348,7 @@ export async function listOpportunities(filter: OpportunityListFilter = {}) {
     take: 200,
   });
 
-  return attachFollowUpFlags(opportunities);
+  return attachAttention(opportunities);
 }
 
 export async function listOpportunitiesForCustomer(customerProfileId: string, opts: { archived?: "exclude" | "only" | "all" } = {}) {

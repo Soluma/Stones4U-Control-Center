@@ -43,6 +43,23 @@ export const STAGE_DEFAULT_PROBABILITY: Record<OpportunityStage, number> = {
   NEGOTIATION: 90,
 };
 
+// Phase 4B — per-stage "no activity" thresholds (days) for the attention
+// engine's STALE signal (docs/platform-discovery/35-PHASE-4B-SALES-
+// ACTIVATION-ARCHITECTURE.md §2). Late-stage values (QUOTE_SENT/
+// NEGOTIATION) are deliberately 7, not 5 — a customer deciding on a
+// multi-thousand-euro project needs real thinking time; a 5-day threshold
+// there produced false "stale" flags on deals that were still genuinely
+// alive. Plain constants, not a rules engine — change here if a future
+// business decision requires different values.
+export const STAGE_STALE_THRESHOLD_DAYS: Record<OpportunityStage, number> = {
+  NEW: 3,
+  CONTACTED: 5,
+  NEEDS_DEFINED: 7,
+  QUOTE_PREPARATION: 3,
+  QUOTE_SENT: 7,
+  NEGOTIATION: 7,
+};
+
 export const STATUS_LABEL: Record<OpportunityStatus, string> = {
   OPEN: "Open",
   WON: "Gewonnen",

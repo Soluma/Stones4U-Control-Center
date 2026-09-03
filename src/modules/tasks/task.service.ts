@@ -97,6 +97,10 @@ export async function updateTaskStatus(taskId: string, newStatus: TaskStatus, ac
           occurredAt: now,
           actorId: actor.id,
           relatedTaskId: result.id,
+          // Phase 4B — ongoing task work on an opportunity-linked task must
+          // count toward that opportunity's "last activity" for staleness
+          // purposes, not just the task's initial creation.
+          relatedOpportunityId: result.opportunityId,
         },
       });
     }
@@ -133,6 +137,7 @@ export async function assignTask(taskId: string, newAssigneeId: string, actor: A
           occurredAt: new Date(),
           actorId: actor.id,
           relatedTaskId: result.id,
+          relatedOpportunityId: result.opportunityId,
         },
       });
     }
@@ -297,6 +302,7 @@ export async function updateTaskDetails(
           occurredAt: new Date(),
           actorId: actor.id,
           relatedTaskId: result.id,
+          relatedOpportunityId: result.opportunityId,
         },
       });
     }
@@ -329,6 +335,7 @@ export async function addTaskComment(taskId: string, body: string, actor: Actor)
           occurredAt: created.createdAt,
           actorId: actor.id,
           relatedTaskId: taskId,
+          relatedOpportunityId: task.opportunityId,
         },
       });
     }
@@ -384,6 +391,7 @@ export async function toggleChecklistItem(taskId: string, itemId: string, done: 
             occurredAt: new Date(),
             actorId: actor.id,
             relatedTaskId: taskId,
+            relatedOpportunityId: task.opportunityId,
           },
         });
       }

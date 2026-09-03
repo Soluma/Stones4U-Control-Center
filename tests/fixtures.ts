@@ -12,10 +12,15 @@ export async function createTestUser(overrides: { role?: "ADMIN" | "AGENT" | "VI
 }
 
 export async function createTestCustomerProfile() {
+  // displayName is randomized (not a fixed "Fixture Klant" literal) so that
+  // command-palette/search tests (searchOpportunities `take: 8`, ordered by
+  // updatedAt) never collide across test files running in parallel against
+  // the same database — a shared literal name here let volume in one test
+  // file push another file's target result out of the top-N window.
   return prisma.customerProfile.create({
     data: {
       shopifyCustomerGid: `gid://shopify/Customer/${crypto.randomUUID()}`,
-      displayName: "Fixture Klant",
+      displayName: `Fixture Klant ${crypto.randomUUID().slice(0, 8)}`,
     },
   });
 }

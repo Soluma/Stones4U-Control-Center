@@ -2,6 +2,8 @@ import Link from "next/link";
 import { TrendingUp } from "lucide-react";
 import { formatDate, formatMoney } from "@/lib/format";
 import { STAGE_LABEL, effectiveProbability, type OpportunityStageCode } from "@/modules/opportunities/labels";
+import type { OpportunityAttention } from "@/modules/opportunities/attention";
+import { AttentionBadge } from "../../opportunities/AttentionBadge";
 
 type OpportunitySummary = {
   id: string;
@@ -10,12 +12,15 @@ type OpportunitySummary = {
   estimatedValue: string | null;
   probability: number | null;
   expectedCloseDate: string | null;
+  attention: OpportunityAttention;
 };
 
 // Overview-tab compact block, same visual pattern as RecentCallsBlock/
 // RecentEmailsBlock — a customer with multiple concurrent opportunities
 // must stay legible: every open opportunity is listed individually, never
-// collapsed into one row (architecture doc §9).
+// collapsed into one row (architecture doc §9), each with its own
+// independently-derived attention state (build spec §23) — never a
+// collapsed/global signal.
 export function OpenOpportunitiesBlock({ opportunities }: { opportunities: OpportunitySummary[] }) {
   return (
     <div className="space-y-3">
@@ -28,7 +33,10 @@ export function OpenOpportunitiesBlock({ opportunities }: { opportunities: Oppor
             <Link key={opportunity.id} href={`/opportunities/${opportunity.id}`} className="cc-table-row flex items-center gap-3 px-4 py-2.5 text-sm">
               <TrendingUp className="h-3.5 w-3.5 shrink-0 text-ink-tertiary" aria-hidden />
               <div className="min-w-0 flex-1">
-                <span className="block truncate font-medium text-ink-primary">{opportunity.title}</span>
+                <span className="flex items-center gap-1.5">
+                  <span className="truncate font-medium text-ink-primary">{opportunity.title}</span>
+                  <AttentionBadge severity={opportunity.attention.severity} primaryReason={opportunity.attention.primaryReason} compact />
+                </span>
                 <span className="block truncate text-xs text-ink-tertiary">
                   {STAGE_LABEL[opportunity.stage]} · {effectiveProbability(opportunity)}%
                   {opportunity.expectedCloseDate ? ` · ${formatDate(opportunity.expectedCloseDate)}` : ""}

@@ -9,7 +9,9 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { SkeletonList } from "@/components/ui/Skeleton";
 import { formatDate, formatMoney } from "@/lib/format";
 import { STAGE_LABEL, STATUS_LABEL, effectiveProbability, type OpportunityStageCode } from "@/modules/opportunities/labels";
+import type { OpportunityAttention } from "@/modules/opportunities/attention";
 import { NewOpportunityDialog } from "../../opportunities/NewOpportunityDialog";
+import { AttentionBadge } from "../../opportunities/AttentionBadge";
 
 type OpportunityRow = {
   id: string;
@@ -19,6 +21,7 @@ type OpportunityRow = {
   estimatedValue: string | null;
   probability: number | null;
   expectedCloseDate: string | null;
+  attention: OpportunityAttention;
 };
 
 // Customer 360 Commercieel-tab section — no new top-level tab (architecture
@@ -66,7 +69,10 @@ export function OpportunitiesSection({
           {opportunities.map((opportunity) => (
             <Link key={opportunity.id} href={`/opportunities/${opportunity.id}`} className="cc-table-row flex items-center justify-between gap-4 px-4 py-3 text-sm">
               <div className="min-w-0">
-                <p className="truncate font-medium text-ink-primary">{opportunity.title}</p>
+                <div className="flex items-center gap-1.5">
+                  <p className="truncate font-medium text-ink-primary">{opportunity.title}</p>
+                  <AttentionBadge severity={opportunity.attention.severity} primaryReason={opportunity.attention.primaryReason} compact />
+                </div>
                 <p className="mt-0.5 truncate text-xs text-ink-tertiary">
                   {STAGE_LABEL[opportunity.stage]} · {effectiveProbability(opportunity)}%
                   {opportunity.expectedCloseDate ? ` · ${formatDate(opportunity.expectedCloseDate)}` : ""}

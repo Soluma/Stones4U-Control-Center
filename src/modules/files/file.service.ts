@@ -159,6 +159,7 @@ export async function deleteFile(fileId: string, actor: Actor) {
           occurredAt: new Date(),
           actorId: actor.id,
           relatedFileId: result.id,
+          relatedOpportunityId: result.opportunityId,
         },
       });
     }
