@@ -2,13 +2,13 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Search, Loader2, LayoutDashboard, Users, CheckSquare, UserCog, Settings, ShoppingBag, FileText } from "lucide-react";
+import { Search, Loader2, LayoutDashboard, Users, CheckSquare, UserCog, Settings, ShoppingBag, FileText, TrendingUp } from "lucide-react";
 import { Avatar } from "@/components/ui/Avatar";
 import { cn } from "@/lib/cn";
 
 type SearchItem = {
   id: string;
-  kind: "customer" | "task" | "order" | "quote";
+  kind: "customer" | "task" | "order" | "quote" | "opportunity";
   title: string;
   subtitle: string;
   shopifyGid?: string;
@@ -103,7 +103,7 @@ export function CommandPalette() {
       return;
     }
     const searchItem = item as SearchItem;
-    if (searchItem.kind === "task" && searchItem.href) {
+    if ((searchItem.kind === "task" || searchItem.kind === "opportunity") && searchItem.href) {
       setOpen(false);
       router.push(searchItem.href);
       return;
@@ -209,7 +209,9 @@ export function CommandPalette() {
                       ? ShoppingBag
                       : "kind" in item && item.kind === "quote"
                         ? FileText
-                        : null;
+                        : "kind" in item && item.kind === "opportunity"
+                          ? TrendingUp
+                          : null;
                 return (
                   <button
                     key={item.id}

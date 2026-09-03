@@ -29,6 +29,11 @@ export async function cleanupUser(userId: string) {
   await prisma.customerTagAssignment.deleteMany({ where: { assignedById: userId } });
   await prisma.customerTag.deleteMany({ where: { createdById: userId } });
   await prisma.file.deleteMany({ where: { uploadedById: userId } });
+  // Phase 4a — Opportunity.ownerUserId/createdById and
+  // OpportunityExternalLink.linkedById are RESTRICT (no cascade), same
+  // defensive-cleanup reasoning as above.
+  await prisma.opportunityExternalLink.deleteMany({ where: { linkedById: userId } });
+  await prisma.opportunity.deleteMany({ where: { OR: [{ ownerUserId: userId }, { createdById: userId }] } });
   await prisma.user.delete({ where: { id: userId } }).catch(() => undefined);
 }
 
@@ -39,5 +44,8 @@ export async function cleanupCustomerProfile(customerProfileId: string) {
   await prisma.appointment.deleteMany({ where: { customerProfileId } });
   await prisma.file.deleteMany({ where: { customerProfileId } });
   await prisma.customerTagAssignment.deleteMany({ where: { customerProfileId } });
+  // Phase 4a — Opportunity.customerProfileId is RESTRICT; OpportunityExternalLink
+  // cascades from Opportunity automatically.
+  await prisma.opportunity.deleteMany({ where: { customerProfileId } });
   await prisma.customerProfile.delete({ where: { id: customerProfileId } }).catch(() => undefined);
 }

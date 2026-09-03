@@ -157,6 +157,31 @@ export function emailToTimelineItem(message: NormalizedEmailMessage): TimelineIt
   };
 }
 
+/** Phase 4a — Opportunity-scoped timeline: only Control-Center-owned
+ * Activity rows linked to this opportunity (relatedOpportunityId), never a
+ * simulated filter on external calls/emails/quotes (which have no
+ * opportunity-level linking mechanism — architecture doc §9/build spec §5,
+ * shown separately as customer-level "klantcommunicatie" on the detail
+ * page instead). */
+export async function getOpportunityTimeline(opportunityId: string): Promise<TimelineItem[]> {
+  const activities = await prisma.activity.findMany({
+    where: { relatedOpportunityId: opportunityId },
+    include: { actor: { select: { name: true } } },
+    orderBy: { occurredAt: "desc" },
+    take: 200,
+  });
+
+  return activities.map((activity) => ({
+    id: activity.id,
+    occurredAt: activity.occurredAt,
+    source: "CONTROL_CENTER",
+    kind: activity.type,
+    title: activity.title,
+    summary: activity.summary,
+    actorName: activity.actor?.name ?? null,
+  }));
+}
+
 export type RecentActivityItem = TimelineItem & {
   customerProfileId: string;
   customerName: string | null;

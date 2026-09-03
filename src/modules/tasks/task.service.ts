@@ -2,6 +2,7 @@ import "server-only";
 import { prisma } from "@/platform/db/prisma";
 import { logAudit } from "@/platform/audit/audit";
 import { ForbiddenError } from "@/platform/auth/guards";
+import { resolveCustomerProfileIdForOpportunity } from "@/modules/opportunities/opportunity.service";
 import type { TaskPriority, TaskStatus, Role } from "@/generated/prisma";
 
 type Actor = { id: string; role: Role };
@@ -22,8 +23,17 @@ export async function createTask(input: {
   priority?: TaskPriority;
   assignedToId: string;
   customerProfileId?: string | null;
+  // Phase 4a — when set, customerProfileId is ALWAYS derived from the
+  // opportunity, never trusted from a caller-supplied value (ADR-009 §5):
+  // an opportunity of customer A can never end up attached to a task that
+  // also claims customer B.
+  opportunityId?: string | null;
   dueAt?: Date | null;
 }, actor: Actor) {
+  const customerProfileId = input.opportunityId
+    ? await resolveCustomerProfileIdForOpportunity(input.opportunityId)
+    : input.customerProfileId ?? null;
+
   const task = await prisma.$transaction(async (tx) => {
     const created = await tx.task.create({
       data: {
@@ -32,7 +42,8 @@ export async function createTask(input: {
         priority: input.priority ?? "NORMAL",
         assignedToId: input.assignedToId,
         createdById: actor.id,
-        customerProfileId: input.customerProfileId ?? null,
+        customerProfileId,
+        opportunityId: input.opportunityId ?? null,
         dueAt: input.dueAt ?? null,
       },
     });
@@ -47,6 +58,7 @@ export async function createTask(input: {
           occurredAt: created.createdAt,
           actorId: actor.id,
           relatedTaskId: created.id,
+          relatedOpportunityId: created.opportunityId,
         },
       });
     }
@@ -188,6 +200,19 @@ export async function listTasks(actor: Actor, filter: TaskListFilter) {
 export async function listTasksForCustomer(customerProfileId: string) {
   return prisma.task.findMany({
     where: { customerProfileId },
+    orderBy: { createdAt: "desc" },
+    include: taskListInclude,
+  });
+}
+
+/** Phase 4a — opportunity-scoped tasks for the Opportunity detail page
+ * (docs/platform-discovery/33 §build spec). Unlike calls/emails
+ * (customer-level only, see the email/telephony adapters), tasks genuinely
+ * are opportunity-scoped once opportunityId is set, so a real filter here
+ * is honest, not simulated. */
+export async function listTasksForOpportunity(opportunityId: string) {
+  return prisma.task.findMany({
+    where: { opportunityId },
     orderBy: { createdAt: "desc" },
     include: taskListInclude,
   });

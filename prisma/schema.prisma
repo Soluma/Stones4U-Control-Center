@@ -100,6 +100,13 @@ enum ActivityType {
   QUOTE_CREATED
   QUOTE_UPDATED
   DRAFT_ORDER_CREATED
+  // Phase 4a — docs/architecture/ADR-009-OPPORTUNITY-PIPELINE-MODEL.md.
+  // Control-Center-owned (category A per ADR-008), same as TASK_*/NOTE_*.
+  OPPORTUNITY_CREATED
+  OPPORTUNITY_STAGE_CHANGED
+  OPPORTUNITY_WON
+  OPPORTUNITY_LOST
+  OPPORTUNITY_REOPENED
 }
 
 // Phase 2 — docs/platform-discovery/26-PHASE-2-BUILD-SPEC.md
@@ -138,6 +145,11 @@ model User {
 
   // Phase 3a
   confirmedMatches ExternalContactMatch[]
+
+  // Phase 4a
+  opportunitiesOwned     Opportunity[]             @relation("OpportunityOwner")
+  opportunitiesCreated   Opportunity[]             @relation("OpportunityCreatedBy")
+  opportunityLinksMade   OpportunityExternalLink[] @relation("OpportunityLinksMade")
 
   @@index([role])
 }
@@ -193,6 +205,8 @@ model CustomerProfile {
   appointments    Appointment[]
   // Phase 3a
   externalMatches ExternalContactMatch[]
+  // Phase 4a
+  opportunities   Opportunity[]
 
   @@index([phoneNormalized])
   @@index([email])
@@ -219,6 +233,10 @@ model Note {
   createdAt         DateTime        @default(now())
   updatedAt         DateTime        @updatedAt
 
+  // Phase 4a — optional, same derivation invariant as Task.opportunityId.
+  opportunityId String?
+  opportunity   Opportunity? @relation(fields: [opportunityId], references: [id])
+
   activities Activity[]
 
   @@index([customerProfileId])
@@ -240,6 +258,12 @@ model Task {
   createdBy         User             @relation("TasksCreated", fields: [createdById], references: [id])
   customerProfileId String?
   customerProfile   CustomerProfile? @relation(fields: [customerProfileId], references: [id])
+  // Phase 4a — optional. When set, customerProfileId is always derived from
+  // Opportunity.customerProfileId by the service layer, never independently
+  // trusted from a caller (ADR-009 §5, docs/platform-discovery/33 §build
+  // spec — the exact invariant this column exists to support).
+  opportunityId String?
+  opportunity   Opportunity? @relation(fields: [opportunityId], references: [id])
 
   // Prepared for later phases (docs/platform-discovery/25 §4) — not read or
   // written by any Phase 1 code path.
@@ -325,6 +349,10 @@ model Appointment {
   createdAt          DateTime          @default(now())
   updatedAt          DateTime          @updatedAt
 
+  // Phase 4a — optional, same derivation invariant as Task.opportunityId.
+  opportunityId String?
+  opportunity   Opportunity? @relation(fields: [opportunityId], references: [id])
+
   activities Activity[]
 
   @@index([customerProfileId])
@@ -390,10 +418,14 @@ model Activity {
   relatedFile          File?              @relation(fields: [relatedFileId], references: [id])
   relatedAppointmentId String?
   relatedAppointment   Appointment?       @relation(fields: [relatedAppointmentId], references: [id])
+  // Phase 4a — fifth related*Id, same pattern as the four above.
+  relatedOpportunityId String?
+  relatedOpportunity   Opportunity?       @relation(fields: [relatedOpportunityId], references: [id])
   metadata             Json?
   createdAt            DateTime           @default(now())
 
   @@index([customerProfileId, occurredAt])
+  @@index([relatedOpportunityId, occurredAt])
 }
 
 // Generic, append-only audit log — every mutating Control Center action
@@ -436,6 +468,10 @@ model File {
   deletedAt         DateTime?
   createdAt         DateTime         @default(now())
   updatedAt         DateTime         @updatedAt
+
+  // Phase 4a — optional, same derivation invariant as Task.opportunityId.
+  opportunityId String?
+  opportunity   Opportunity? @relation(fields: [opportunityId], references: [id])
 
   activities Activity[]
 
@@ -528,4 +564,113 @@ model MonitoredMailbox {
   enabled      Boolean        @default(true)
   createdAt    DateTime       @default(now())
   updatedAt    DateTime       @updatedAt
+}
+
+// Phase 4A — docs/architecture/ADR-009-OPPORTUNITY-PIPELINE-MODEL.md,
+// docs/platform-discovery/33-PHASE-4A-BUILD-SPEC.md. `stage` and `status`
+// are deliberately separate (ADR-009 §1): `stage` is the active funnel
+// position, `status` is the lifecycle. A closed opportunity freezes `stage`
+// at its last active value and never reuses WON/LOST as stage values.
+enum OpportunityStage {
+  NEW
+  CONTACTED
+  NEEDS_DEFINED
+  QUOTE_PREPARATION
+  QUOTE_SENT
+  NEGOTIATION
+}
+
+enum OpportunityStatus {
+  OPEN
+  WON
+  LOST
+}
+
+// Lightweight reference to an external commercial document — never a copy
+// of the document itself (ADR-009 §4, same shape as ExternalContactMatch's
+// externalRef in ADR-007). Always created/removed by a human
+// (OpportunityExternalLink.linkedById), never by an automated process.
+enum OpportunityLinkType {
+  OFFERTEAPP_QUOTE
+  S4U_QUOTE_APP_QUOTE
+  SHOPIFY_DRAFT_ORDER
+  SHOPIFY_ORDER
+}
+
+model Opportunity {
+  id                String            @id @default(cuid())
+  customerProfileId String
+  customerProfile   CustomerProfile   @relation(fields: [customerProfileId], references: [id])
+
+  title       String
+  description String? @db.Text
+
+  stage  OpportunityStage  @default(NEW)
+  status OpportunityStatus @default(OPEN)
+
+  // Decimal, never a JS float — see ADR-009 §6. No currency column: this
+  // whole app is single-shop EUR (formatMoney() already assumes it), so a
+  // column the UI never lets you change would be premature.
+  estimatedValue Decimal? @db.Decimal(12, 2)
+  finalValue     Decimal? @db.Decimal(12, 2)
+  // 0–100. Null = no explicit human value yet; the UI falls back to a
+  // stage-default (architecture doc §14) for display/weighting only — that
+  // default is never written back here (ADR-009: explicit human decisions
+  // are never silently overwritten by a derived value).
+  probability       Int?
+  expectedCloseDate DateTime?
+
+  ownerUserId String
+  owner       User   @relation("OpportunityOwner", fields: [ownerUserId], references: [id])
+  createdById String
+  createdBy   User   @relation("OpportunityCreatedBy", fields: [createdById], references: [id])
+
+  // "Sticky" historical timestamps — same precedent as Task.completedAt/
+  // cancelledAt (task.service.ts updateTaskStatus): not cleared by a later
+  // status change, so wonAt/lostAt always show the last time that state was
+  // entered even after a reopen. lostReason IS cleared on reopen (a
+  // re-opened deal has no current "reason it was lost" to display).
+  wonAt      DateTime?
+  lostAt     DateTime?
+  lostReason String?
+
+  // Soft-close only — no hard delete, mirrors Note.deletedAt/
+  // ExternalContactMatch.unlinkedAt (ADR-009 §7).
+  archivedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tasks         Task[]
+  notes         Note[]
+  appointments  Appointment[]
+  files         File[]
+  activities    Activity[]
+  externalLinks OpportunityExternalLink[]
+
+  @@index([customerProfileId])
+  @@index([ownerUserId])
+  @@index([status, stage])
+  @@index([expectedCloseDate])
+  @@index([archivedAt])
+}
+
+model OpportunityExternalLink {
+  id            String      @id @default(cuid())
+  opportunityId String
+  opportunity   Opportunity @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+
+  linkType OpportunityLinkType
+  // Meaning is linkType-dependent (offerte externalId or Shopify GID) —
+  // never the external document itself, mirrors
+  // ExternalContactMatch.externalRef (ADR-007).
+  externalRef String
+
+  linkedById String
+  linkedBy   User      @relation("OpportunityLinksMade", fields: [linkedById], references: [id])
+  linkedAt   DateTime  @default(now())
+  unlinkedAt DateTime?
+
+  @@unique([opportunityId, linkType, externalRef])
+  @@index([linkType, externalRef])
 }

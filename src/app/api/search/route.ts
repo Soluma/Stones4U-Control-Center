@@ -5,6 +5,7 @@ import { searchTasks } from "@/modules/tasks/task.service";
 import { searchShopifyOrders } from "@/integrations/shopify/order-search";
 import { isShopifyConfigured } from "@/integrations/shopify/client";
 import { searchQuotesByNumber } from "@/integrations/quotes/adapter";
+import { searchOpportunities } from "@/modules/opportunities/opportunity.service";
 import { toErrorResponse } from "@/lib/api-error";
 
 // Global command-palette search (Ctrl/Cmd+K). Phase 2 scope was customers +
@@ -99,6 +100,27 @@ export async function GET(request: NextRequest) {
       // Same fail-isolation principle as the Shopify order search above —
       // a quote-search hiccup must not take down the rest of the palette.
       console.error("quote_search_failed", error);
+    }
+
+    // Phase 4a — docs/platform-discovery/33-PHASE-4A-BUILD-SPEC.md §4. Own
+    // try/catch, same fail-isolation as orders/quotes above.
+    try {
+      const opportunities = await searchOpportunities(term);
+      if (opportunities.length > 0) {
+        groups.push({
+          key: "opportunities",
+          label: "Verkoopkansen",
+          items: opportunities.map((o) => ({
+            id: o.id,
+            kind: "opportunity" as const,
+            title: o.title,
+            subtitle: o.customerProfile.displayName ?? o.customerProfile.companyName ?? "Klant",
+            href: `/opportunities/${o.id}`,
+          })),
+        });
+      }
+    } catch (error) {
+      console.error("opportunity_search_failed", error);
     }
 
     return NextResponse.json({ groups });

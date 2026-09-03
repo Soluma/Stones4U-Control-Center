@@ -12,6 +12,7 @@ import { createTelephonyAdapter, type TelephonyActivityItem } from "@/integratio
 import { createQuotesAdapter, type QuoteSummary } from "@/integrations/quotes/adapter";
 import { createEmailAdapter } from "@/integrations/email/adapter";
 import type { NormalizedEmailMessage } from "@/integrations/email/types";
+import { listOpportunitiesForCustomer } from "@/modules/opportunities/opportunity.service";
 import { prisma } from "@/platform/db/prisma";
 import { normalizeDutchPhone } from "@/lib/phone";
 import { formatDate, formatDateTime } from "@/lib/format";
@@ -23,6 +24,8 @@ import { DraftOrdersTable } from "./DraftOrdersTable";
 import { QuotesTable } from "./QuotesTable";
 import { RecentCallsBlock } from "./RecentCallsBlock";
 import { RecentEmailsBlock } from "./RecentEmailsBlock";
+import { OpenOpportunitiesBlock } from "./OpenOpportunitiesBlock";
+import { OpportunitiesSection } from "./OpportunitiesSection";
 import { ActivityTimelineView } from "./ActivityTimelineView";
 import { AdapterStatusBanner } from "./AdapterStatusBanner";
 import { NotesPanel } from "./NotesPanel";
@@ -128,9 +131,28 @@ export default async function CustomerDetailPage({ params, searchParams }: PageP
     console.error("email_fetch_failed", error);
   }
 
+  // Phase 4a — same fail-isolation pattern as the other federated/derived
+  // fetches above; an opportunity-lookup hiccup must not take down the rest
+  // of Customer 360.
+  let openOpportunities: Awaited<ReturnType<typeof listOpportunitiesForCustomer>> = [];
+  try {
+    openOpportunities = await listOpportunitiesForCustomer(id, { archived: "exclude" });
+  } catch (error) {
+    console.error("opportunities_fetch_failed", error);
+  }
+  const openCount = openOpportunities.filter((o) => o.status === "OPEN").length;
+
   return (
     <div className="space-y-5">
-      <CustomerHeader data={data} viewerRole={user.role} id={id} tags={tags} allTags={allTags} managers={managers} />
+      <CustomerHeader
+        data={data}
+        viewerRole={user.role}
+        id={id}
+        tags={tags}
+        allTags={allTags}
+        managers={managers}
+        openOpportunitiesCount={openCount}
+      />
       <Tabs items={tabItems} active={tab} hrefFor={(key) => `/customers/${id}?tab=${key}`} />
 
       {tab === "overview" && (
@@ -142,15 +164,19 @@ export default async function CustomerDetailPage({ params, searchParams }: PageP
           quoteMatchRefs={quoteMatchRefs}
           recentCalls={recentCalls}
           emailMessages={emailMessages}
+          openOpportunities={openOpportunities.filter((o) => o.status === "OPEN")}
         />
       )}
 
       {tab === "orders" && (
         <CommercialTab
+          id={id}
+          customerName={data.shopify.displayName}
           orders={data.orders.orders}
           draftOrders={draftOrders}
           draftOrdersUnavailable={draftOrdersUnavailable}
           quotes={quotes}
+          canEdit={canEdit}
         />
       )}
 
@@ -178,18 +204,25 @@ export default async function CustomerDetailPage({ params, searchParams }: PageP
 }
 
 function CommercialTab({
+  id,
+  customerName,
   orders,
   draftOrders,
   draftOrdersUnavailable,
   quotes,
+  canEdit,
 }: {
+  id: string;
+  customerName: string;
   orders: Parameters<typeof OrdersTable>[0]["orders"];
   draftOrders: ShopifyDraftOrderSummary[] | null;
   draftOrdersUnavailable: boolean;
   quotes: QuoteSummary[];
+  canEdit: boolean;
 }) {
   return (
     <div className="space-y-6">
+      <OpportunitiesSection customerId={id} customerName={customerName} canCreate={canEdit} />
       <div className="space-y-3">
         <h2 className="text-sm font-medium text-ink-secondary">Bestellingen</h2>
         <OrdersTable orders={orders} />
@@ -214,6 +247,7 @@ async function OverviewTab({
   quoteMatchRefs,
   recentCalls,
   emailMessages,
+  openOpportunities,
 }: {
   id: string;
   shopifyOrders: Parameters<typeof getCustomerTimeline>[1]["shopifyOrders"];
@@ -222,6 +256,7 @@ async function OverviewTab({
   quoteMatchRefs: { shopifyCustomerGid?: string; email?: string; phone?: string };
   recentCalls: TelephonyActivityItem[];
   emailMessages: NormalizedEmailMessage[];
+  openOpportunities: Awaited<ReturnType<typeof listOpportunitiesForCustomer>>;
 }) {
   const [timeline, tasks, appointments, files] = await Promise.all([
     getCustomerTimeline(id, { shopifyOrders, draftOrders: draftOrders ?? [], phoneNumbers, quoteMatchRefs, emailMessages }),
@@ -246,6 +281,16 @@ async function OverviewTab({
       </div>
       <RecentCallsBlock calls={recentCalls} />
       <RecentEmailsBlock messages={emailMessages} />
+      <OpenOpportunitiesBlock
+        opportunities={openOpportunities.map((o) => ({
+          id: o.id,
+          title: o.title,
+          stage: o.stage,
+          estimatedValue: o.estimatedValue ? o.estimatedValue.toString() : null,
+          probability: o.probability,
+          expectedCloseDate: o.expectedCloseDate ? o.expectedCloseDate.toISOString() : null,
+        }))}
+      />
       <div className="space-y-3">
         <h2 className="text-sm font-medium text-ink-secondary">Openstaande taken</h2>
         {openTasks.length === 0 ? (

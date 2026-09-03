@@ -10,6 +10,7 @@ import {
   LifeBuoy,
   UserCog,
   Settings,
+  TrendingUp,
   type LucideIcon,
 } from "lucide-react";
 
@@ -41,6 +42,11 @@ export const NAV_SECTIONS: NavSection[] = [
   {
     label: "Sales",
     items: [
+      // Phase 4a — docs/architecture/ADR-009-OPPORTUNITY-PIPELINE-MODEL.md.
+      // A new capability, not a rename of the offerte-/orderoverzichten
+      // below (those stay federated-document placeholders, untouched by
+      // Phase 4a — docs/platform-discovery/32 §7/§20).
+      { label: "Verkoopkansen", href: "/opportunities", icon: TrendingUp },
       { label: "Offertes", icon: FileText, comingSoon: true },
       { label: "Orders", icon: ShoppingCart, comingSoon: true },
     ],

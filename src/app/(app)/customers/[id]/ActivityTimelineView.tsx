@@ -21,6 +21,9 @@ import {
   FileClock,
   Mail,
   FileText,
+  TrendingUp,
+  Trophy,
+  RotateCcw,
   type LucideIcon,
 } from "lucide-react";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -68,6 +71,12 @@ const KIND_STYLE: Record<string, { icon: LucideIcon; tint: string }> = {
   EMAIL_OUTBOUND: { icon: Mail, tint: "bg-canvas text-ink-secondary" },
   QUOTE_CREATED: { icon: FileText, tint: "bg-accent-50 text-accent-700" },
   QUOTE_UPDATED: { icon: FileText, tint: "bg-canvas text-ink-secondary" },
+  // Phase 4a — docs/architecture/ADR-009-OPPORTUNITY-PIPELINE-MODEL.md.
+  OPPORTUNITY_CREATED: { icon: TrendingUp, tint: "bg-accent-50 text-accent-700" },
+  OPPORTUNITY_STAGE_CHANGED: { icon: ArrowRightLeft, tint: "bg-canvas text-ink-secondary" },
+  OPPORTUNITY_WON: { icon: Trophy, tint: "bg-success-50 text-success-700" },
+  OPPORTUNITY_LOST: { icon: XCircle, tint: "bg-danger-50 text-danger-700" },
+  OPPORTUNITY_REOPENED: { icon: RotateCcw, tint: "bg-canvas text-ink-secondary" },
 };
 
 function dayKey(date: Date): string {

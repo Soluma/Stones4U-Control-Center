@@ -35,7 +35,19 @@ export type AuditAction =
   | "customer_tag.unassigned"
   // Phase 3a
   | "customer_match.confirmed"
-  | "customer_match.unlinked";
+  | "customer_match.unlinked"
+  // Phase 4a — docs/architecture/ADR-009-OPPORTUNITY-PIPELINE-MODEL.md
+  | "opportunity.created"
+  | "opportunity.updated"
+  | "opportunity.stage_changed"
+  | "opportunity.owner_changed"
+  | "opportunity.value_changed"
+  | "opportunity.won"
+  | "opportunity.lost"
+  | "opportunity.reopened"
+  | "opportunity.archived"
+  | "opportunity.external_link_added"
+  | "opportunity.external_link_removed";
 
 export type AuditEntityType =
   | "User"
@@ -50,7 +62,10 @@ export type AuditEntityType =
   | "File"
   | "CustomerTag"
   // Phase 3a
-  | "ExternalContactMatch";
+  | "ExternalContactMatch"
+  // Phase 4a
+  | "Opportunity"
+  | "OpportunityExternalLink";
 
 type LogAuditInput = {
   userId: string | null;

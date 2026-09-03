@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { ZodError } from "zod";
 import { Prisma } from "@/generated/prisma";
 import { UnauthenticatedError, ForbiddenError } from "@/platform/auth/guards";
+import { OpportunityValidationError } from "@/modules/opportunities/opportunity.service";
 
 /** Central error → HTTP response mapping for API routes, so guard/validation
  * errors never leak a raw stack trace and every route behaves consistently.
@@ -19,6 +20,9 @@ export function toErrorResponse(error: unknown): NextResponse {
   }
   if (error instanceof ZodError) {
     return NextResponse.json({ error: "Ongeldige invoer.", details: error.flatten() }, { status: 400 });
+  }
+  if (error instanceof OpportunityValidationError) {
+    return NextResponse.json({ error: error.message }, { status: 400 });
   }
   if (error instanceof Prisma.PrismaClientKnownRequestError) {
     if (error.code === "P2025") {

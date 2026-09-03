@@ -4,6 +4,7 @@ import { logAudit } from "@/platform/audit/audit";
 import { ForbiddenError } from "@/platform/auth/guards";
 import { validateUpload, sanitizeFilename } from "@/platform/security/file-validation";
 import { generateStorageKey, uploadObject, deleteObject, getSignedDownloadUrl } from "@/integrations/storage/r2";
+import { resolveCustomerProfileIdForOpportunity } from "@/modules/opportunities/opportunity.service";
 import type { Role } from "@/generated/prisma";
 
 // Customer file attachments — Cloudflare R2 for bytes, Postgres for metadata
@@ -32,8 +33,28 @@ export async function listFilesForCustomer(customerProfileId: string) {
   });
 }
 
+/** Phase 4a — opportunity-scoped files for the Opportunity detail page. */
+export async function listFilesForOpportunity(opportunityId: string) {
+  return prisma.file.findMany({
+    where: { opportunityId, deletedAt: null },
+    orderBy: { createdAt: "desc" },
+    include: { uploadedBy: { select: { id: true, name: true } } },
+  });
+}
+
 export async function uploadFile(
-  input: { customerProfileId: string; filename: string; declaredMimeType: string; buffer: Buffer; title?: string; description?: string },
+  input: {
+    // Required unless opportunityId is set (ADR-009 §5).
+    customerProfileId?: string;
+    filename: string;
+    declaredMimeType: string;
+    buffer: Buffer;
+    title?: string;
+    description?: string;
+    // Phase 4a — when set, customerProfileId is ALWAYS derived from the
+    // opportunity, never the caller-supplied value.
+    opportunityId?: string | null;
+  },
   actor: Actor,
 ) {
   const validated = validateUpload({
@@ -42,6 +63,10 @@ export async function uploadFile(
     size: input.buffer.byteLength,
     buffer: input.buffer,
   });
+
+  const customerProfileId = input.opportunityId
+    ? await resolveCustomerProfileIdForOpportunity(input.opportunityId)
+    : input.customerProfileId!;
 
   const storageKey = generateStorageKey(extensionOf(validated.sanitizedFilename));
   await uploadObject({ storageKey, body: input.buffer, mimeType: validated.mimeType });
@@ -55,7 +80,8 @@ export async function uploadFile(
         byteSize: input.buffer.byteLength,
         title: input.title,
         description: input.description,
-        customerProfileId: input.customerProfileId,
+        customerProfileId,
+        opportunityId: input.opportunityId ?? null,
         uploadedById: actor.id,
       },
       include: { uploadedBy: { select: { id: true, name: true } } },
@@ -63,13 +89,14 @@ export async function uploadFile(
 
     await tx.activity.create({
       data: {
-        customerProfileId: input.customerProfileId,
+        customerProfileId,
         type: "FILE_UPLOADED",
         sourceType: "CONTROL_CENTER",
         title: `Bestand geüpload: ${created.originalFilename}`,
         occurredAt: created.createdAt,
         actorId: actor.id,
         relatedFileId: created.id,
+        relatedOpportunityId: created.opportunityId,
       },
     });
 

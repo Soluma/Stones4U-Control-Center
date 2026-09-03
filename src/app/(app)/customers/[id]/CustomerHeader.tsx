@@ -1,6 +1,7 @@
 import Link from "next/link";
-import { StickyNote, CheckSquare, CalendarPlus, Paperclip } from "lucide-react";
+import { StickyNote, CheckSquare, CalendarPlus, Paperclip, TrendingUp } from "lucide-react";
 import { Avatar } from "@/components/ui/Avatar";
+import { Badge } from "@/components/ui/Badge";
 import { formatDate, formatMoney } from "@/lib/format";
 import { CrmStatusControl } from "./CrmStatusControl";
 import { AccountManagerControl } from "./AccountManagerControl";
@@ -17,6 +18,7 @@ export function CustomerHeader({
   tags,
   allTags,
   managers,
+  openOpportunitiesCount,
 }: {
   data: Customer360;
   viewerRole: Role;
@@ -24,6 +26,9 @@ export function CustomerHeader({
   tags: TagOption[];
   allTags: TagOption[];
   managers: { id: string; name: string }[];
+  // Phase 4a — a customer with multiple concurrent opportunities must stay
+  // legible at a glance (architecture doc §9).
+  openOpportunitiesCount: number;
 }) {
   const { profile, shopify, orders } = data;
   const canEdit = viewerRole !== "VIEWER";
@@ -37,6 +42,13 @@ export function CustomerHeader({
             <div className="flex flex-wrap items-center gap-2">
               <h1 className="truncate text-lg font-semibold tracking-tight text-ink-primary">{shopify.displayName}</h1>
               <CrmStatusControl customerProfileId={profile.id} status={profile.crmStatus} canEdit={canEdit} />
+              {openOpportunitiesCount > 0 && (
+                <Link href={`/customers/${id}?tab=orders`}>
+                  <Badge tone="accent">
+                    {openOpportunitiesCount} open verkoopkans{openOpportunitiesCount === 1 ? "" : "en"}
+                  </Badge>
+                </Link>
+              )}
             </div>
             <p className="mt-1 text-sm text-ink-tertiary">
               {[shopify.company, shopify.email, shopify.phone, shopify.defaultAddressSummary].filter(Boolean).join(" · ") ||
@@ -68,6 +80,10 @@ export function CustomerHeader({
 
       {canEdit && (
         <div className="mt-4 flex flex-wrap gap-2 border-t border-border-subtle pt-4">
+          <Link href={`/customers/${id}?tab=orders`} className="cc-btn-secondary">
+            <TrendingUp className="h-3.5 w-3.5" aria-hidden />
+            Verkoopkans
+          </Link>
           <Link href={`/customers/${id}?tab=notes`} className="cc-btn-secondary">
             <StickyNote className="h-3.5 w-3.5" aria-hidden />
             Notitie

@@ -53,7 +53,15 @@ const PRIORITY_LABEL: Record<Task["priority"], string> = {
   URGENT: "Urgent",
 };
 
-export function TasksPanel({ customerId, canEdit }: { customerId: string; canEdit: boolean }) {
+export function TasksPanel({
+  customerId,
+  opportunityId,
+  canEdit,
+}: {
+  customerId?: string;
+  opportunityId?: string;
+  canEdit: boolean;
+}) {
   const [tasks, setTasks] = useState<Task[] | null>(null);
   const [users, setUsers] = useState<AssignableUser[]>([]);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -63,11 +71,15 @@ export function TasksPanel({ customerId, canEdit }: { customerId: string; canEdi
   const [dueAt, setDueAt] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
+  // Phase 4a — opportunity-scoped when opportunityId is given, otherwise
+  // the existing customer-scoped endpoint (docs/platform-discovery/33).
+  const basePath = opportunityId ? `/api/opportunities/${opportunityId}` : `/api/customers/${customerId}`;
+
   const refresh = useCallback(async () => {
-    const response = await fetch(`/api/customers/${customerId}/tasks`);
+    const response = await fetch(`${basePath}/tasks`);
     const data = await response.json();
     setTasks(data.tasks ?? []);
-  }, [customerId]);
+  }, [basePath]);
 
   useEffect(() => {
     void refresh();
@@ -79,7 +91,7 @@ export function TasksPanel({ customerId, canEdit }: { customerId: string; canEdi
   async function handleCreate() {
     if (title.trim().length === 0 || !assignedToId) return;
     setSubmitting(true);
-    await fetch(`/api/customers/${customerId}/tasks`, {
+    await fetch(`${basePath}/tasks`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

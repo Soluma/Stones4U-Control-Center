@@ -32,18 +32,29 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export function FilesPanel({ customerId, canEdit }: { customerId: string; canEdit: boolean }) {
+export function FilesPanel({
+  customerId,
+  opportunityId,
+  canEdit,
+}: {
+  customerId?: string;
+  opportunityId?: string;
+  canEdit: boolean;
+}) {
   const [files, setFiles] = useState<FileRow[] | null>(null);
   const [uploading, setUploading] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // Phase 4a — opportunity-scoped when opportunityId is given.
+  const basePath = opportunityId ? `/api/opportunities/${opportunityId}` : `/api/customers/${customerId}`;
+
   const refresh = useCallback(async () => {
-    const response = await fetch(`/api/customers/${customerId}/files`);
+    const response = await fetch(`${basePath}/files`);
     const data = await response.json();
     setFiles(data.files ?? []);
-  }, [customerId]);
+  }, [basePath]);
 
   useEffect(() => {
     void refresh();
@@ -55,7 +66,7 @@ export function FilesPanel({ customerId, canEdit }: { customerId: string; canEdi
     for (const file of Array.from(fileList)) {
       const formData = new FormData();
       formData.append("file", file);
-      const response = await fetch(`/api/customers/${customerId}/files`, { method: "POST", body: formData });
+      const response = await fetch(`${basePath}/files`, { method: "POST", body: formData });
       if (!response.ok) {
         const body = await response.json().catch(() => null);
         setError(body?.error ?? "Uploaden mislukt.");

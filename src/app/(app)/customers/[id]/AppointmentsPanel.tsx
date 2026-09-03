@@ -34,7 +34,15 @@ const STATUS_LABEL: Record<Appointment["status"], string> = {
   CANCELLED: "Geannuleerd",
 };
 
-export function AppointmentsPanel({ customerId, canEdit }: { customerId: string; canEdit: boolean }) {
+export function AppointmentsPanel({
+  customerId,
+  opportunityId,
+  canEdit,
+}: {
+  customerId?: string;
+  opportunityId?: string;
+  canEdit: boolean;
+}) {
   const [appointments, setAppointments] = useState<Appointment[] | null>(null);
   const [users, setUsers] = useState<AssignableUser[]>([]);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -45,11 +53,14 @@ export function AppointmentsPanel({ customerId, canEdit }: { customerId: string;
   const [assignedToId, setAssignedToId] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
+  // Phase 4a — opportunity-scoped when opportunityId is given.
+  const basePath = opportunityId ? `/api/opportunities/${opportunityId}` : `/api/customers/${customerId}`;
+
   const refresh = useCallback(async () => {
-    const response = await fetch(`/api/customers/${customerId}/appointments`);
+    const response = await fetch(`${basePath}/appointments`);
     const data = await response.json();
     setAppointments(data.appointments ?? []);
-  }, [customerId]);
+  }, [basePath]);
 
   useEffect(() => {
     void refresh();
@@ -61,7 +72,7 @@ export function AppointmentsPanel({ customerId, canEdit }: { customerId: string;
   async function handleCreate() {
     if (title.trim().length === 0 || !assignedToId || !startsAt) return;
     setSubmitting(true);
-    await fetch(`/api/customers/${customerId}/appointments`, {
+    await fetch(`${basePath}/appointments`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

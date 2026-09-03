@@ -20,18 +20,29 @@ type Note = {
   author: { id: string; name: string };
 };
 
-export function NotesPanel({ customerId, canEdit }: { customerId: string; canEdit: boolean }) {
+export function NotesPanel({
+  customerId,
+  opportunityId,
+  canEdit,
+}: {
+  customerId?: string;
+  opportunityId?: string;
+  canEdit: boolean;
+}) {
   const [notes, setNotes] = useState<Note[] | null>(null);
   const [draft, setDraft] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState("");
 
+  // Phase 4a — opportunity-scoped when opportunityId is given.
+  const basePath = opportunityId ? `/api/opportunities/${opportunityId}` : `/api/customers/${customerId}`;
+
   const refresh = useCallback(async () => {
-    const response = await fetch(`/api/customers/${customerId}/notes`);
+    const response = await fetch(`${basePath}/notes`);
     const data = await response.json();
     setNotes(data.notes ?? []);
-  }, [customerId]);
+  }, [basePath]);
 
   useEffect(() => {
     void refresh();
@@ -40,7 +51,7 @@ export function NotesPanel({ customerId, canEdit }: { customerId: string; canEdi
   async function handleCreate() {
     if (draft.trim().length === 0) return;
     setSubmitting(true);
-    await fetch(`/api/customers/${customerId}/notes`, {
+    await fetch(`${basePath}/notes`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ bodyPlainText: draft }),

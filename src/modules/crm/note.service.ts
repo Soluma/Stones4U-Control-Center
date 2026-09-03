@@ -3,6 +3,7 @@ import { prisma } from "@/platform/db/prisma";
 import { logAudit } from "@/platform/audit/audit";
 import { ForbiddenError } from "@/platform/auth/guards";
 import { parsePlainTextToRichDoc, richDocToPlainText, richTextDocSchema, type RichTextDoc } from "@/platform/security/rich-text";
+import { resolveCustomerProfileIdForOpportunity } from "@/modules/opportunities/opportunity.service";
 import type { Role } from "@/generated/prisma";
 
 type Actor = { id: string; role: Role };
@@ -26,29 +27,46 @@ export async function listNotesForCustomer(customerProfileId: string) {
   });
 }
 
+/** Phase 4a — opportunity-scoped notes for the Opportunity detail page. */
+export async function listNotesForOpportunity(opportunityId: string) {
+  return prisma.note.findMany({
+    where: { opportunityId, deletedAt: null },
+    include: { author: { select: { id: true, name: true } } },
+    orderBy: { createdAt: "desc" },
+  });
+}
+
 export async function createNote(input: {
-  customerProfileId: string;
+  // Required unless opportunityId is set (ADR-009 §5).
+  customerProfileId?: string;
   authorId: string;
   bodyPlainText: string;
   tags?: string[];
+  // Phase 4a — when set, customerProfileId is ALWAYS derived from the
+  // opportunity, never the caller-supplied value.
+  opportunityId?: string | null;
 }) {
   const bodyJson = parsePlainTextToRichDoc(input.bodyPlainText);
   const bodyText = richDocToPlainText(bodyJson);
+  const customerProfileId = input.opportunityId
+    ? await resolveCustomerProfileIdForOpportunity(input.opportunityId)
+    : input.customerProfileId!;
 
   const note = await prisma.$transaction(async (tx) => {
     const created = await tx.note.create({
       data: {
-        customerProfileId: input.customerProfileId,
+        customerProfileId,
         authorId: input.authorId,
         bodyJson: bodyJson as never,
         bodyText,
         tags: input.tags ?? [],
+        opportunityId: input.opportunityId ?? null,
       },
     });
 
     await tx.activity.create({
       data: {
-        customerProfileId: input.customerProfileId,
+        customerProfileId,
         type: "NOTE_CREATED",
         sourceType: "CONTROL_CENTER",
         title: "Notitie toegevoegd",
@@ -56,6 +74,7 @@ export async function createNote(input: {
         occurredAt: created.createdAt,
         actorId: input.authorId,
         relatedNoteId: created.id,
+        relatedOpportunityId: created.opportunityId,
       },
     });
 
@@ -67,7 +86,7 @@ export async function createNote(input: {
     action: "note.created",
     entityType: "Note",
     entityId: note.id,
-    metadata: { customerProfileId: input.customerProfileId },
+    metadata: { customerProfileId },
   });
 
   return note;

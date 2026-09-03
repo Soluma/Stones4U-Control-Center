@@ -2,6 +2,7 @@ import "server-only";
 import { prisma } from "@/platform/db/prisma";
 import { logAudit } from "@/platform/audit/audit";
 import { ForbiddenError } from "@/platform/auth/guards";
+import { resolveCustomerProfileIdForOpportunity } from "@/modules/opportunities/opportunity.service";
 import type { Role } from "@/generated/prisma";
 
 // Central Appointment model (docs/platform-discovery/26 §6). Same
@@ -29,6 +30,16 @@ export async function listAppointmentsForCustomer(customerProfileId: string) {
   });
 }
 
+/** Phase 4a — opportunity-scoped appointments for the Opportunity detail
+ * page. */
+export async function listAppointmentsForOpportunity(opportunityId: string) {
+  return prisma.appointment.findMany({
+    where: { opportunityId },
+    orderBy: { startsAt: "desc" },
+    include: appointmentInclude,
+  });
+}
+
 /** Upcoming appointments assigned to the actor (dashboard "komende
  * afspraken") — ADMIN sees everyone's, matching the existing Task-summary
  * convention (task.service.ts getTaskSummary is per-actor too). */
@@ -47,25 +58,34 @@ export async function listUpcomingAppointments(actor: Actor, limit = 10) {
 
 export async function createAppointment(
   input: {
-    customerProfileId: string;
+    // Required unless opportunityId is set (ADR-009 §5).
+    customerProfileId?: string;
     title: string;
     description?: string;
     startsAt: Date;
     endsAt?: Date | null;
     assignedToId: string;
+    // Phase 4a — when set, customerProfileId is ALWAYS derived from the
+    // opportunity, never the caller-supplied value.
+    opportunityId?: string | null;
   },
   actor: Actor,
 ) {
+  const customerProfileId = input.opportunityId
+    ? await resolveCustomerProfileIdForOpportunity(input.opportunityId)
+    : input.customerProfileId!;
+
   const appointment = await prisma.$transaction(async (tx) => {
     const created = await tx.appointment.create({
       data: {
-        customerProfileId: input.customerProfileId,
+        customerProfileId,
         title: input.title,
         description: input.description,
         startsAt: input.startsAt,
         endsAt: input.endsAt ?? null,
         assignedToId: input.assignedToId,
         createdById: actor.id,
+        opportunityId: input.opportunityId ?? null,
       },
       include: appointmentInclude,
     });
@@ -80,6 +100,7 @@ export async function createAppointment(
         occurredAt: created.createdAt,
         actorId: actor.id,
         relatedAppointmentId: created.id,
+        relatedOpportunityId: created.opportunityId,
       },
     });
 
