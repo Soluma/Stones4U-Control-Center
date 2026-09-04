@@ -95,7 +95,11 @@ VIEWER-leesbaar) — query-params `ownerUserId`/`stage`.
   `compact`-modus (icoon + `sr-only`-tekst) voor de kanban-kaart/Customer
   360-rijen.
 - `OpportunitiesBoard.tsx`: volledig herschreven — aandacht-indicator +
-  volgende-actie op elke kaart, eigenaarfilter met "Mijn verkoopkansen"
+  volgende-actie op elke kaart (in de praktijk uitsluitend RED/ORANGE —
+  zie de implementation note in architectuurdoc §17, toegevoegd tijdens
+  Phase 6A's final review: het gebatchte pipeline-pad laadt de externe
+  commerciële signalen voor BLUE niet, alleen de detailpagina doet dat),
+  eigenaarfilter met "Mijn verkoopkansen"
   (standaard voor AGENT/USER, "alle" standaard voor ADMIN), lijstweergave nu
   een volledige tabel met "Volgende actie"/"Aandacht"-kolommen.
 - Drag-and-drop: `@dnd-kit/core`/`@dnd-kit/utilities` (nieuwe dependency,

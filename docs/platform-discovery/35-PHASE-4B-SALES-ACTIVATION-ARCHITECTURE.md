@@ -429,6 +429,23 @@ severity — puur een berekende eigenschap van `deriveOpportunityAttention()`
   heeft (attention, next action) gebruikt dezelfde reeds-gebatchte
   aanpak — nooit een losse query per rij in een lus.
 
+> **Implementation note, ontdekt tijdens Phase 6A's final review vóór
+> commit (2026-09-04)**: BLUE-attentieredenen (`SHOPIFY_ORDER_PLACED`,
+> `QUOTE_AHEAD_OF_STAGE`) vereisen externe commerciële signalen
+> (`shopifyOrderPlacedSignal`/`quoteAheadOfStageSignal` op
+> `deriveOpportunityAttention()`'s input). Precies zoals de bullet
+> hierboven al zegt ("nooit een Shopify/IMAP/PBX-aanroep per kaart"),
+> laadt het gebatchte `listOpportunities()`/`attachAttention()`-pad
+> (pijplijn-board, dashboard-tegel, en sinds Phase 6A ook Mijn Werk) deze
+> twee signalen niet — die worden uitsluitend op de opportunity-
+> detailpagina live opgehaald. Aggregate/lijst-weergaven produceren
+> daarom in de praktijk uitsluitend **RED/ORANGE**; BLUE verschijnt
+> uitsluitend op de detailpagina. Dit is geen gedragswijziging — het is
+> hoe dit systeem al sinds deze fase werkt — maar was hier nooit
+> expliciet als consequentie uitgeschreven. Zie
+> `docs/platform-discovery/45-PHASE-6A-BUILD-SPEC.md` §1 voor de
+> volledige onderbouwing en de bewuste scopebeslissing die hieruit volgde.
+
 ## 18. "Laatste contact"-performance — architectuurvoorstel
 
 Drie opties tegen elkaar afgewogen, zoals gevraagd:

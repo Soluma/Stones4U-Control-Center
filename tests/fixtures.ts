@@ -39,6 +39,13 @@ export async function cleanupUser(userId: string) {
   // defensive-cleanup reasoning as above.
   await prisma.opportunityExternalLink.deleteMany({ where: { linkedById: userId } });
   await prisma.opportunity.deleteMany({ where: { OR: [{ ownerUserId: userId }, { createdById: userId }] } });
+  // Task/Appointment.assignedToId/createdById are also RESTRICT — without
+  // this, a task/appointment created with no customerProfileId (so it isn't
+  // caught by cleanupCustomerProfile's task/appointment deleteMany) silently
+  // blocks this delete (Phase 6A discovery: getMyWorkTasks() test fixtures
+  // exercise exactly this case).
+  await prisma.task.deleteMany({ where: { OR: [{ assignedToId: userId }, { createdById: userId }] } });
+  await prisma.appointment.deleteMany({ where: { OR: [{ assignedToId: userId }, { createdById: userId }] } });
   await prisma.user.delete({ where: { id: userId } }).catch(() => undefined);
 }
 

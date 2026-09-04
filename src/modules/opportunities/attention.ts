@@ -30,7 +30,7 @@ export type OpportunityAttention = {
   primaryReason: AttentionReason | null;
 };
 
-const SEVERITY_RANK: Record<Exclude<AttentionSeverity, "NONE">, number> = { RED: 3, ORANGE: 2, BLUE: 1 };
+export const SEVERITY_RANK: Record<Exclude<AttentionSeverity, "NONE">, number> = { RED: 3, ORANGE: 2, BLUE: 1 };
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 

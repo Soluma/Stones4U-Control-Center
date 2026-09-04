@@ -2,9 +2,13 @@ import Link from "next/link";
 import { Search, Users, CalendarClock, TrendingUp, AlertCircle, Clock } from "lucide-react";
 import { getSessionUser } from "@/platform/auth/session";
 import { TaskSummaryWidget } from "@/components/dashboard/TaskSummaryWidget";
+import { MyWorkTasksList } from "@/components/dashboard/MyWorkTasksList";
+import { MyWorkAppointmentsList } from "@/components/dashboard/MyWorkAppointmentsList";
+import { MyWorkOpportunitiesList } from "@/components/dashboard/MyWorkOpportunitiesList";
 import { listUpcomingAppointments } from "@/modules/appointments/appointment.service";
 import { getRecentActivity } from "@/modules/activity/timeline";
 import { getSalesDashboardMetrics } from "@/modules/opportunities/dashboard";
+import { getMyWorkTasks, getMyWorkAppointments, getMyWorkOpportunityAttention, type MyWorkTask, type MyWorkAppointment, type MyWorkOpportunity } from "@/modules/dashboard/my-work";
 import { formatDateTime, formatMoney } from "@/lib/format";
 import { customerDisplayName } from "@/modules/crm/customer-identity";
 
@@ -22,12 +26,40 @@ export default async function DashboardPage() {
   ]);
   const money = (amount: string) => formatMoney({ amount, currencyCode: "EUR" });
 
+  // Phase 6A — "Mijn Werk" (docs/build/PHASE-6A-MY-WORK-STAGING.md). Always
+  // scoped to the signed-in actor, including ADMIN — never a team-wide view.
+  // Each block is independently fail-isolated: a failure in one must never
+  // take down the rest of the dashboard or the other two Mijn Werk blocks.
+  const [myWorkTasks, myWorkAppointments, myWorkOpportunities] = await Promise.all([
+    getMyWorkTasks(user).catch((error) => {
+      console.error("my_work_tasks_failed", error);
+      return [] as MyWorkTask[];
+    }),
+    getMyWorkAppointments(user).catch((error) => {
+      console.error("my_work_appointments_failed", error);
+      return [] as MyWorkAppointment[];
+    }),
+    getMyWorkOpportunityAttention(user).catch((error) => {
+      console.error("my_work_opportunities_failed", error);
+      return [] as MyWorkOpportunity[];
+    }),
+  ]);
+
   return (
     <div className="space-y-8">
       <div>
         <h1 className="text-xl font-semibold tracking-tight text-ink-primary">Goedendag{firstName ? `, ${firstName}` : ""}</h1>
         <p className="mt-1 text-sm text-ink-tertiary">Een overzicht van je taken en klantactiviteit.</p>
       </div>
+
+      <section>
+        <h2 className="mb-3 text-sm font-medium text-ink-secondary">Mijn Werk</h2>
+        <div className="grid gap-5 md:grid-cols-3">
+          <MyWorkTasksList tasks={myWorkTasks} />
+          <MyWorkAppointmentsList appointments={myWorkAppointments} />
+          <MyWorkOpportunitiesList opportunities={myWorkOpportunities} />
+        </div>
+      </section>
 
       <section>
         <h2 className="mb-3 text-sm font-medium text-ink-secondary">Taken</h2>
