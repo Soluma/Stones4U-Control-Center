@@ -162,6 +162,9 @@ model User {
   // Phase 4c
   customerContactsCreated CustomerContact[]
 
+  // Phase 6d
+  notesPinned Note[] @relation("NotesPinned")
+
   @@index([role])
 }
 
@@ -333,6 +336,20 @@ model Note {
   // spec §20/§21, same invariant style as opportunityId above).
   customerContactId String?
   customerContact   CustomerContact? @relation(fields: [customerContactId], references: [id])
+
+  // Phase 6d — additive, backward-compatible pinning metadata
+  // (docs/platform-discovery/54/55). isPinned drives sorting/filtering;
+  // pinnedAt orders within the pinned group; pinnedById is presentation-
+  // only context ("vastgezet door X"), separate from authorId — pinning
+  // never changes who wrote the note. No onDelete override on pinnedBy —
+  // Prisma generates ON DELETE SET NULL for this optional relation by
+  // default (verified in the generated migration; identical to the
+  // existing CustomerProfile.accountManagerId FK), so deleting a User can
+  // never delete or block deleting a Note, only null this one field.
+  isPinned   Boolean   @default(false)
+  pinnedAt   DateTime?
+  pinnedById String?
+  pinnedBy   User?     @relation("NotesPinned", fields: [pinnedById], references: [id])
 
   activities Activity[]
 

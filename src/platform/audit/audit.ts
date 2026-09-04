@@ -10,6 +10,9 @@ export type AuditAction =
   | "note.created"
   | "note.updated"
   | "note.deleted"
+  // Phase 6d
+  | "note.pinned"
+  | "note.unpinned"
   | "task.created"
   | "task.status_changed"
   | "task.assigned"

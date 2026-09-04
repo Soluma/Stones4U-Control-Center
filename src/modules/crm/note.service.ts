@@ -5,7 +5,7 @@ import { ForbiddenError } from "@/platform/auth/guards";
 import { parsePlainTextToRichDoc, richDocToPlainText, richTextDocSchema, type RichTextDoc } from "@/platform/security/rich-text";
 import { resolveCustomerProfileIdForOpportunity } from "@/modules/opportunities/opportunity.service";
 import { assertContactBelongsToCustomer } from "@/modules/crm/customer-contact.service";
-import type { Role } from "@/generated/prisma";
+import type { Role, Prisma } from "@/generated/prisma";
 
 type Actor = { id: string; role: Role };
 
@@ -20,11 +20,16 @@ function assertCanModifyNote(note: { authorId: string }, actor: Actor) {
   throw new ForbiddenError("Alleen de auteur of een beheerder mag deze notitie bewerken of verwijderen.");
 }
 
+// Phase 6d — pinned notes always first (newest-pinned-first within that
+// group), unpinned notes keep their existing createdAt-desc order below.
+// One query, DB-side multi-key sort — no in-memory re-sort, no N+1.
+const noteOrderBy: Prisma.NoteOrderByWithRelationInput[] = [{ isPinned: "desc" }, { pinnedAt: "desc" }, { createdAt: "desc" }];
+
 export async function listNotesForCustomer(customerProfileId: string) {
   return prisma.note.findMany({
     where: { customerProfileId, deletedAt: null },
-    include: { author: { select: { id: true, name: true } } },
-    orderBy: { createdAt: "desc" },
+    include: { author: { select: { id: true, name: true } }, pinnedBy: { select: { id: true, name: true } } },
+    orderBy: noteOrderBy,
   });
 }
 
@@ -32,8 +37,8 @@ export async function listNotesForCustomer(customerProfileId: string) {
 export async function listNotesForOpportunity(opportunityId: string) {
   return prisma.note.findMany({
     where: { opportunityId, deletedAt: null },
-    include: { author: { select: { id: true, name: true } } },
-    orderBy: { createdAt: "desc" },
+    include: { author: { select: { id: true, name: true } }, pinnedBy: { select: { id: true, name: true } } },
+    orderBy: noteOrderBy,
   });
 }
 
@@ -186,6 +191,70 @@ export async function deleteNote(noteId: string, actor: Actor) {
   await logAudit({ userId: actor.id, action: "note.deleted", entityType: "Note", entityId: note.id });
 
   return note;
+}
+
+/** Phase 6d — pin/unpin (docs/platform-discovery/54/55). Deliberately NOT
+ * gated by assertCanModifyNote(): pinning is team curation ("what should a
+ * colleague know"), not content ownership — any write-capable user may pin
+ * any note, regardless of who authored it (architecture doc §3). Content
+ * itself (bodyJson/bodyText/authorId) is never touched here.
+ *
+ * Idempotent by design: pinning an already-pinned note (or unpinning an
+ * already-unpinned one) is a successful no-op — pinnedAt/pinnedById are
+ * never rewritten, and no audit event is written for a no-op. The
+ * conditional updateMany() (same concurrency pattern as
+ * assignCustomerToSelfIfUnassigned() in customer-profile.service.ts)
+ * guarantees exactly one effective transition — and exactly one audit
+ * event — even under a concurrent double-pin/double-unpin race: the
+ * losing request's updateMany() affects zero rows and falls through to
+ * the same no-op return, never a second write. */
+export async function pinNote(noteId: string, actor: Actor) {
+  const existing = await prisma.note.findUniqueOrThrow({ where: { id: noteId } });
+  if (existing.isPinned) return existing;
+
+  const result = await prisma.note.updateMany({
+    where: { id: noteId, isPinned: false },
+    data: { isPinned: true, pinnedAt: new Date(), pinnedById: actor.id },
+  });
+
+  if (result.count === 0) {
+    // Lost a race to a concurrent pin — same no-op outcome, no second audit.
+    return prisma.note.findUniqueOrThrow({ where: { id: noteId } });
+  }
+
+  await logAudit({
+    userId: actor.id,
+    action: "note.pinned",
+    entityType: "Note",
+    entityId: noteId,
+    metadata: { customerProfileId: existing.customerProfileId },
+  });
+
+  return prisma.note.findUniqueOrThrow({ where: { id: noteId } });
+}
+
+export async function unpinNote(noteId: string, actor: Actor) {
+  const existing = await prisma.note.findUniqueOrThrow({ where: { id: noteId } });
+  if (!existing.isPinned) return existing;
+
+  const result = await prisma.note.updateMany({
+    where: { id: noteId, isPinned: true },
+    data: { isPinned: false, pinnedAt: null, pinnedById: null },
+  });
+
+  if (result.count === 0) {
+    return prisma.note.findUniqueOrThrow({ where: { id: noteId } });
+  }
+
+  await logAudit({
+    userId: actor.id,
+    action: "note.unpinned",
+    entityType: "Note",
+    entityId: noteId,
+    metadata: { customerProfileId: existing.customerProfileId },
+  });
+
+  return prisma.note.findUniqueOrThrow({ where: { id: noteId } });
 }
 
 export function validateRichTextDoc(value: unknown): RichTextDoc {

@@ -1,13 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { StickyNote, Pencil, Trash2 } from "lucide-react";
+import { StickyNote, Pencil, Trash2, Pin, PinOff } from "lucide-react";
 import { Avatar } from "@/components/ui/Avatar";
+import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { IconButton } from "@/components/ui/IconButton";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { SkeletonList } from "@/components/ui/Skeleton";
 import { RichTextView } from "@/components/ui/RichTextView";
+import { cn } from "@/lib/cn";
 import { formatDateTime } from "@/lib/format";
 import type { RichTextDoc } from "@/platform/security/rich-text";
 
@@ -18,6 +20,9 @@ type Note = {
   editedAt: string | null;
   createdAt: string;
   author: { id: string; name: string };
+  // Phase 6d
+  isPinned: boolean;
+  pinnedBy: { id: string; name: string } | null;
 };
 
 export function NotesPanel({
@@ -78,6 +83,15 @@ export function NotesPanel({
     await refresh();
   }
 
+  async function handleTogglePin(noteId: string, isPinned: boolean) {
+    await fetch(`/api/notes/${noteId}/pin`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ isPinned: !isPinned }),
+    });
+    await refresh();
+  }
+
   return (
     <div className="space-y-4">
       {canEdit && (
@@ -105,7 +119,7 @@ export function NotesPanel({
 
       <div className="space-y-3">
         {notes?.map((note) => (
-          <div key={note.id} className="cc-card p-4">
+          <div key={note.id} className={cn("cc-card p-4", note.isPinned && "border-l-2 border-l-accent-500")}>
             {editingId === note.id ? (
               <div className="space-y-2.5">
                 <textarea
@@ -126,6 +140,11 @@ export function NotesPanel({
               </div>
             ) : (
               <>
+                {note.isPinned && (
+                  <Badge tone="accent">
+                    <Pin className="h-3 w-3" aria-hidden /> Vastgezet
+                  </Badge>
+                )}
                 <RichTextView doc={note.bodyJson} />
                 <div className="mt-3 flex items-center justify-between">
                   <div className="flex items-center gap-2">
@@ -137,6 +156,11 @@ export function NotesPanel({
                   </div>
                   {canEdit && (
                     <div className="flex gap-1">
+                      <IconButton
+                        icon={note.isPinned ? <PinOff className="h-3.5 w-3.5" /> : <Pin className="h-3.5 w-3.5" />}
+                        label={note.isPinned ? "Losmaken" : "Vastzetten"}
+                        onClick={() => handleTogglePin(note.id, note.isPinned)}
+                      />
                       <IconButton
                         icon={<Pencil className="h-3.5 w-3.5" />}
                         label="Notitie bewerken"
