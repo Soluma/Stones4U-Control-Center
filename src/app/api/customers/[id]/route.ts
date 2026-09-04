@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { requireUser, requireWriteAccess } from "@/platform/auth/guards";
-import { getCustomer360, updateCustomerCrmFields, resetCompanyNameToShopify } from "@/modules/crm/customer-profile.service";
+import { getCustomer360, updateCustomerCrmFields, resetCompanyNameToShopify, assignCustomerToSelfIfUnassigned } from "@/modules/crm/customer-profile.service";
 import { toErrorResponse } from "@/lib/api-error";
 
 export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -28,6 +28,14 @@ const patchSchema = z.object({
   // fields in the same request are ignored and companyName is reset from a
   // fresh Shopify read instead.
   resetCompanyNameToShopify: z.literal(true).optional(),
+  // Phase 6b — "Aan mij toewijzen" quick action (build spec §1.5). When
+  // true, all other fields in the same request are ignored — accountManagerId
+  // is always resolved server-side to the actor from requireWriteAccess(),
+  // and the write is a concurrency-safe conditional update (only succeeds
+  // if the customer is still unassigned at write time — see
+  // assignCustomerToSelfIfUnassigned(), final review §10). A client-supplied
+  // accountManagerId is never read for this action.
+  assignToSelf: z.literal(true).optional(),
 });
 
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -38,6 +46,14 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
     if (body.resetCompanyNameToShopify) {
       const updated = await resetCompanyNameToShopify(id, actor);
+      return NextResponse.json(updated);
+    }
+
+    if (body.assignToSelf) {
+      const updated = await assignCustomerToSelfIfUnassigned(id, actor);
+      if (!updated) {
+        return NextResponse.json({ error: "Deze klant is inmiddels al aan een andere accountmanager toegewezen." }, { status: 409 });
+      }
       return NextResponse.json(updated);
     }
 

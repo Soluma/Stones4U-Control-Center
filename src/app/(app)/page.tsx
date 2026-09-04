@@ -53,7 +53,12 @@ export default async function DashboardPage() {
       </div>
 
       <section>
-        <h2 className="mb-3 text-sm font-medium text-ink-secondary">Mijn Werk</h2>
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-sm font-medium text-ink-secondary">Mijn Werk</h2>
+          <Link href="/customers?scope=mine" className="text-xs font-medium text-accent-600 hover:underline">
+            Mijn klanten →
+          </Link>
+        </div>
         <div className="grid gap-5 md:grid-cols-3">
           <MyWorkTasksList tasks={myWorkTasks} />
           <MyWorkAppointmentsList appointments={myWorkAppointments} />

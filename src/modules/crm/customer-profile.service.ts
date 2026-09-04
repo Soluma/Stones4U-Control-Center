@@ -6,6 +6,7 @@ import { getShopifyCustomerByGid, searchShopifyCustomers } from "@/integrations/
 import { getShopifyCustomerOrders } from "@/integrations/shopify/orders";
 import type { ShopifyCustomerSummary, CustomerOrdersResult } from "@/integrations/shopify/types";
 import type { CrmStatus, CustomerType } from "@/generated/prisma";
+import { Prisma } from "@/generated/prisma";
 
 export type CustomerSearchResult = {
   shopify: ShopifyCustomerSummary;
@@ -38,6 +39,91 @@ export async function searchCustomers(term: string): Promise<CustomerSearchResul
     shopify,
     customerProfileId: profileByGid.get(shopify.gid) ?? null,
   }));
+}
+
+// ---------------------------------------------------------------------------
+// Phase 6b — local customer list (docs/platform-discovery/48-PHASE-6B-BUILD-SPEC.md)
+// ---------------------------------------------------------------------------
+
+export type CustomerListScope = "mine" | "unassigned" | "all";
+
+export type CustomerListItem = {
+  id: string;
+  displayName: string | null;
+  companyName: string | null;
+  customerTypeOverride: CustomerType | null;
+  crmStatus: CrmStatus;
+  updatedAt: Date;
+  accountManager: { id: string; name: string; active: boolean } | null;
+};
+
+const customerListSelect = {
+  id: true,
+  displayName: true,
+  companyName: true,
+  customerTypeOverride: true,
+  crmStatus: true,
+  updatedAt: true,
+  accountManager: { select: { id: true, name: true, active: true } },
+} as const;
+
+/** "mine"/"unassigned" always resolve against the actor's own id — this is
+ * never a client-supplied filter (build spec §5/§9); callers must always
+ * pass the server-side session actor. */
+function customerScopeWhere(scope: CustomerListScope, actorId: string): Prisma.CustomerProfileWhereInput {
+  if (scope === "mine") return { accountManagerId: actorId };
+  if (scope === "unassigned") return { accountManagerId: null };
+  return {};
+}
+
+/** The local customer list (Phase 6B) — deliberately scoped to
+ * locally-materialized CustomerProfile rows only, never a live Shopify
+ * customer listing (architecture doc §3, "Optie A"). The existing
+ * searchCustomers()/CustomerSearch live-Shopify search stays the only path
+ * to a not-yet-locally-known customer — this function never creates a
+ * profile, never calls Shopify. Search term is combined with the scope
+ * filter in the same query (never a separate, unscoped search step) so a
+ * search inside "mine" can never surface another accountmanager's
+ * customer. Pagination (skip/take) is applied at the database level, after
+ * the where-clause — never a fetch-all-then-slice. */
+export async function listCustomerProfiles(
+  actor: { id: string },
+  opts: { scope: CustomerListScope; search?: string; page?: number; pageSize?: number },
+): Promise<{ customers: CustomerListItem[]; total: number }> {
+  const page = opts.page && opts.page > 0 ? Math.floor(opts.page) : 1;
+  const pageSize = opts.pageSize && opts.pageSize > 0 ? Math.floor(opts.pageSize) : 25;
+  const term = opts.search?.trim();
+
+  const where: Prisma.CustomerProfileWhereInput = {
+    ...customerScopeWhere(opts.scope, actor.id),
+    ...(term
+      ? { OR: [{ displayName: { contains: term, mode: "insensitive" } }, { companyName: { contains: term, mode: "insensitive" } }] }
+      : {}),
+  };
+
+  const [customers, total] = await Promise.all([
+    prisma.customerProfile.findMany({
+      where,
+      select: customerListSelect,
+      orderBy: { updatedAt: "desc" },
+      skip: (page - 1) * pageSize,
+      take: pageSize,
+    }),
+    prisma.customerProfile.count({ where }),
+  ]);
+
+  return { customers, total };
+}
+
+/** Tab counts for the customer list — three small, independent counts
+ * (never a per-row/per-customer query), always actor-scoped for "mine". */
+export async function getCustomerListCounts(actor: { id: string }): Promise<Record<CustomerListScope, number>> {
+  const [mine, unassigned, all] = await Promise.all([
+    prisma.customerProfile.count({ where: customerScopeWhere("mine", actor.id) }),
+    prisma.customerProfile.count({ where: customerScopeWhere("unassigned", actor.id) }),
+    prisma.customerProfile.count({ where: customerScopeWhere("all", actor.id) }),
+  ]);
+  return { mine, unassigned, all };
 }
 
 /**
@@ -219,6 +305,52 @@ export async function resetCompanyNameToShopify(customerProfileId: string, actor
     entityType: "CustomerProfile",
     entityId: customerProfileId,
     metadata: { changes: data, reset: true },
+  });
+
+  return updated;
+}
+
+/** "Aan mij toewijzen" (build spec §1.5) — concurrency-safe, not a blind
+ * last-write-wins. The UI only ever shows this action from an
+ * accountManagerId=null state; the conditional `updateMany` below re-checks
+ * that same condition at write time, atomically, so a second employee who
+ * clicks the same button a moment after a first employee already claimed
+ * the customer can never silently overwrite that assignment (final review
+ * §10 — never explicitly decided in the build spec, so the safer,
+ * conditional behavior is the one implemented). Returns null when the
+ * customer was no longer unassigned — callers must surface this as a
+ * conflict, not treat it as success. Never touches Opportunity.ownerUserId/
+ * Task.assignedToId (no coupling, unchanged from updateCustomerCrmFields()'s
+ * own guarantee) and reuses the exact same Activity/audit shape. */
+export async function assignCustomerToSelfIfUnassigned(customerProfileId: string, actor: { id: string }) {
+  const before = await prisma.customerProfile.findUniqueOrThrow({ where: { id: customerProfileId } });
+
+  const result = await prisma.customerProfile.updateMany({
+    where: { id: customerProfileId, accountManagerId: null },
+    data: { accountManagerId: actor.id },
+  });
+  if (result.count === 0) return null;
+
+  const updated = await prisma.customerProfile.findUniqueOrThrow({ where: { id: customerProfileId } });
+
+  await prisma.activity.create({
+    data: {
+      customerProfileId,
+      type: "CUSTOMER_PROFILE_UPDATED",
+      sourceType: "CONTROL_CENTER",
+      title: "CRM-gegevens bijgewerkt",
+      occurredAt: new Date(),
+      actorId: actor.id,
+      metadata: { before: { accountManagerId: before.accountManagerId }, after: { accountManagerId: actor.id } } as never,
+    },
+  });
+
+  await logAudit({
+    userId: actor.id,
+    action: "customer_profile.updated",
+    entityType: "CustomerProfile",
+    entityId: customerProfileId,
+    metadata: { changes: { accountManagerId: actor.id }, assignToSelf: true },
   });
 
   return updated;

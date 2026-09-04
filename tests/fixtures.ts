@@ -46,6 +46,13 @@ export async function cleanupUser(userId: string) {
   // exercise exactly this case).
   await prisma.task.deleteMany({ where: { OR: [{ assignedToId: userId }, { createdById: userId }] } });
   await prisma.appointment.deleteMany({ where: { OR: [{ assignedToId: userId }, { createdById: userId }] } });
+  // Phase 6b — CustomerProfile.accountManagerId is also RESTRICT (no
+  // cascade); a test fixture's customer profile assigned to this user
+  // would otherwise silently block the delete below, same bug class as
+  // the Task/Appointment fix above. Nulling it here is a defensive
+  // test-cleanup guard only, never a production behavior — it never runs
+  // outside this fixture helper.
+  await prisma.customerProfile.updateMany({ where: { accountManagerId: userId }, data: { accountManagerId: null } });
   await prisma.user.delete({ where: { id: userId } }).catch(() => undefined);
 }
 
