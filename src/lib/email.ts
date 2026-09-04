@@ -20,3 +20,15 @@ export function normalizeEmail(raw: string | null | undefined): string | null {
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) return null;
   return trimmed;
 }
+
+/** Phase 6c — a safe `mailto:` href for a quick-action link, or null when
+ * the input isn't a valid email address. Relies entirely on
+ * normalizeEmail()'s shape check for injection safety: that regex already
+ * rejects any whitespace (including CR/LF) and requires exactly one `@`,
+ * so a crafted value can never inject a header/newline into the resulting
+ * href — no separate escaping is needed on top of it. */
+export function buildMailtoHref(raw: string | null | undefined): string | null {
+  const normalized = normalizeEmail(raw);
+  if (!normalized) return null;
+  return `mailto:${normalized}`;
+}

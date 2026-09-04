@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeEmail } from "@/lib/email";
+import { normalizeEmail, buildMailtoHref } from "@/lib/email";
 
 describe("normalizeEmail", () => {
   it("trims and lowercases", () => {
@@ -25,5 +25,29 @@ describe("normalizeEmail", () => {
 
   it("two differently-cased inputs for the same address normalize identically", () => {
     expect(normalizeEmail("Klant@Voorbeeld.nl")).toBe(normalizeEmail("klant@voorbeeld.NL"));
+  });
+});
+
+describe("buildMailtoHref", () => {
+  it("builds a mailto: href for a valid, normalized address", () => {
+    expect(buildMailtoHref("  Klant@Voorbeeld.NL  ")).toBe("mailto:klant@voorbeeld.nl");
+  });
+
+  it("returns null for null/empty/invalid input", () => {
+    expect(buildMailtoHref(null)).toBeNull();
+    expect(buildMailtoHref(undefined)).toBeNull();
+    expect(buildMailtoHref("")).toBeNull();
+    expect(buildMailtoHref("niet-een-email")).toBeNull();
+  });
+
+  it("rejects an address containing a newline/CR — no header injection possible via the href", () => {
+    expect(buildMailtoHref("klant@voorbeeld.nl\r\nBcc:attacker@evil.example")).toBeNull();
+    expect(buildMailtoHref("klant@voorbeeld.nl\nSubject:injected")).toBeNull();
+  });
+
+  it("never includes a subject/body query string — a plain mailto: only", () => {
+    const href = buildMailtoHref("klant@voorbeeld.nl");
+    expect(href).toBe("mailto:klant@voorbeeld.nl");
+    expect(href).not.toContain("?");
   });
 });

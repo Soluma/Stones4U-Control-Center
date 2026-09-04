@@ -225,6 +225,8 @@ export default async function CustomerDetailPage({ params, searchParams }: PageP
               emailMessages,
               contacts: contactIdentities,
             })}
+            customerId={id}
+            canEdit={canEdit}
           />
         </div>
       )}
@@ -315,7 +317,7 @@ async function OverviewTab({
       </div>
       <div className="space-y-3">
         <h2 className="text-sm font-medium text-ink-secondary">Recente activiteit</h2>
-        <ActivityTimelineView items={timeline.slice(0, 6)} />
+        <ActivityTimelineView items={timeline.slice(0, 6)} customerId={id} canEdit={canEdit} />
       </div>
       <RecentCallsBlock calls={recentCalls} />
       <RecentEmailsBlock messages={emailMessages} />

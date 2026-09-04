@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { emailToTimelineItem } from "@/modules/activity/timeline";
 import type { NormalizedEmailMessage } from "@/integrations/email/types";
+import type { ContactIdentity } from "@/modules/crm/contact-timeline";
 
 function baseMessage(overrides: Partial<NormalizedEmailMessage> = {}): NormalizedEmailMessage {
   return {
@@ -69,5 +70,40 @@ describe("emailToTimelineItem", () => {
     expect(m365Item.id).not.toBe(imapItem.id);
     expect(m365Item.id).toBe("m365-mb-1-same-id");
     expect(imapItem.id).toBe("imap-mb-1-same-id");
+  });
+});
+
+describe("emailToTimelineItem — Phase 6c quick-action fields", () => {
+  it("carries the counterpart's raw address as participantEmail, regardless of contact match", () => {
+    const item = emailToTimelineItem(baseMessage());
+    expect(item.participantEmail).toBe("klant@voorbeeld.nl");
+  });
+
+  it("sets customerContactId on an exact, unambiguous contact match", () => {
+    const contacts: ContactIdentity[] = [
+      { id: "contact-1", displayName: "Klant Naam", emailNormalized: "klant@voorbeeld.nl", phoneNormalized: null },
+    ];
+    const item = emailToTimelineItem(baseMessage(), contacts);
+    expect(item.customerContactId).toBe("contact-1");
+  });
+
+  it("leaves customerContactId null (never guesses) when no contact matches", () => {
+    const item = emailToTimelineItem(baseMessage(), []);
+    expect(item.customerContactId).toBeNull();
+  });
+
+  it("leaves customerContactId null (never guesses) when the address matches more than one active contact", () => {
+    const contacts: ContactIdentity[] = [
+      { id: "contact-1", displayName: "Klant Naam", emailNormalized: "klant@voorbeeld.nl", phoneNormalized: null },
+      { id: "contact-2", displayName: "Ander Contact", emailNormalized: "klant@voorbeeld.nl", phoneNormalized: null },
+    ];
+    const item = emailToTimelineItem(baseMessage(), contacts);
+    expect(item.customerContactId).toBeNull();
+  });
+
+  it("never leaks the message body/subject into anything but summary — participantEmail/customerContactId carry only identity, not content", () => {
+    const item = emailToTimelineItem(baseMessage({ subject: "Geheim onderwerp", bodyPreview: "Geheime inhoud" }));
+    expect(item.participantEmail).not.toContain("Geheim");
+    expect(item.customerContactId ?? "").not.toContain("Geheim");
   });
 });

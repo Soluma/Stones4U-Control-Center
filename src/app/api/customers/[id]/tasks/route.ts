@@ -21,6 +21,11 @@ const createTaskSchema = z.object({
   priority: z.enum(["LOW", "NORMAL", "HIGH", "URGENT"]).optional(),
   assignedToId: z.string().min(1),
   dueAt: z.string().datetime().optional(),
+  // Phase 6c — quick-action prefill (build spec §1.6/§1.4). createTask()
+  // already validates this belongs to the same customer
+  // (assertContactBelongsToCustomer) — no new guard needed here. Mirrors
+  // the sibling opportunities/[id]/tasks route's existing schema shape.
+  customerContactId: z.string().nullable().optional(),
 });
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -36,6 +41,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         priority: input.priority,
         assignedToId: input.assignedToId,
         customerProfileId: id,
+        customerContactId: input.customerContactId,
         dueAt: input.dueAt ? new Date(input.dueAt) : null,
       },
       actor,

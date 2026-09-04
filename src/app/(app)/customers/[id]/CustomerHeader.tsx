@@ -1,8 +1,11 @@
 import Link from "next/link";
-import { StickyNote, CheckSquare, CalendarPlus, Paperclip, TrendingUp } from "lucide-react";
+import { StickyNote, CheckSquare, CalendarPlus, Paperclip, TrendingUp, Mail, Phone } from "lucide-react";
 import { Avatar } from "@/components/ui/Avatar";
 import { Badge } from "@/components/ui/Badge";
+import { CopyButton } from "@/components/ui/CopyButton";
 import { formatDate, formatMoney } from "@/lib/format";
+import { buildTelHref } from "@/lib/phone";
+import { buildMailtoHref } from "@/lib/email";
 import { CrmStatusControl } from "./CrmStatusControl";
 import { AccountManagerControl } from "./AccountManagerControl";
 import { CustomerTagsControl } from "./CustomerTagsControl";
@@ -44,6 +47,53 @@ export function CustomerHeader({
   // it from the detail line then, so it isn't repeated (build spec §3).
   const detailCompany = type === "ORGANIZATION" && profile.companyName === primaryName ? null : profile.companyName;
 
+  // Phase 6c — tel:/mailto: quick actions on the detail line (build spec
+  // §1.1). buildTelHref()/buildMailtoHref() return null for anything not
+  // shape-valid, in which case the raw value still renders as plain text
+  // (never a broken href).
+  const telHref = buildTelHref(shopify.phone);
+  const mailtoHref = buildMailtoHref(shopify.email);
+
+  const detailItems: { key: string; node: React.ReactNode }[] = [];
+  if (detailCompany) detailItems.push({ key: "company", node: detailCompany });
+  if (shopify.email) {
+    detailItems.push({
+      key: "email",
+      node: (
+        <span className="inline-flex items-center gap-1">
+          <Mail className="h-3 w-3" aria-hidden />
+          {mailtoHref ? (
+            <a href={mailtoHref} className="hover:underline">
+              {shopify.email}
+            </a>
+          ) : (
+            shopify.email
+          )}
+          <CopyButton value={shopify.email} label="E-mailadres kopiëren" />
+        </span>
+      ),
+    });
+  }
+  if (shopify.phone) {
+    detailItems.push({
+      key: "phone",
+      node: (
+        <span className="inline-flex items-center gap-1">
+          <Phone className="h-3 w-3" aria-hidden />
+          {telHref ? (
+            <a href={telHref} className="hover:underline">
+              {shopify.phone}
+            </a>
+          ) : (
+            shopify.phone
+          )}
+          <CopyButton value={shopify.phone} label="Telefoonnummer kopiëren" />
+        </span>
+      ),
+    });
+  }
+  if (shopify.defaultAddressSummary) detailItems.push({ key: "address", node: shopify.defaultAddressSummary });
+
   return (
     <div className="cc-card p-5">
       <div className="flex flex-wrap items-start justify-between gap-5">
@@ -62,9 +112,15 @@ export function CustomerHeader({
               )}
             </div>
             {accountHolderName && <p className="mt-0.5 text-xs text-ink-tertiary">Accounthouder: {accountHolderName}</p>}
-            <p className="mt-1 text-sm text-ink-tertiary">
-              {[detailCompany, shopify.email, shopify.phone, shopify.defaultAddressSummary].filter(Boolean).join(" · ") ||
-                "Geen contactgegevens bekend"}
+            <p className="mt-1 flex flex-wrap items-center gap-1.5 text-sm text-ink-tertiary">
+              {detailItems.length > 0
+                ? detailItems.map((item, i) => (
+                    <span key={item.key} className="inline-flex items-center gap-1.5">
+                      {i > 0 && <span aria-hidden>·</span>}
+                      {item.node}
+                    </span>
+                  ))
+                : "Geen contactgegevens bekend"}
             </p>
             <div className="mt-2 flex flex-wrap items-center gap-3">
               <div className="flex items-center gap-1.5 text-xs text-ink-tertiary">

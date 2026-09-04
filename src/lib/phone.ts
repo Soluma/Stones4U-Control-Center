@@ -22,3 +22,19 @@ export function normalizeDutchPhone(raw: string | null | undefined): string | nu
 
   return digits;
 }
+
+/** Phase 6c — a safe `tel:` href for a quick-action link, or null when the
+ * input isn't plausibly a phone number. Deliberately NOT
+ * `normalizeDutchPhone()`: that function forces every number into a
+ * Dutch-31-prefixed form (correct for matching/comparison), which would
+ * silently corrupt a genuine international number that doesn't start with
+ * 31/0031/0 (discovery doc 49 §4/build spec §3) — a `tel:` link must
+ * preserve the number as given, only formatting-cleaned and shape-
+ * validated. Reuses the exact same strip/validate pattern as
+ * normalizeDutchPhone() for consistency, without the country-code rewrite. */
+export function buildTelHref(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const stripped = raw.trim().replace(/[\s\-().]/g, "");
+  if (!/^\+?\d{6,15}$/.test(stripped)) return null;
+  return `tel:${stripped}`;
+}

@@ -1,6 +1,6 @@
 import "server-only";
 import { prisma } from "@/platform/db/prisma";
-import { createTelephonyAdapter } from "@/integrations/telephony/adapter";
+import { createTelephonyAdapter, type TelephonyActivityItem } from "@/integrations/telephony/adapter";
 import { createQuotesAdapter } from "@/integrations/quotes/adapter";
 import { createExactHistoryAdapter } from "@/integrations/exact/adapter";
 import type { ShopifyOrderSummary, ShopifyDraftOrderSummary } from "@/integrations/shopify/types";
@@ -25,6 +25,16 @@ export type TimelineItem = {
   title: string;
   summary?: string | null;
   actorName?: string | null;
+  // Phase 6c — quick-action identity, set only for CALL/EMAIL_INBOUND/
+  // EMAIL_OUTBOUND items (build spec §1.4). Values already computed above
+  // for the title string; carried through here instead of discarded so
+  // ActivityTimelineView.tsx can render Bel/Mail/"Taak maken" actions
+  // without a new query. customerContactId is only ever an exact,
+  // unambiguous match (matchContactBy*() never guesses) — never present
+  // means never prefilled, not "pick one".
+  phoneNumber?: string;
+  participantEmail?: string;
+  customerContactId?: string | null;
 };
 
 export async function getCustomerTimeline(
@@ -104,17 +114,7 @@ export async function getCustomerTimeline(
   ]);
 
   const contacts = context.contacts ?? [];
-  const telephonyItems: TimelineItem[] = callItems.map((call) => {
-    const contact = call.phoneNumber ? matchContactByPhone(contacts, normalizeDutchPhone(call.phoneNumber)) : null;
-    return {
-      id: `telefoon-${call.id}`,
-      occurredAt: new Date(call.occurredAt),
-      source: "TELEFOONSYSTEEM",
-      kind: "CALL",
-      title: contact ? `${call.title} — ${contact.displayName}` : call.title,
-      summary: call.summary ?? null,
-    };
-  });
+  const telephonyItems: TimelineItem[] = callItems.map((call) => callToTimelineItem(call, contacts));
 
   // One QUOTE_CREATED event per quote — never a synthesized QUOTE_UPDATED,
   // since neither source system exposes an update history this could
@@ -154,6 +154,24 @@ export async function getCustomerTimeline(
   );
 }
 
+/** Phase 6c extraction (was inline in getCustomerTimeline) — pure, so it's
+ * independently testable the same way emailToTimelineItem() already is,
+ * without a DB/adapter round-trip. `contacts` optional, same
+ * never-guess-on-ambiguity contract as matchContactByPhone(). */
+export function callToTimelineItem(call: TelephonyActivityItem, contacts: ContactIdentity[] = []): TimelineItem {
+  const contact = call.phoneNumber ? matchContactByPhone(contacts, normalizeDutchPhone(call.phoneNumber)) : null;
+  return {
+    id: `telefoon-${call.id}`,
+    occurredAt: new Date(call.occurredAt),
+    source: "TELEFOONSYSTEEM",
+    kind: "CALL",
+    title: contact ? `${call.title} — ${contact.displayName}` : call.title,
+    summary: call.summary ?? null,
+    phoneNumber: call.phoneNumber ?? undefined,
+    customerContactId: contact?.id ?? null,
+  };
+}
+
 /** `contacts` optional (defaults to none) — every existing caller that
  * doesn't yet know about Phase 4C contacts keeps working unchanged. When
  * provided, a normalized-exact match on the relevant participant's address
@@ -178,6 +196,8 @@ export function emailToTimelineItem(message: NormalizedEmailMessage, contacts: C
     kind: message.direction === "INBOUND" ? "EMAIL_INBOUND" : "EMAIL_OUTBOUND",
     title: message.direction === "INBOUND" ? `E-mail van ${counterpart}` : `E-mail naar ${counterpart}`,
     summary: message.subject ?? message.bodyPreview ?? null,
+    participantEmail: participant?.address ?? undefined,
+    customerContactId: matchedContact?.id ?? null,
   };
 }
 

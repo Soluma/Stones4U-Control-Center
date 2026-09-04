@@ -5,11 +5,10 @@ import Link from "next/link";
 import { CheckSquare, Plus } from "lucide-react";
 import { Badge, StatusDot } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
-import { Dialog } from "@/components/ui/Dialog";
-import { Input, Select } from "@/components/ui/Input";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { SkeletonList } from "@/components/ui/Skeleton";
 import { formatDate } from "@/lib/format";
+import { CreateTaskDialog } from "./CreateTaskDialog";
 
 type Task = {
   id: string;
@@ -20,8 +19,6 @@ type Task = {
   assignedTo: { id: string; name: string };
   createdBy: { id: string; name: string };
 };
-
-type AssignableUser = { id: string; name: string };
 
 const STATUS_TONE: Record<Task["status"], "neutral" | "accent" | "success" | "danger" | "warning"> = {
   OPEN: "neutral",
@@ -63,13 +60,7 @@ export function TasksPanel({
   canEdit: boolean;
 }) {
   const [tasks, setTasks] = useState<Task[] | null>(null);
-  const [users, setUsers] = useState<AssignableUser[]>([]);
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [title, setTitle] = useState("");
-  const [priority, setPriority] = useState<Task["priority"]>("NORMAL");
-  const [assignedToId, setAssignedToId] = useState("");
-  const [dueAt, setDueAt] = useState("");
-  const [submitting, setSubmitting] = useState(false);
 
   // Phase 4a — opportunity-scoped when opportunityId is given, otherwise
   // the existing customer-scoped endpoint (docs/platform-discovery/33).
@@ -83,31 +74,7 @@ export function TasksPanel({
 
   useEffect(() => {
     void refresh();
-    fetch("/api/users/assignable")
-      .then((r) => r.json())
-      .then((data) => setUsers(data.users ?? []));
   }, [refresh]);
-
-  async function handleCreate() {
-    if (title.trim().length === 0 || !assignedToId) return;
-    setSubmitting(true);
-    await fetch(`${basePath}/tasks`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        title,
-        priority,
-        assignedToId,
-        dueAt: dueAt ? new Date(dueAt).toISOString() : undefined,
-      }),
-    });
-    setTitle("");
-    setPriority("NORMAL");
-    setDueAt("");
-    setDialogOpen(false);
-    setSubmitting(false);
-    await refresh();
-  }
 
   async function handleStatusChange(taskId: string, status: Task["status"]) {
     await fetch(`/api/tasks/${taskId}`, {
@@ -166,42 +133,7 @@ export function TasksPanel({
       </div>
       )}
 
-      <Dialog
-        open={dialogOpen}
-        onClose={() => setDialogOpen(false)}
-        title="Nieuwe taak"
-        footer={
-          <>
-            <Button variant="secondary" onClick={() => setDialogOpen(false)}>
-              Annuleren
-            </Button>
-            <Button variant="primary" loading={submitting} disabled={title.trim().length === 0 || !assignedToId} onClick={handleCreate}>
-              Taak aanmaken
-            </Button>
-          </>
-        }
-      >
-        <div className="space-y-3">
-          <Input label="Titel" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Bijv. Klant terugbellen over levering" autoFocus />
-          <div className="grid grid-cols-2 gap-3">
-            <Select label="Toewijzen aan" value={assignedToId} onChange={(e) => setAssignedToId(e.target.value)}>
-              <option value="">Kies medewerker…</option>
-              {users.map((u) => (
-                <option key={u.id} value={u.id}>
-                  {u.name}
-                </option>
-              ))}
-            </Select>
-            <Select label="Prioriteit" value={priority} onChange={(e) => setPriority(e.target.value as Task["priority"])}>
-              <option value="LOW">Laag</option>
-              <option value="NORMAL">Normaal</option>
-              <option value="HIGH">Hoog</option>
-              <option value="URGENT">Urgent</option>
-            </Select>
-          </div>
-          <Input label="Deadline (optioneel)" type="date" value={dueAt} onChange={(e) => setDueAt(e.target.value)} />
-        </div>
-      </Dialog>
+      <CreateTaskDialog open={dialogOpen} onClose={() => setDialogOpen(false)} onCreated={refresh} basePath={basePath} />
     </div>
   );
 }

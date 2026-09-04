@@ -1,10 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Plus, Users, Mail, Phone, Copy, Pencil, Archive, RotateCcw, Star, ShieldCheck, Receipt } from "lucide-react";
+import { Plus, Users, Mail, Phone, Pencil, Archive, RotateCcw, Star, ShieldCheck, Receipt } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { IconButton } from "@/components/ui/IconButton";
+import { CopyButton } from "@/components/ui/CopyButton";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { SkeletonList } from "@/components/ui/Skeleton";
 import { ContactDialog, type ContactFormValues } from "./ContactDialog";
@@ -63,10 +64,6 @@ export function ContactsSection({ customerId, canEdit }: { customerId: string; c
     await fetch(`/api/customers/${customerId}/contacts/${contactId}/restore`, { method: "POST" });
     setBusyId(null);
     void refresh();
-  }
-
-  function copyToClipboard(value: string) {
-    void navigator.clipboard.writeText(value);
   }
 
   const editingValues: ContactFormValues | undefined = editingContact
@@ -131,9 +128,7 @@ export function ContactsSection({ customerId, canEdit }: { customerId: string; c
                       <a href={`mailto:${contact.email}`} className="hover:underline">
                         {contact.email}
                       </a>
-                      <button type="button" onClick={() => copyToClipboard(contact.email!)} className="text-ink-tertiary hover:text-ink-secondary" aria-label="E-mailadres kopiëren" title="Kopiëren">
-                        <Copy className="h-3 w-3" aria-hidden />
-                      </button>
+                      <CopyButton value={contact.email} label="E-mailadres kopiëren" />
                     </span>
                   )}
                   {contact.phone && (
@@ -142,9 +137,7 @@ export function ContactsSection({ customerId, canEdit }: { customerId: string; c
                       <a href={`tel:${contact.phone}`} className="hover:underline">
                         {contact.phone}
                       </a>
-                      <button type="button" onClick={() => copyToClipboard(contact.phone!)} className="text-ink-tertiary hover:text-ink-secondary" aria-label="Telefoonnummer kopiëren" title="Kopiëren">
-                        <Copy className="h-3 w-3" aria-hidden />
-                      </button>
+                      <CopyButton value={contact.phone} label="Telefoonnummer kopiëren" />
                     </span>
                   )}
                 </div>

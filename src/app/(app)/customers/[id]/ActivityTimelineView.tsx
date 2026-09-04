@@ -1,3 +1,6 @@
+"use client";
+
+import { useState } from "react";
 import {
   ShoppingBag,
   StickyNote,
@@ -27,9 +30,13 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { IconButton } from "@/components/ui/IconButton";
 import { cn } from "@/lib/cn";
 import { formatDate, formatTime } from "@/lib/format";
+import { buildTelHref } from "@/lib/phone";
+import { buildMailtoHref } from "@/lib/email";
 import type { TimelineItem } from "@/modules/activity/timeline";
+import { CreateTaskDialog } from "./CreateTaskDialog";
 
 // Icon + tint per activity kind — small, consistent chips rather than large
 // colored cards per docs/build/PHASE-1-UI-UX-PASS.md ("Activity Timeline").
@@ -106,7 +113,35 @@ function groupByDay(items: TimelineItem[]): { label: string; items: TimelineItem
   return groups;
 }
 
-export function ActivityTimelineView({ items }: { items: TimelineItem[] }) {
+// Phase 6c — contextual Bel/Mail/"Taak maken" quick actions, build spec
+// §1.5. Only CALL/EMAIL_INBOUND/EMAIL_OUTBOUND items ever carry
+// phoneNumber/participantEmail (timeline.ts), so every other kind renders
+// exactly as before — no visual change for the vast majority of items.
+function quickActionsFor(item: TimelineItem): { telHref: string | null; mailtoHref: string | null; taskTitle: string } | null {
+  if (item.kind === "CALL" && item.phoneNumber) {
+    return { telHref: buildTelHref(item.phoneNumber), mailtoHref: null, taskTitle: "Terugbellen" };
+  }
+  if ((item.kind === "EMAIL_INBOUND" || item.kind === "EMAIL_OUTBOUND") && item.participantEmail) {
+    return { telHref: null, mailtoHref: buildMailtoHref(item.participantEmail), taskTitle: "E-mail opvolgen" };
+  }
+  return null;
+}
+
+export function ActivityTimelineView({
+  items,
+  customerId,
+  canEdit,
+}: {
+  items: TimelineItem[];
+  // Only the Customer 360 call sites pass these — the opportunity-scoped
+  // timeline (ActivityTimelineViewSection in opportunities/[id]/page.tsx)
+  // never does, and its items never carry phoneNumber/participantEmail
+  // anyway, so "Taak maken" simply never renders there.
+  customerId?: string;
+  canEdit?: boolean;
+}) {
+  const [taskDialogItem, setTaskDialogItem] = useState<TimelineItem | null>(null);
+
   if (items.length === 0) {
     return (
       <EmptyState
@@ -117,39 +152,77 @@ export function ActivityTimelineView({ items }: { items: TimelineItem[] }) {
   }
 
   const groups = groupByDay(items);
+  const taskDialogActions = taskDialogItem ? quickActionsFor(taskDialogItem) : null;
 
   return (
-    <div className="space-y-5">
-      {groups.map((group) => (
-        <div key={group.label}>
-          <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-ink-disabled">{group.label}</p>
-          <ol className="relative space-y-0 border-l border-border pl-5">
-            {group.items.map((item) => {
-              const style = KIND_STYLE[item.kind] ?? { icon: CheckSquare, tint: "bg-canvas text-ink-secondary" };
-              const Icon = style.icon;
-              return (
-                <li key={item.id} className="relative pb-4 last:pb-0">
-                  <span
-                    className={cn(
-                      "absolute -left-[27px] top-0 flex h-5 w-5 items-center justify-center rounded-full ring-4 ring-surface",
-                      style.tint,
-                    )}
-                    aria-hidden
-                  >
-                    <Icon className="h-3 w-3" />
-                  </span>
-                  <p className="text-sm font-medium text-ink-primary">{item.title}</p>
-                  {item.summary && <p className="mt-0.5 text-sm text-ink-secondary">{item.summary}</p>}
-                  <p className="mt-0.5 text-xs text-ink-tertiary">
-                    {formatTime(item.occurredAt)}
-                    {item.actorName ? ` · ${item.actorName}` : ""}
-                  </p>
-                </li>
-              );
-            })}
-          </ol>
-        </div>
-      ))}
-    </div>
+    <>
+      <div className="space-y-5">
+        {groups.map((group) => (
+          <div key={group.label}>
+            <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-ink-disabled">{group.label}</p>
+            <ol className="relative space-y-0 border-l border-border pl-5">
+              {group.items.map((item) => {
+                const style = KIND_STYLE[item.kind] ?? { icon: CheckSquare, tint: "bg-canvas text-ink-secondary" };
+                const Icon = style.icon;
+                const actions = quickActionsFor(item);
+                return (
+                  <li key={item.id} className="relative pb-4 last:pb-0">
+                    <span
+                      className={cn(
+                        "absolute -left-[27px] top-0 flex h-5 w-5 items-center justify-center rounded-full ring-4 ring-surface",
+                        style.tint,
+                      )}
+                      aria-hidden
+                    >
+                      <Icon className="h-3 w-3" />
+                    </span>
+                    <p className="text-sm font-medium text-ink-primary">{item.title}</p>
+                    {item.summary && <p className="mt-0.5 text-sm text-ink-secondary">{item.summary}</p>}
+                    <div className="mt-0.5 flex items-center gap-2 text-xs text-ink-tertiary">
+                      <span>
+                        {formatTime(item.occurredAt)}
+                        {item.actorName ? ` · ${item.actorName}` : ""}
+                      </span>
+                      {actions && (
+                        <span className="flex items-center gap-1">
+                          {actions.telHref && (
+                            <a href={actions.telHref} className="cc-icon-btn" aria-label="Bellen" title="Bellen">
+                              <Phone className="h-3 w-3" aria-hidden />
+                            </a>
+                          )}
+                          {actions.mailtoHref && (
+                            <a href={actions.mailtoHref} className="cc-icon-btn" aria-label="E-mailen" title="E-mailen">
+                              <Mail className="h-3 w-3" aria-hidden />
+                            </a>
+                          )}
+                          {canEdit && customerId && (
+                            <IconButton
+                              icon={<CheckSquare className="h-3 w-3" aria-hidden />}
+                              label="Taak maken"
+                              onClick={() => setTaskDialogItem(item)}
+                            />
+                          )}
+                        </span>
+                      )}
+                    </div>
+                  </li>
+                );
+              })}
+            </ol>
+          </div>
+        ))}
+      </div>
+
+      {customerId && (
+        <CreateTaskDialog
+          open={taskDialogItem !== null}
+          onClose={() => setTaskDialogItem(null)}
+          onCreated={() => setTaskDialogItem(null)}
+          basePath={`/api/customers/${customerId}`}
+          initialTitle={taskDialogActions?.taskTitle}
+          initialCustomerContactId={taskDialogItem?.customerContactId}
+        />
+      )}
+    </>
   );
 }

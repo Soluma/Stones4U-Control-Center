@@ -1,5 +1,6 @@
 import { ArrowDownLeft, ArrowUpRight, ExternalLink } from "lucide-react";
 import { formatDateTime } from "@/lib/format";
+import { buildMailtoHref } from "@/lib/email";
 import type { NormalizedEmailMessage } from "@/integrations/email/types";
 
 // Overview-tab compact block (docs/platform-discovery/28-PHASE-3-ARCHITECTURE.md
@@ -19,9 +20,11 @@ export function RecentEmailsBlock({ messages }: { messages: NormalizedEmailMessa
         <div className="cc-card divide-y divide-border-subtle">
           {recent.map((message) => {
             const inbound = message.direction === "INBOUND";
+            const counterpartAddress = inbound ? message.from.address : message.to[0]?.address;
             const counterpart = inbound
               ? message.from.name ?? message.from.address
               : message.to[0]?.name ?? message.to[0]?.address ?? "onbekend";
+            const mailtoHref = buildMailtoHref(counterpartAddress);
             const Icon = inbound ? ArrowDownLeft : ArrowUpRight;
             const key = `${message.provider}-${message.mailboxId}-${message.externalMessageId}`;
 
@@ -33,7 +36,15 @@ export function RecentEmailsBlock({ messages }: { messages: NormalizedEmailMessa
                 />
                 <div className="min-w-0 flex-1">
                   <p className="truncate font-medium text-ink-primary">{message.subject || "(geen onderwerp)"}</p>
-                  <p className="mt-0.5 truncate text-xs text-ink-tertiary">{counterpart}</p>
+                  <p className="mt-0.5 truncate text-xs text-ink-tertiary">
+                    {mailtoHref ? (
+                      <a href={mailtoHref} className="hover:underline">
+                        {counterpart}
+                      </a>
+                    ) : (
+                      counterpart
+                    )}
+                  </p>
                   {message.bodyPreview && <p className="mt-0.5 truncate text-xs text-ink-tertiary">{message.bodyPreview}</p>}
                   <p className="mt-0.5 text-[11px] text-ink-disabled">{message.mailboxAddress}</p>
                 </div>
