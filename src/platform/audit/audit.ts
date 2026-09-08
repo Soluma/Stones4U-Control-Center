@@ -56,7 +56,11 @@ export type AuditAction =
   | "customer_contact.updated"
   | "customer_contact.primary_changed"
   | "customer_contact.archived"
-  | "customer_contact.restored";
+  | "customer_contact.restored"
+  // Phase 7 — docs/QUOTE-DELIVERY-DATE-PORTAL-BUILD.md
+  | "delivery_handoff.created"
+  | "delivery_handoff.date_requested"
+  | "delivery_handoff.mirror_failed";
 
 export type AuditEntityType =
   | "User"
@@ -76,7 +80,9 @@ export type AuditEntityType =
   | "Opportunity"
   | "OpportunityExternalLink"
   // Phase 4c
-  | "CustomerContact";
+  | "CustomerContact"
+  // Phase 7
+  | "DeliveryDateHandoff";
 
 type LogAuditInput = {
   userId: string | null;

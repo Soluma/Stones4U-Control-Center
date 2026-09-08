@@ -115,6 +115,15 @@ enum ActivityType {
   OPPORTUNITY_WON
   OPPORTUNITY_LOST
   OPPORTUNITY_REOPENED
+  // Phase 7 — docs/QUOTE-DELIVERY-DATE-PORTAL-BUILD.md. Category A
+  // (Control-Center-owned row): the customer's chosen date is captured and
+  // persisted here, even though the submitting actor is the customer, not
+  // staff (Activity.actorId is nullable — same precedent already used by
+  // AuditEvent.userId). Written only on the public /delivery/[token] POST
+  // when requestedDeliveryDate is set for the first time or genuinely
+  // changes — never on a same-date resubmit (no timeline spam) and never
+  // on a plain GET.
+  DELIVERY_DATE_REQUESTED
 }
 
 // Phase 2 — docs/platform-discovery/26-PHASE-2-BUILD-SPEC.md
@@ -164,6 +173,9 @@ model User {
 
   // Phase 6d
   notesPinned Note[] @relation("NotesPinned")
+
+  // Phase 7 — docs/QUOTE-DELIVERY-DATE-PORTAL-BUILD.md
+  deliveryDateHandoffsCreated DeliveryDateHandoff[]
 
   @@index([role])
 }
@@ -234,6 +246,8 @@ model CustomerProfile {
   opportunities   Opportunity[]
   // Phase 4c
   contacts        CustomerContact[]
+  // Phase 7 — docs/QUOTE-DELIVERY-DATE-PORTAL-BUILD.md
+  deliveryDateHandoffs DeliveryDateHandoff[]
 
   @@index([phoneNormalized])
   @@index([email])
@@ -543,6 +557,9 @@ model Activity {
   // Phase 4a — fifth related*Id, same pattern as the four above.
   relatedOpportunityId String?
   relatedOpportunity   Opportunity?       @relation(fields: [relatedOpportunityId], references: [id])
+  // Phase 7 — sixth related*Id, same pattern.
+  relatedDeliveryDateHandoffId String?
+  relatedDeliveryDateHandoff   DeliveryDateHandoff? @relation(fields: [relatedDeliveryDateHandoffId], references: [id])
   metadata             Json?
   createdAt            DateTime           @default(now())
 
@@ -807,4 +824,93 @@ model OpportunityExternalLink {
 
   @@unique([opportunityId, linkType, externalRef])
   @@index([linkType, externalRef])
+}
+
+// Phase 7 — docs/QUOTE-DELIVERY-DATE-PORTAL-BUILD.md. Native "Gewenste
+// leverdatum klant" handoff. NEVER a copy of the external commercial
+// document — same lightweight-reference pattern as
+// OpportunityExternalLink/ExternalContactMatch (sourceSystem + externalId).
+// Phase A only ever creates SHOPIFY-sourced rows (externalId =
+// shopifyDraftOrderGid, the two happen to be identical today); OFFERTEAPP/
+// S4U_QUOTE_APP are modeled now so a later phase that wires up the existing
+// read-only quotes adapter (src/integrations/quotes/adapter.ts) never needs
+// a second migration cycle for this — same "prepared, not yet producing"
+// pattern already used for ActivityType's QUOTE_CREATED/QUOTE_UPDATED.
+enum QuoteSourceSystem {
+  SHOPIFY
+  OFFERTEAPP
+  S4U_QUOTE_APP
+}
+
+// Which payment engine this handoff will ultimately redirect to. Phase A
+// only ever creates SHOPIFY rows — MOLLIE exists so the fail-closed "not
+// supported yet" path (delivery-handoff.service.ts resolvePaymentTarget())
+// has a real state to test against, not a hypothetical one; there is no
+// Mollie integration anywhere in this repo (confirmed by repo-wide search
+// during discovery) and building one is explicitly out of scope here.
+enum PaymentProvider {
+  SHOPIFY
+  MOLLIE
+  UNKNOWN
+}
+
+// Deliberately minimal — only states that represent real, observable system
+// state (no fictitious PAID/COMPLETED without actual payment-completion
+// feedback, which stays out of scope, see docs/QUOTE-DELIVERY-DATE-PORTAL-BUILD.md).
+enum DeliveryDateHandoffStatus {
+  PENDING // created, or a mirror attempt has not yet succeeded for the current requestedDeliveryDate
+  MIRRORED // requestedDeliveryDate has been successfully written to Shopify's customAttributes
+  ERROR // the most recent mirror attempt failed; requestedDeliveryDate is safely persisted locally regardless
+}
+
+model DeliveryDateHandoff {
+  id String @id @default(cuid())
+
+  // Opaque public bearer token — only the HMAC-SHA256 hash is ever stored
+  // (same technique as Session.tokenHash, src/platform/auth/session.ts),
+  // never the raw token. See src/modules/delivery/token.ts for why a
+  // dedicated field/secret was chosen over reusing the row's own cuid `id`
+  // or SESSION_SECRET.
+  publicTokenHash String @unique
+
+  sourceSystem         QuoteSourceSystem
+  // = shopifyDraftOrderGid today (sourceSystem is always SHOPIFY in Phase
+  // A) — kept as its own field, not derived, so a future OFFERTEAPP/
+  // S4U_QUOTE_APP row (externalId = that system's quote id) never has to
+  // change this column's meaning.
+  externalId           String
+  shopifyDraftOrderGid String?
+
+  // Nullable — a handoff can be created before customer identity is
+  // confidently resolved (ADR-002: Shopify is the identity source of
+  // truth, not this row). Never required for the public flow to function.
+  customerProfileId String?
+  customerProfile   CustomerProfile? @relation(fields: [customerProfileId], references: [id])
+
+  // The customer's WISH, never a guarantee — never confused with a
+  // transport-planning field. This repo has no transport/Hoefnagels module
+  // today, so there is nothing yet to accidentally collide with; the
+  // separation is a forward-looking design rule, not a fix for an existing
+  // conflict.
+  requestedDeliveryDate DateTime? @db.Date
+
+  paymentProvider PaymentProvider          @default(UNKNOWN)
+  status          DeliveryDateHandoffStatus @default(PENDING)
+
+  lastMirrorAt    DateTime?
+  // Short category string only (e.g. "ACCESS_DENIED", "SHOP_MISMATCH",
+  // "NETWORK_ERROR") — never a raw Shopify response body, never PII.
+  mirrorErrorCode String?
+
+  createdById String
+  createdBy   User   @relation(fields: [createdById], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  activities Activity[]
+
+  @@unique([sourceSystem, externalId])
+  @@index([customerProfileId])
+  @@index([shopifyDraftOrderGid])
 }

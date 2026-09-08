@@ -46,6 +46,9 @@ export async function cleanupUser(userId: string) {
   // exercise exactly this case).
   await prisma.task.deleteMany({ where: { OR: [{ assignedToId: userId }, { createdById: userId }] } });
   await prisma.appointment.deleteMany({ where: { OR: [{ assignedToId: userId }, { createdById: userId }] } });
+  // Phase 7 — DeliveryDateHandoff.createdById is RESTRICT, same reasoning
+  // as Task/Appointment above.
+  await prisma.deliveryDateHandoff.deleteMany({ where: { createdById: userId } });
   // Phase 6b — CustomerProfile.accountManagerId is also RESTRICT (no
   // cascade); a test fixture's customer profile assigned to this user
   // would otherwise silently block the delete below, same bug class as
@@ -66,5 +69,18 @@ export async function cleanupCustomerProfile(customerProfileId: string) {
   // Phase 4a — Opportunity.customerProfileId is RESTRICT; OpportunityExternalLink
   // cascades from Opportunity automatically.
   await prisma.opportunity.deleteMany({ where: { customerProfileId } });
+  // Phase 7 — DeliveryDateHandoff.customerProfileId is SET NULL on delete,
+  // so it would never block this delete either way, but tests should not
+  // leave orphaned rows behind (same hygiene as the deleteMany calls above).
+  await prisma.deliveryDateHandoff.deleteMany({ where: { customerProfileId } });
   await prisma.customerProfile.delete({ where: { id: customerProfileId } }).catch(() => undefined);
+}
+
+// Phase 7 — DeliveryDateHandoff.createdById is RESTRICT (same pattern as
+// Task/Appointment.createdById in cleanupUser above); tests that create a
+// handoff directly (not via a customer profile) must clean it up before
+// cleanupUser() runs, or call this from within their own afterAll.
+export async function cleanupDeliveryDateHandoff(handoffId: string) {
+  await prisma.activity.deleteMany({ where: { relatedDeliveryDateHandoffId: handoffId } });
+  await prisma.deliveryDateHandoff.delete({ where: { id: handoffId } }).catch(() => undefined);
 }

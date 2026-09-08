@@ -23,6 +23,8 @@ import { CustomerHeader } from "./CustomerHeader";
 import { OrdersTable } from "./OrdersTable";
 import { DraftOrdersTable } from "./DraftOrdersTable";
 import { QuotesTable } from "./QuotesTable";
+import { DeliveryDateHandoffsPanel } from "./DeliveryDateHandoffsPanel";
+import { listDeliveryDateHandoffsForCustomer } from "@/modules/delivery/delivery-handoff.service";
 import { RecentCallsBlock } from "./RecentCallsBlock";
 import { RecentEmailsBlock } from "./RecentEmailsBlock";
 import { OpenOpportunitiesBlock } from "./OpenOpportunitiesBlock";
@@ -173,6 +175,11 @@ export default async function CustomerDetailPage({ params, searchParams }: PageP
   }
   const openCount = openOpportunities.filter((o) => o.status === "OPEN").length;
 
+  // Phase 7 — portal-owned, read-only. Never a live external call, so no
+  // fail-isolation try/catch needed (same as the other purely-local Prisma
+  // reads on this page).
+  const deliveryDateHandoffs = await listDeliveryDateHandoffsForCustomer(id);
+
   return (
     <div className="space-y-5">
       <CustomerHeader
@@ -206,6 +213,7 @@ export default async function CustomerDetailPage({ params, searchParams }: PageP
           id={id}
           customerName={data.shopify.displayName}
           orders={data.orders.orders}
+          deliveryDateHandoffs={deliveryDateHandoffs}
           draftOrders={draftOrders}
           draftOrdersUnavailable={draftOrdersUnavailable}
           quotes={quotes}
@@ -246,6 +254,7 @@ function CommercialTab({
   draftOrders,
   draftOrdersUnavailable,
   quotes,
+  deliveryDateHandoffs,
   canEdit,
 }: {
   id: string;
@@ -254,6 +263,7 @@ function CommercialTab({
   draftOrders: ShopifyDraftOrderSummary[] | null;
   draftOrdersUnavailable: boolean;
   quotes: QuoteSummary[];
+  deliveryDateHandoffs: Parameters<typeof DeliveryDateHandoffsPanel>[0]["handoffs"];
   canEdit: boolean;
 }) {
   return (
@@ -270,6 +280,10 @@ function CommercialTab({
       <div className="space-y-3">
         <h2 className="text-sm font-medium text-ink-secondary">Offertes</h2>
         <QuotesTable quotes={quotes} />
+      </div>
+      <div className="space-y-3">
+        <h2 className="text-sm font-medium text-ink-secondary">Gewenste leverdatum klant</h2>
+        <DeliveryDateHandoffsPanel handoffs={deliveryDateHandoffs} />
       </div>
     </div>
   );
