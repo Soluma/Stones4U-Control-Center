@@ -863,6 +863,21 @@ enum DeliveryDateHandoffStatus {
   ERROR // the most recent mirror attempt failed; requestedDeliveryDate is safely persisted locally regardless
 }
 
+// Phase 6B — which concrete Shopify commerce object externalId/the *Gid
+// field actually points at. Explicit and typed on purpose: the GID string
+// itself already encodes this ("gid://shopify/DraftOrder/…" vs
+// "gid://shopify/Order/…"), but dispatch code must never infer behavior by
+// string-matching an opaque external identifier — see
+// docs/ORDER-DELIVERY-HANDOFF-FOUNDATION.md §"Data model decision" for the
+// full comparison of alternatives this rejected. Defaults to
+// SHOPIFY_DRAFT_ORDER so every historical Phase A row (created before this
+// column existed) backfills unambiguously — never SHOPIFY_ORDER by
+// accident.
+enum DeliveryCommerceObjectType {
+  SHOPIFY_DRAFT_ORDER
+  SHOPIFY_ORDER
+}
+
 model DeliveryDateHandoff {
   id String @id @default(cuid())
 
@@ -874,12 +889,27 @@ model DeliveryDateHandoff {
   publicTokenHash String @unique
 
   sourceSystem         QuoteSourceSystem
-  // = shopifyDraftOrderGid today (sourceSystem is always SHOPIFY in Phase
-  // A) — kept as its own field, not derived, so a future OFFERTEAPP/
-  // S4U_QUOTE_APP row (externalId = that system's quote id) never has to
-  // change this column's meaning.
+  // = shopifyDraftOrderGid OR shopifyOrderGid, whichever commerceObjectType
+  // says this row is (sourceSystem is always SHOPIFY in Phase A/B) — kept
+  // as its own field, not derived, so a future OFFERTEAPP/S4U_QUOTE_APP row
+  // (externalId = that system's quote id) never has to change this
+  // column's meaning. The existing @@unique([sourceSystem, externalId])
+  // below already guarantees at most one handoff per Draft Order OR per
+  // Order — Draft GIDs and Order GIDs never collide as strings, so no new
+  // constraint was needed for Phase 6B.
   externalId           String
+  commerceObjectType   DeliveryCommerceObjectType @default(SHOPIFY_DRAFT_ORDER)
   shopifyDraftOrderGid String?
+  // Phase 6B — populated only for commerceObjectType = SHOPIFY_ORDER, null
+  // for every historical Draft-based row (never backfilled/derived).
+  shopifyOrderGid      String?
+  // Phase 6B — a customer-safe, human-readable reference ("#1234"),
+  // captured once at handoff creation from Shopify's own order/draft name.
+  // Never a GID, never PII, never fabricated when unavailable. Exists so
+  // the public page (Phase 6D) never needs its own Shopify read just to
+  // show "Bestelling #1234". Null for every historical row — intentionally
+  // never backfilled.
+  publicReference      String?
 
   // Nullable — a handoff can be created before customer identity is
   // confidently resolved (ADR-002: Shopify is the identity source of

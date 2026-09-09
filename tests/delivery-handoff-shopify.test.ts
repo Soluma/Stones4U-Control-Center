@@ -315,3 +315,122 @@ describe("searchDraftOrdersForHandoff — Phase 5A staff draft-order lookup", ()
     });
   });
 });
+
+describe("getOrderForHandoff — Phase 6B Order read client", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    for (const key of ENV_KEYS) delete process.env[key];
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("is read-only — a single GraphQL query, never a mutation, and never queries the write-safety guard", async () => {
+    setShopifyEnv();
+    const fetchMock = vi.fn();
+    fetchMock.mockResolvedValueOnce(tokenResponse()).mockResolvedValueOnce(
+      jsonResponse({
+        data: {
+          order: {
+            id: "gid://shopify/Order/1",
+            name: "#1234",
+            cancelledAt: null,
+            displayFulfillmentStatus: "UNFULFILLED",
+            customer: null,
+            shippingAddress: null,
+            customAttributes: [],
+          },
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { getOrderForHandoff } = await import("@/integrations/shopify/order-for-handoff");
+    await getOrderForHandoff("gid://shopify/Order/1");
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const call = fetchMock.mock.calls[1]!;
+    const body = JSON.parse(call[1].body as string);
+    expect(body.query).toMatch(/order\(/);
+    expect(body.query).not.toMatch(/mutation/i);
+  });
+
+  it("maps every field correctly, including no-customer/no-shipping-address orders", async () => {
+    setShopifyEnv();
+    const fetchMock = vi.fn();
+    fetchMock.mockResolvedValueOnce(tokenResponse()).mockResolvedValueOnce(
+      jsonResponse({
+        data: {
+          order: {
+            id: "gid://shopify/Order/1",
+            name: "#1234",
+            cancelledAt: null,
+            displayFulfillmentStatus: "UNFULFILLED",
+            customer: null,
+            shippingAddress: null,
+            customAttributes: [],
+          },
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { getOrderForHandoff } = await import("@/integrations/shopify/order-for-handoff");
+    const result = await getOrderForHandoff("gid://shopify/Order/1");
+
+    expect(result).toEqual({
+      gid: "gid://shopify/Order/1",
+      name: "#1234",
+      isCancelled: false,
+      fulfillmentStatus: "UNFULFILLED",
+      customerGid: null,
+      hasShippingAddress: false,
+      hasRequestedDeliveryDateAlready: false,
+    });
+  });
+
+  it("maps a cancelled, already-mirrored order with a customer and a shipping address correctly", async () => {
+    setShopifyEnv();
+    const fetchMock = vi.fn();
+    fetchMock.mockResolvedValueOnce(tokenResponse()).mockResolvedValueOnce(
+      jsonResponse({
+        data: {
+          order: {
+            id: "gid://shopify/Order/2",
+            name: "#5678",
+            cancelledAt: "2026-09-01T00:00:00Z",
+            displayFulfillmentStatus: "FULFILLED",
+            customer: { id: "gid://shopify/Customer/9" },
+            shippingAddress: { city: "Tilburg" },
+            customAttributes: [{ key: "requested_delivery_date", value: "2026-09-01" }],
+          },
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { getOrderForHandoff } = await import("@/integrations/shopify/order-for-handoff");
+    const result = await getOrderForHandoff("gid://shopify/Order/2");
+
+    expect(result).toEqual({
+      gid: "gid://shopify/Order/2",
+      name: "#5678",
+      isCancelled: true,
+      fulfillmentStatus: "FULFILLED",
+      customerGid: "gid://shopify/Customer/9",
+      hasShippingAddress: true,
+      hasRequestedDeliveryDateAlready: true,
+    });
+  });
+
+  it("returns null for an unknown/nonexistent Order, never throws", async () => {
+    setShopifyEnv();
+    const fetchMock = vi.fn();
+    fetchMock.mockResolvedValueOnce(tokenResponse()).mockResolvedValueOnce(jsonResponse({ data: { order: null } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { getOrderForHandoff } = await import("@/integrations/shopify/order-for-handoff");
+    await expect(getOrderForHandoff("gid://shopify/Order/999")).resolves.toBeNull();
+  });
+});

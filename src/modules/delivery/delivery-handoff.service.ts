@@ -4,6 +4,7 @@ import { logAudit } from "@/platform/audit/audit";
 import { generatePublicToken, hashPublicToken } from "./token";
 import { DeliveryHandoffError } from "./errors";
 import { mirrorRequestedDeliveryDateToShopify } from "@/integrations/shopify/draft-order-mirror";
+import { mirrorRequestedDeliveryDateToOrder } from "@/integrations/shopify/order-mirror";
 import type { DeliveryDateHandoff, PaymentProvider } from "@/generated/prisma";
 
 // Quote Delivery Date Handoff — native Control Center implementation
@@ -14,6 +15,25 @@ import type { DeliveryDateHandoff, PaymentProvider } from "@/generated/prisma";
 // OpportunityExternalLink/ExternalContactMatch.
 
 const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
+// Generous — real Shopify order names are short ("#1234", "#WEB1234"), this
+// only guards against something unexpectedly long ever reaching the
+// column, not against legitimate order-naming schemes.
+const PUBLIC_REFERENCE_MAX_LENGTH = 64;
+
+/** publicReference always originates server-side from Shopify's own
+ * order/draft name — never client-supplied. Trims whitespace, collapses an
+ * empty/whitespace-only value to null (never stores ""), and caps length
+ * defensively. Deliberately no other normalization (no character
+ * stripping) — Shopify order-naming schemes are configurable per shop and
+ * must not be second-guessed here. Rendering (Phase 6D) is plain React
+ * text interpolation, never dangerouslySetInnerHTML — no HTML-escaping
+ * needed here either. */
+function normalizePublicReference(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  return trimmed.slice(0, PUBLIC_REFERENCE_MAX_LENGTH);
+}
 
 /** Local calendar-day comparison, ignoring time/zone — dates are always
  * stored/compared as bare YYYY-MM-DD, never a timestamp. */
@@ -104,6 +124,69 @@ export async function createDeliveryDateHandoff(input: {
     entityType: "DeliveryDateHandoff",
     entityId: handoff.id,
     metadata: { shopifyDraftOrderGid: input.shopifyDraftOrderGid, customerProfileId: input.customerProfileId ?? null },
+  });
+
+  return { handoff, rawToken };
+}
+
+/**
+ * Phase 6B — Order-equivalent of createDeliveryDateHandoff(). Deliberately
+ * a separate function, not a branch inside the Draft one: distinct input
+ * shape (no paymentProvider concept — see submitRequestedDeliveryDateForOrder()
+ * for why), distinct commerceObjectType/shopifyOrderGid fields to set, and
+ * keeping the two apart means the existing, already-proven Draft path is
+ * never touched by this change (docs/ORDER-DELIVERY-HANDOFF-FOUNDATION.md
+ * §"Service abstraction").
+ *
+ * Idempotent per (sourceSystem, externalId) — identical guarantee to the
+ * Draft version, via the same existing unique constraint (a Draft GID and
+ * an Order GID never collide as strings, so no new constraint was needed).
+ * Not yet called from anywhere in this phase — no staff UI, no webhook,
+ * no automatic eligibility trigger (Phase 6B is foundation only).
+ */
+export async function createOrGetOrderDeliveryHandoff(input: {
+  shopifyOrderGid: string;
+  publicReference?: string | null;
+  customerProfileId?: string | null;
+  createdById: string;
+}): Promise<{ handoff: DeliveryDateHandoff; rawToken: string | null }> {
+  const existing = await prisma.deliveryDateHandoff.findUnique({
+    where: { sourceSystem_externalId: { sourceSystem: "SHOPIFY", externalId: input.shopifyOrderGid } },
+  });
+  if (existing) {
+    return { handoff: existing, rawToken: null };
+  }
+
+  const rawToken = generatePublicToken();
+  const publicTokenHash = hashPublicToken(rawToken);
+
+  const handoff = await prisma.deliveryDateHandoff.create({
+    data: {
+      publicTokenHash,
+      sourceSystem: "SHOPIFY",
+      externalId: input.shopifyOrderGid,
+      commerceObjectType: "SHOPIFY_ORDER",
+      shopifyOrderGid: input.shopifyOrderGid,
+      publicReference: normalizePublicReference(input.publicReference),
+      customerProfileId: input.customerProfileId ?? null,
+      // No payment-provider concept for the Order-based flow — the
+      // requested-delivery-date preference is deliberately decoupled from
+      // payment/invoicing (docs/ORDER-DELIVERY-HANDOFF-FOUNDATION.md
+      // §"B2B boundary"). UNKNOWN also fails resolvePaymentTarget() closed
+      // if that Draft-only function were ever mistakenly called for an
+      // Order row — see submitRequestedDeliveryDateForOrder(), which never
+      // calls it at all.
+      paymentProvider: "UNKNOWN",
+      createdById: input.createdById,
+    },
+  });
+
+  await logAudit({
+    userId: input.createdById,
+    action: "delivery_handoff.created",
+    entityType: "DeliveryDateHandoff",
+    entityId: handoff.id,
+    metadata: { shopifyOrderGid: input.shopifyOrderGid, customerProfileId: input.customerProfileId ?? null },
   });
 
   return { handoff, rawToken };
@@ -273,6 +356,105 @@ export async function submitRequestedDeliveryDate(handoff: DeliveryDateHandoff, 
   });
 
   return resolvePaymentTarget(persisted, mirrorResult.invoiceUrl);
+}
+
+type OrderSubmitResult = { requestedDeliveryDate: string };
+
+/**
+ * Phase 6B — Order-equivalent of submitRequestedDeliveryDate(). A separate
+ * function, not a branch inside the Draft one, on purpose: the Draft
+ * version's contract (persist → mirror → resolvePaymentTarget() →
+ * redirectUrl) doesn't apply here at all — an Order-based handoff is
+ * deliberately decoupled from payment/invoicing status (that decoupling is
+ * the entire point of moving this to a real Order — see
+ * docs/ORDER-DELIVERY-HANDOFF-FOUNDATION.md §"B2B boundary"). This
+ * function therefore never calls resolvePaymentTarget() and never returns
+ * a redirectUrl — only enough for a future success page (Phase 6D) to
+ * render. Keeping the two functions fully separate, rather than adding a
+ * branch to the existing one, means submitRequestedDeliveryDate() and its
+ * existing test coverage are untouched by this change.
+ *
+ * Same validate → persist → mirror ordering guarantee as the Draft
+ * version: never marks MIRRORED before a successful mirror; a mirror
+ * failure leaves the locally persisted date untouched and throws a
+ * retryable DeliveryHandoffError. Same DELIVERY_DATE_REQUESTED Activity
+ * rule — only on a genuinely new/changed date, never on a same-date
+ * resubmit.
+ */
+export async function submitRequestedDeliveryDateForOrder(
+  handoff: DeliveryDateHandoff,
+  rawDateInput: string | null | undefined,
+): Promise<OrderSubmitResult> {
+  const requestedDate = parseRequestedDeliveryDate(rawDateInput);
+  const dateIso = toIsoDateOnly(requestedDate);
+
+  const dateChanged =
+    !handoff.requestedDeliveryDate || toIsoDateOnly(new Date(handoff.requestedDeliveryDate)) !== dateIso;
+
+  const persisted = await prisma.deliveryDateHandoff.update({
+    where: { id: handoff.id },
+    data: { requestedDeliveryDate: requestedDate },
+  });
+
+  if (dateChanged && persisted.customerProfileId) {
+    await prisma.activity.create({
+      data: {
+        customerProfileId: persisted.customerProfileId,
+        type: "DELIVERY_DATE_REQUESTED",
+        sourceType: "CONTROL_CENTER",
+        title: "Gewenste leverdatum klant ontvangen",
+        summary: `Klant koos ${dateIso} als gewenste leverdatum (wens, geen toezegging).`,
+        occurredAt: new Date(),
+        actorId: null,
+        relatedDeliveryDateHandoffId: persisted.id,
+      },
+    });
+  }
+
+  await logAudit({
+    userId: null,
+    action: "delivery_handoff.date_requested",
+    entityType: "DeliveryDateHandoff",
+    entityId: persisted.id,
+    metadata: { dateChanged },
+  });
+
+  // Mirror to Shopify — a missing shopifyOrderGid on a commerceObjectType
+  // = SHOPIFY_ORDER row would be a genuine data-integrity bug, not a
+  // normal state — fail loudly rather than silently skipping the mirror
+  // (same reasoning as the Draft version's shopifyDraftOrderGid check).
+  if (!persisted.shopifyOrderGid) {
+    throw new DeliveryHandoffError("Deze link is niet meer geldig. Neem contact op met Stones4U.", {
+      retryable: false,
+    });
+  }
+
+  try {
+    await mirrorRequestedDeliveryDateToOrder(persisted.shopifyOrderGid, dateIso);
+  } catch (error) {
+    const errorCode = error instanceof Error ? error.name : "UNKNOWN_ERROR";
+    await prisma.deliveryDateHandoff.update({
+      where: { id: persisted.id },
+      data: { status: "ERROR", mirrorErrorCode: errorCode },
+    });
+    await logAudit({
+      userId: null,
+      action: "delivery_handoff.mirror_failed",
+      entityType: "DeliveryDateHandoff",
+      entityId: persisted.id,
+      metadata: { errorCode },
+    });
+    throw new DeliveryHandoffError("Kon uw leverdatum nog niet doorgeven aan het bestelsysteem. Probeer het opnieuw.", {
+      retryable: true,
+    });
+  }
+
+  await prisma.deliveryDateHandoff.update({
+    where: { id: persisted.id },
+    data: { status: "MIRRORED", lastMirrorAt: new Date(), mirrorErrorCode: null },
+  });
+
+  return { requestedDeliveryDate: dateIso };
 }
 
 /**

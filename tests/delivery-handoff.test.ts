@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { prisma } from "@/platform/db/prisma";
 import {
   createDeliveryDateHandoff,
+  createOrGetOrderDeliveryHandoff,
   getHandoffByRawToken,
   listAllDeliveryDateHandoffs,
   listDeliveryDateHandoffsForCustomer,
@@ -9,6 +10,7 @@ import {
   regeneratePublicToken,
   resolveCustomerProfileIdForShopifyGid,
   submitRequestedDeliveryDate,
+  submitRequestedDeliveryDateForOrder,
 } from "@/modules/delivery/delivery-handoff.service";
 import { DeliveryHandoffError } from "@/modules/delivery/errors";
 import { generatePublicToken, hashPublicToken } from "@/modules/delivery/token";
@@ -23,6 +25,11 @@ import {
 const mockMirror = vi.fn();
 vi.mock("@/integrations/shopify/draft-order-mirror", () => ({
   mirrorRequestedDeliveryDateToShopify: (...args: unknown[]) => mockMirror(...args),
+}));
+
+const mockOrderMirror = vi.fn();
+vi.mock("@/integrations/shopify/order-mirror", () => ({
+  mirrorRequestedDeliveryDateToOrder: (...args: unknown[]) => mockOrderMirror(...args),
 }));
 
 const TOMORROW = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
@@ -44,6 +51,8 @@ describe("delivery-handoff.service", () => {
   beforeEach(() => {
     mockMirror.mockReset();
     mockMirror.mockResolvedValue({ invoiceUrl: "https://test-shop.myshopify.com/12345/invoices/abc" });
+    mockOrderMirror.mockReset();
+    mockOrderMirror.mockResolvedValue({ orderGid: "gid://shopify/Order/1" });
   });
 
   afterAll(async () => {
@@ -444,6 +453,218 @@ describe("delivery-handoff.service", () => {
       mockMirror.mockClear();
       await regeneratePublicToken(handoff.id, userId);
       expect(mockMirror).not.toHaveBeenCalled();
+    });
+  });
+
+  // Phase 6B — Order-based handoff foundation. No staff UI, no webhook,
+  // no automatic eligibility yet: these tests exercise the new service
+  // functions directly, the same way the Draft-based functions were
+  // originally proven before any UI/route ever called them.
+  describe("Order-based handoff — data model, uniqueness, idempotency", () => {
+    it("creates an Order handoff with commerceObjectType SHOPIFY_ORDER, shopifyOrderGid set, shopifyDraftOrderGid null", async () => {
+      const orderGid = `gid://shopify/Order/${crypto.randomUUID()}`;
+      const { handoff, rawToken } = await createOrGetOrderDeliveryHandoff({
+        shopifyOrderGid: orderGid,
+        publicReference: "#1234",
+        createdById: userId,
+      });
+      createdHandoffIds.push(handoff.id);
+
+      expect(rawToken).toBeTruthy();
+      expect(handoff.commerceObjectType).toBe("SHOPIFY_ORDER");
+      expect(handoff.shopifyOrderGid).toBe(orderGid);
+      expect(handoff.shopifyDraftOrderGid).toBeNull();
+      expect(handoff.externalId).toBe(orderGid);
+      expect(handoff.publicReference).toBe("#1234");
+      expect(handoff.status).toBe("PENDING");
+      expect(handoff.paymentProvider).toBe("UNKNOWN");
+
+      const audit = await prisma.auditEvent.findFirst({ where: { entityId: handoff.id, action: "delivery_handoff.created" } });
+      expect(audit).not.toBeNull();
+    });
+
+    it("historical Draft rows default to commerceObjectType SHOPIFY_DRAFT_ORDER, with shopifyOrderGid/publicReference null", async () => {
+      const { handoff } = await createDeliveryDateHandoff({
+        shopifyDraftOrderGid: `gid://shopify/DraftOrder/${crypto.randomUUID()}`,
+        createdById: userId,
+      });
+      createdHandoffIds.push(handoff.id);
+
+      expect(handoff.commerceObjectType).toBe("SHOPIFY_DRAFT_ORDER");
+      expect(handoff.shopifyOrderGid).toBeNull();
+      expect(handoff.publicReference).toBeNull();
+    });
+
+    it("is idempotent per (sourceSystem, externalId) — a repeat create for the same Order returns the existing row, no new raw token, no duplicate", async () => {
+      const orderGid = `gid://shopify/Order/${crypto.randomUUID()}`;
+      const first = await createOrGetOrderDeliveryHandoff({ shopifyOrderGid: orderGid, createdById: userId });
+      createdHandoffIds.push(first.handoff.id);
+
+      const second = await createOrGetOrderDeliveryHandoff({ shopifyOrderGid: orderGid, createdById: userId });
+
+      expect(second.handoff.id).toBe(first.handoff.id);
+      expect(second.rawToken).toBeNull();
+
+      const count = await prisma.deliveryDateHandoff.count({ where: { externalId: orderGid } });
+      expect(count).toBe(1);
+    });
+
+    it("a Draft handoff and an Order handoff for numerically-identical-looking GIDs never collide — different externalId strings", async () => {
+      const suffix = crypto.randomUUID();
+      const draft = await createDeliveryDateHandoff({ shopifyDraftOrderGid: `gid://shopify/DraftOrder/${suffix}`, createdById: userId });
+      createdHandoffIds.push(draft.handoff.id);
+      const order = await createOrGetOrderDeliveryHandoff({ shopifyOrderGid: `gid://shopify/Order/${suffix}`, createdById: userId });
+      createdHandoffIds.push(order.handoff.id);
+
+      expect(draft.handoff.id).not.toBe(order.handoff.id);
+      expect(draft.handoff.commerceObjectType).toBe("SHOPIFY_DRAFT_ORDER");
+      expect(order.handoff.commerceObjectType).toBe("SHOPIFY_ORDER");
+    });
+
+    it("never fabricates a CustomerProfile and never accepts a client-supplied customerProfileId beyond what the caller resolved", async () => {
+      const before = await prisma.customerProfile.count();
+      const { handoff } = await createOrGetOrderDeliveryHandoff({
+        shopifyOrderGid: `gid://shopify/Order/${crypto.randomUUID()}`,
+        createdById: userId,
+        // customerProfileId intentionally omitted
+      });
+      createdHandoffIds.push(handoff.id);
+
+      expect(handoff.customerProfileId).toBeNull();
+      const after = await prisma.customerProfile.count();
+      expect(after).toBe(before);
+    });
+
+    it("normalizes publicReference — trims whitespace, collapses whitespace-only to null, caps length", async () => {
+      const padded = await createOrGetOrderDeliveryHandoff({
+        shopifyOrderGid: `gid://shopify/Order/${crypto.randomUUID()}`,
+        publicReference: "  #1234  ",
+        createdById: userId,
+      });
+      createdHandoffIds.push(padded.handoff.id);
+      expect(padded.handoff.publicReference).toBe("#1234");
+
+      const blank = await createOrGetOrderDeliveryHandoff({
+        shopifyOrderGid: `gid://shopify/Order/${crypto.randomUUID()}`,
+        publicReference: "   ",
+        createdById: userId,
+      });
+      createdHandoffIds.push(blank.handoff.id);
+      expect(blank.handoff.publicReference).toBeNull();
+
+      const empty = await createOrGetOrderDeliveryHandoff({
+        shopifyOrderGid: `gid://shopify/Order/${crypto.randomUUID()}`,
+        publicReference: "",
+        createdById: userId,
+      });
+      createdHandoffIds.push(empty.handoff.id);
+      expect(empty.handoff.publicReference).toBeNull();
+
+      const tooLong = await createOrGetOrderDeliveryHandoff({
+        shopifyOrderGid: `gid://shopify/Order/${crypto.randomUUID()}`,
+        publicReference: "#" + "1".repeat(100),
+        createdById: userId,
+      });
+      createdHandoffIds.push(tooLong.handoff.id);
+      expect(tooLong.handoff.publicReference).toHaveLength(64);
+    });
+  });
+
+  describe("Order-based handoff — submit behavior (no payment redirect)", () => {
+    it("marks status MIRRORED, calls the Order mirror (never the Draft mirror), and returns only requestedDeliveryDate — no redirectUrl at all", async () => {
+      const { handoff } = await createOrGetOrderDeliveryHandoff({
+        shopifyOrderGid: `gid://shopify/Order/${crypto.randomUUID()}`,
+        createdById: userId,
+      });
+      createdHandoffIds.push(handoff.id);
+
+      const result = await submitRequestedDeliveryDateForOrder(handoff, TOMORROW);
+
+      expect(result).toEqual({ requestedDeliveryDate: TOMORROW });
+      expect("redirectUrl" in result).toBe(false);
+      expect(mockOrderMirror).toHaveBeenCalledWith(handoff.shopifyOrderGid, TOMORROW);
+      expect(mockMirror).not.toHaveBeenCalled();
+
+      const reloaded = await prisma.deliveryDateHandoff.findUniqueOrThrow({ where: { id: handoff.id } });
+      expect(reloaded.status).toBe("MIRRORED");
+      expect(reloaded.lastMirrorAt).not.toBeNull();
+    });
+
+    it("persists requestedDeliveryDate locally even when the Order mirror fails, and stays retryable", async () => {
+      mockOrderMirror.mockRejectedValueOnce(new Error("ACCESS_DENIED"));
+      const { handoff } = await createOrGetOrderDeliveryHandoff({
+        shopifyOrderGid: `gid://shopify/Order/${crypto.randomUUID()}`,
+        createdById: userId,
+      });
+      createdHandoffIds.push(handoff.id);
+
+      const error = await submitRequestedDeliveryDateForOrder(handoff, TOMORROW).catch((e) => e);
+      expect(error).toBeInstanceOf(DeliveryHandoffError);
+      expect((error as InstanceType<typeof DeliveryHandoffError>).retryable).toBe(true);
+
+      const reloaded = await prisma.deliveryDateHandoff.findUniqueOrThrow({ where: { id: handoff.id } });
+      expect(reloaded.requestedDeliveryDate?.toISOString().slice(0, 10)).toBe(TOMORROW);
+      expect(reloaded.status).toBe("ERROR");
+      expect(reloaded.mirrorErrorCode).toBeTruthy();
+    });
+
+    it("never calls the Order mirror at all when the date itself is invalid", async () => {
+      const { handoff } = await createOrGetOrderDeliveryHandoff({
+        shopifyOrderGid: `gid://shopify/Order/${crypto.randomUUID()}`,
+        createdById: userId,
+      });
+      createdHandoffIds.push(handoff.id);
+
+      await expect(submitRequestedDeliveryDateForOrder(handoff, "not-a-date")).rejects.toThrow(DeliveryHandoffError);
+      expect(mockOrderMirror).not.toHaveBeenCalled();
+    });
+
+    it("a genuinely changed date writes a second Activity; resubmitting the same date keeps exactly one", async () => {
+      const profile = await createTestCustomerProfile();
+      const { handoff } = await createOrGetOrderDeliveryHandoff({
+        shopifyOrderGid: `gid://shopify/Order/${crypto.randomUUID()}`,
+        customerProfileId: profile.id,
+        createdById: userId,
+      });
+      // Not pushed to createdHandoffIds — cleanupCustomerProfile below already removes it.
+
+      await submitRequestedDeliveryDateForOrder(handoff, TOMORROW);
+      const afterFirst = await prisma.deliveryDateHandoff.findUniqueOrThrow({ where: { id: handoff.id } });
+      await submitRequestedDeliveryDateForOrder(afterFirst, TOMORROW);
+
+      let activityCount = await prisma.activity.count({
+        where: { relatedDeliveryDateHandoffId: handoff.id, type: "DELIVERY_DATE_REQUESTED" },
+      });
+      expect(activityCount).toBe(1);
+
+      const laterDate = new Date(Date.now() + 10 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      const afterSecond = await prisma.deliveryDateHandoff.findUniqueOrThrow({ where: { id: handoff.id } });
+      await submitRequestedDeliveryDateForOrder(afterSecond, laterDate);
+
+      activityCount = await prisma.activity.count({
+        where: { relatedDeliveryDateHandoffId: handoff.id, type: "DELIVERY_DATE_REQUESTED" },
+      });
+      expect(activityCount).toBe(2);
+
+      await cleanupCustomerProfile(profile.id);
+    });
+
+    it("throws a clear, non-retryable error if a SHOPIFY_ORDER row somehow has no shopifyOrderGid (data-integrity guard)", async () => {
+      const { handoff } = await createOrGetOrderDeliveryHandoff({
+        shopifyOrderGid: `gid://shopify/Order/${crypto.randomUUID()}`,
+        createdById: userId,
+      });
+      createdHandoffIds.push(handoff.id);
+      // submitRequestedDeliveryDateForOrder always re-persists/re-reads via
+      // Prisma rather than trusting the caller's in-memory object for the
+      // GID field, so the DB row itself — not a locally mutated copy —
+      // must be corrupted to exercise this guard.
+      const corrupted = await prisma.deliveryDateHandoff.update({ where: { id: handoff.id }, data: { shopifyOrderGid: null } });
+
+      const error = await submitRequestedDeliveryDateForOrder(corrupted, TOMORROW).catch((e) => e);
+      expect(error).toBeInstanceOf(DeliveryHandoffError);
+      expect((error as InstanceType<typeof DeliveryHandoffError>).retryable).toBe(false);
+      expect(mockOrderMirror).not.toHaveBeenCalled();
     });
   });
 });
