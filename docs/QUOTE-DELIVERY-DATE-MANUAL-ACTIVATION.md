@@ -209,3 +209,92 @@ plain code deploy, not a data or config migration:
 
 This plan requires a separate, explicit GO before execution — it is not
 carried out as part of Phase 5A.
+
+## 9. Production deploy result (Phase 5B, 2026-09-09)
+
+Commit `a780fc1` ("Add manual delivery handoff management") deployed to
+`stones4u-control-center` — code activation only, no handoff was created and
+no Shopify write occurred.
+
+- **Preflight**: `main` at `HEAD = origin/main = a780fc1`, working tree
+  clean; full quality gate green (587/587 tests, `tsc`, `eslint`, `prisma
+  validate`, `git diff --check`, production `npm run build`).
+- **Migration delta**: `prisma/migrations` unchanged between the v20
+  baseline (`6889470`) and `a780fc1` — confirmed via `git diff --stat`. The
+  deploy's `prisma migrate deploy` release step logged "No pending
+  migrations to apply."
+- **Shopify safety precheck** (read-only, production): configured
+  `SHOPIFY_SHOP_DOMAIN`, `SHOPIFY_EXPECTED_MYSHOPIFY_DOMAIN`, and
+  `SHOPIFY_WRITE_ALLOWED_MYSHOPIFY_DOMAINS` all match, and a live
+  `shop { myshopifyDomain }` query confirmed the same value:
+  `9h7x2c-ku.myshopify.com`. Scopes include `read_draft_orders`,
+  `write_draft_orders`, `read_orders`.
+- **Deploy**: `fly deploy --config fly.production.toml --app
+  stones4u-control-center` — release `v21`, rolling update, both machines
+  reached a healthy state (`1/1` checks passing), `/api/health` returns
+  `200`. No crash loop, no startup errors, no route exceptions in logs.
+- **Data safety**: `DeliveryDateHandoff` count `0` before deploy, `0`
+  after — the deploy itself created nothing. `create`/`regenerate` are
+  reachable only via their `POST` routes, which are in turn only called
+  from explicit staff button clicks in `DeliveryHandoffsClient.tsx` — no
+  page load, Customer 360, navigation, or startup path calls either
+  function (confirmed by code search: both are referenced only inside
+  their own route handlers).
+- **Route protection smoke** (unauthenticated, production): `GET
+  /delivery-handoffs` → `307` to `/login`; `GET`/`POST
+  /api/delivery-handoffs` and `GET
+  /api/delivery-handoffs/draft-order-search` → `401`. `GET
+  /delivery/<invalid-random-token>` → `404` (existing public flow
+  regression-free).
+- **Authenticated staff-page/draft-search/Customer-360 smoke**: not
+  executed this round — minting a fresh session for an existing staff
+  account to drive an authenticated live request was blocked by this
+  session's own safety controls before any request was made (no session
+  row was created, no request was sent). This is the same "no staff
+  browser login available" limitation noted in every prior phase's
+  staging E2E; the affected checks are covered instead by: the production
+  build successfully compiling `/delivery-handoffs` and `/customers/[id]`
+  into the route manifest, the full 587/587 test suite (which exercises
+  the exact service/route logic behind those pages), and — for Customer
+  360 specifically — the fact that Phase 5A's diff touches zero files
+  under `src/app/(app)/customers` (confirmed via `git diff --stat`), so
+  there is no code path by which this phase could have changed that
+  page's behavior.
+- **Role/security**: VIEWER-denial and ADMIN/AGENT write-authorization are
+  proven via existing, passing tests (`tests/guards.test.ts`,
+  `tests/delivery-handoff.test.ts`) and by code review
+  (`requireWriteAccess()` gates both `POST` routes, unmodified from its
+  existing, tested implementation) — no live `POST` was sent against
+  production to demonstrate this, by design.
+- **Logs**: no startup errors, no Prisma errors (beyond one unrelated,
+  pre-existing `client_idle_timeout` PgBouncer log from hours before this
+  deploy), no Shopify auth errors, no delivery-handoff route exceptions.
+- **OfferteApp**: untouched — no command in this rollout referenced
+  `D:\Shopify\OfferteApp` or `offerteapp.fly.dev`.
+- **Activation**: capability made available only. No real handoff was
+  created, no real customer link was generated, no Draft was selected for
+  creation, no mail was sent, no OfferteApp coupling was added.
+
+### Known non-blocking limitation: stale/completed Draft revalidation
+
+Staff creation does not separately re-check, immediately before writing
+the `DeliveryDateHandoff` row, whether the selected Draft Order still
+exists or is still in a state that makes sense (e.g. it was completed or
+deleted in Shopify between search and the create click). Impact:
+
+- **Not a security issue** — creation never mutates Shopify regardless of
+  the Draft's true state.
+- **Not a Shopify-mutation risk** — the only write anywhere in this
+  feature remains the customer's own `POST` on the public flow.
+- A handoff created against a Draft that then turns out to be gone/stale
+  may end up **unusable to the customer** (a dead link) or linked to a
+  customer that no longer matches the Draft's current state.
+- The public mirror step already fails safe in this situation — an
+  invalid or missing Draft causes `submitRequestedDeliveryDate()`'s
+  Shopify call to fail, which is caught and surfaced as a retryable error
+  to the customer, without corrupting local state.
+
+**Follow-up recommendation** (not implemented in Phase 5B): add a
+server-side Draft existence/status revalidation step immediately before
+`createDeliveryDateHandoff()` persists the row, so a staff member gets an
+immediate, clear error instead of a handoff that silently won't work.
