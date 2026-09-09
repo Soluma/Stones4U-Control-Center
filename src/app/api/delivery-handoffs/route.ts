@@ -7,6 +7,7 @@ import {
   resolveCustomerProfileIdForShopifyGid,
 } from "@/modules/delivery/delivery-handoff.service";
 import { toErrorResponse } from "@/lib/api-error";
+import { buildPublicUrl } from "@/lib/public-url";
 
 // Phase 5A — manual staff activation
 // (docs/QUOTE-DELIVERY-DATE-MANUAL-ACTIVATION.md). GET is the read-only
@@ -60,7 +61,7 @@ export async function POST(request: NextRequest) {
       id: handoff.id,
       status: handoff.status,
       alreadyExisted: rawToken === null,
-      publicUrl: rawToken ? new URL(`/delivery/${rawToken}`, request.nextUrl.origin).toString() : null,
+      publicUrl: rawToken ? buildPublicUrl(`/delivery/${rawToken}`) : null,
     });
   } catch (error) {
     return toErrorResponse(error);

@@ -298,3 +298,88 @@ deleted in Shopify between search and the create click). Impact:
 server-side Draft existence/status revalidation step immediately before
 `createDeliveryDateHandoff()` persists the row, so a staff member gets an
 immediate, clear error instead of a handoff that silently won't work.
+
+## 10. Production bug: public URLs built from the wrong origin (Phase 5C)
+
+### Root cause
+
+The create and regenerate-token routes built the public `/delivery/[token]`
+URL with `new URL(\`/delivery/${rawToken}\`, request.nextUrl.origin)`. This
+app runs via the `next build` `output: standalone` generated `server.js`,
+started with `ENV HOSTNAME=0.0.0.0` / `ENV PORT=3000` (Dockerfile). Under
+that setup `request.nextUrl.origin` does not reliably reflect the real
+incoming public `Host`, and falls back to the server's own bind
+address — producing `https://0.0.0.0:3000/delivery/<token>` in production.
+This was first discovered live, when a staff member used the real
+"Vernieuw link" button in production — every earlier verification round
+(staging E2E, the Phase 5C-A canary creation) had exercised the underlying
+service functions via direct database calls rather than the real HTTP
+route with a real session, so the bug went unnoticed until then.
+
+### Fix: canonical `PUBLIC_APP_URL`
+
+New module `src/lib/public-url.ts` (`getPublicAppUrl()` /
+`buildPublicUrl(path)`) is now the **only** place a customer-facing bearer
+URL is built, in both the create and regenerate-token routes:
+
+- Reads exclusively `process.env.PUBLIC_APP_URL` — never the request, the
+  `Host` header, or any `X-Forwarded-*` header, so a spoofed/tampered host
+  cannot influence the output (confirmed live on staging: a regenerate call
+  sent with `Host: evil.example.com` / `X-Forwarded-Host: evil.example.com`
+  produced the same, correct URL).
+- Rejects `0.0.0.0`, `localhost`, and `127.0.0.1` as a configured hostname,
+  unconditionally, in every environment.
+- Requires `https` whenever `NODE_ENV=production` — true for both staging
+  and production here (same Dockerfile), so this one check covers both
+  without any environment-name branching.
+- Fails with a clear, non-sensitive error if `PUBLIC_APP_URL` is missing or
+  invalid — never a silent fallback to an internal host.
+
+`PUBLIC_APP_URL` is configured to
+`https://stones4u-control-center-staging.fly.dev` on staging and
+`https://stones4u-control-center.fly.dev` on production.
+
+### Staging verification
+
+Deployed and tested via the **real HTTP routes** (not a reimplementation)
+against a synthetic Draft Order, using a temporary staff session: create
+and regenerate both returned a URL starting with the correct staging
+origin, never `0.0.0.0`; a tampered `Host`/`X-Forwarded-Host` header had no
+effect on the output. Synthetic Draft and handoff row removed after the
+test — no leftovers.
+
+### Production rollout
+
+`PUBLIC_APP_URL` configured, code deployed as release **v23**, both
+machines healthy. Verified again via the real, fixed regenerate-token route
+against the existing Phase 5C-A canary handoff.
+
+### Production canary status (Draft #D684)
+
+Before this bug was found, the canary handoff had already reached its
+intended, legitimate completion: the customer-facing form was submitted
+with the original, correctly-formed link, and the requested delivery date
+(**2026-09-17**) was mirrored to Shopify — the Draft Order's
+`customAttributes` correctly reflect this one value, `status` is
+`MIRRORED`. This happened independently of the URL bug and before it was
+discovered; the bug affected only "Vernieuw link" afterwards.
+
+### Compromised tokens
+
+The originally-issued raw token (pasted into chat during Phase 5C-A) was
+already invalid by the time this bug was investigated — a prior "Vernieuw
+link" click (the same one that surfaced the `0.0.0.0` bug) had already
+rotated it. It was rotated again during verification of this fix, using
+the real, corrected production route, confirming: the old token resolves
+to 404, a freshly issued token resolves to 200, the same handoff row is
+reused (no duplicate), `requestedDeliveryDate` and `status` are untouched
+by a token rotation, and the Shopify Draft's `customAttributes` are
+unaffected. No raw token or bearer URL is recorded anywhere in this
+document, in logs, or in chat output for this rotation — a fresh, usable
+link is obtained only by a staff member clicking "Vernieuw link" in the
+authenticated Control Center UI itself.
+
+### OfferteApp
+
+Untouched throughout this fix — no command referenced
+`D:\Shopify\OfferteApp` or `offerteapp.fly.dev`.
