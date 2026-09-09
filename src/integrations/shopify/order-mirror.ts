@@ -6,8 +6,11 @@ import { ShopifyApiError } from "./errors";
 // Phase 6B — Order-equivalent of draft-order-mirror.ts. Deliberately its
 // own file, not a modification of the Draft version: Draft Orders and
 // Orders are different Shopify object types with a different mutation
-// (orderUpdate vs draftOrderUpdate) and, per the new Order-based flow, a
-// different caller-side contract (no invoiceUrl/payment redirect — see
+// shape (orderUpdate takes only `input: OrderInput!`, with the target id
+// nested inside that input — draftOrderUpdate takes a separate `id`
+// argument; live-verified in Phase 6B.1, see the mutation's own comment
+// below) and, per the new Order-based flow, a different caller-side
+// contract (no invoiceUrl/payment redirect — see
 // delivery-handoff.service.ts's submitRequestedDeliveryDateForOrder()).
 // Keeping this separate preserves the same "boundary stays visible and
 // easy to review" property the original Draft mirror was built with.
@@ -38,14 +41,17 @@ type RawOrderForMirror = {
   } | null;
 };
 
-// Candidate mutation, modeled directly on the proven draftOrderUpdate
-// shape — orderUpdate/OrderInput.customAttributes needs a live Shopify
-// Admin GraphQL schema check against the configured SHOPIFY_API_VERSION
-// before this is exercised against a real store with write_orders granted
-// (docs/ORDER-DELIVERY-HANDOFF-FOUNDATION.md §"Order mutation/API design").
+// Live-verified against the real Shopify Admin GraphQL schema (Phase
+// 6B.1) — orderUpdate's shape differs from draftOrderUpdate's in exactly
+// one way that matters here: it takes a single `input: OrderInput!`
+// argument, not a separate `id` argument — OrderInput.id carries the
+// target Order's GID instead (confirmed via live introspection:
+// `orderUpdate(id: ID!, ...)` is rejected with "Field 'orderUpdate'
+// doesn't accept argument 'id'"). Do not "correct" this back to the
+// draftOrderUpdate shape without re-checking the live schema first.
 const ORDER_UPDATE_MUTATION = /* GraphQL */ `
-  mutation OrderUpdateRequestedDeliveryDate($id: ID!, $input: OrderInput!) {
-    orderUpdate(id: $id, input: $input) {
+  mutation OrderUpdateRequestedDeliveryDate($input: OrderInput!) {
+    orderUpdate(input: $input) {
       order {
         id
       }
@@ -95,8 +101,7 @@ export async function mirrorRequestedDeliveryDateToOrder(orderGid: string, dateI
   merged.push({ key: REQUESTED_DELIVERY_DATE_ATTRIBUTE_KEY, value: dateIso });
 
   const result = await shopifyGraphQL<OrderUpdateResponse>(ORDER_UPDATE_MUTATION, {
-    id: orderGid,
-    input: { customAttributes: merged },
+    input: { id: orderGid, customAttributes: merged },
   });
 
   const errors = result.orderUpdate.userErrors;

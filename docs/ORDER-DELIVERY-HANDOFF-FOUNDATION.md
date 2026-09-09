@@ -114,45 +114,48 @@ already-current value. Refuses to mutate a cancelled Order — checked as
 part of the same read used for the merge, before any mutation is attempted
 ("Cancelled Order safety" below).
 
-**Not yet live-verified**: the exact `orderUpdate(id: ID!, input:
-OrderInput!)` mutation shape needs confirmation against the live Shopify
-Admin GraphQL schema for the configured `SHOPIFY_API_VERSION` before this
-is exercised with `write_orders` actually granted. Very likely correct
-given the direct analogy to the already-proven `draftOrderUpdate`, but not
-assumed blindly.
+**Live-verified — Phase 6B.1**: `orderUpdate`'s real shape differs from
+`draftOrderUpdate`'s in exactly one way that matters — it takes a single
+`input: OrderInput!` argument; the target Order's GID is a field *inside*
+that input (`OrderInput.id`), never a separate top-level mutation
+argument. The originally-implemented candidate
+(`orderUpdate(id: ID!, input: OrderInput!)`, modeled directly on
+`draftOrderUpdate`) was wrong and was rejected outright by Shopify
+(`"Field 'orderUpdate' doesn't accept argument 'id'"`) the first time it
+was tried live — confirmed via GraphQL schema introspection, then fixed
+in `order-mirror.ts` and redeployed to staging before any further live
+proof. This is exactly the kind of thing that could not have been known
+without live schema access, and is why Phase 6B's tests (which only mock
+`fetch` and never validate against Shopify's real schema) passed despite
+the bug. **After the fix**, a full live proof round succeeded on staging
+against a real synthetic Order (`#1023`) using the real, unmodified
+`mirrorRequestedDeliveryDateToOrder()` function: first write added
+`requested_delivery_date` while preserving an unrelated seeded attribute;
+a second call with a different date replaced the value, still exactly one
+key, unrelated attribute still preserved; a third call with the same date
+performed the same idempotent read-merge-write again (behavior B from the
+Phase 6B.1 brief — it does not special-case "already current" into a
+skip, and that is an acceptable, safe outcome). `getOrderForHandoff()` was
+also live-proven against the same Order, and `createOrGetOrderDeliveryHandoff()`
+was live-proven end-to-end (correct `commerceObjectType`, GIDs,
+`publicReference` sourced from the real `Order.name`, idempotent duplicate
+create, zero `CustomerProfile` fabrication). See the Phase 6B.1 report for
+the full, itemized live-proof results.
 
-## `write_orders` status
+## `write_orders` / `read_customers` status (Phase 6B.1 — resolved)
 
-Confirmed absent from the current production scope list
-(`read_all_orders`, `read_customers`, `write_draft_orders`,
-`read_draft_orders`, `read_orders` — verified live during Phase 6A
-discovery). **Not changed in this phase, on either production or
-staging** — Phase 6B code compiles and is fully unit-testable without it,
-since every Shopify call in the new tests is mocked at the `fetch`
-boundary (matches the existing Draft-mirror test convention exactly — no
-live Shopify credentials or scope are needed to prove the mirror logic
-itself). **No live Order mutation has been performed or proven against a
-real Shopify store in this phase** — the `orderUpdate` mutation shape is a
-well-grounded candidate (direct analogy to the proven `draftOrderUpdate`),
-not a verified fact; staging will need `write_orders` granted before that
-proof can happen in a later phase.
+**Production** (`9h7x2c-ku.myshopify.com`): `read_all_orders`,
+`read_customers`, `write_draft_orders`, `read_draft_orders`,
+`read_orders`, `write_orders` — all present, live-confirmed. No scope
+change needed or made.
 
-**Staging read scope gap found**: a live read-only check during this
-phase (`order(id) { customer { id } }` against a real order on
-`stones4u-dev.myshopify.com`) returned `ACCESS_DENIED` — staging's Shopify
-app currently lacks whatever scope `Order.customer` needs, even though
-production already has `read_customers` (and the existing Draft flow
-already depends on it for `DraftOrder.customer` matching). This blocks
-live end-to-end proof of the *customer-matching* part of
-`getOrderForHandoff()` on staging specifically — not Phase 6B itself
-(nothing calls this function yet), and not the mirror path (verified
-separately, below, with zero errors). Needs a decision/scope grant on
-staging before Phase 6C's staging E2E.
-
-The exact same live check confirmed the **mirror's own read query** (`id`,
-`cancelledAt`, `displayFulfillmentStatus`, `shippingAddress`,
-`customAttributes` — no `customer` field) works with **zero errors**
-against a real order on `stones4u-dev.myshopify.com` today.
+**Staging** (`stones4u-dev.myshopify.com`): as of Phase 6B.1, live-confirmed
+to now also include `read_customers` and `write_orders` (granted between
+Phase 6B and Phase 6B.1) — full scope list: `read_customers`,
+`write_draft_orders`, `read_draft_orders`, `read_orders`, `write_orders`.
+The `order(id) { customer { id } }` query that previously returned
+`ACCESS_DENIED` now succeeds with zero errors. Both environments are
+fully aligned; no further scope action needed for either.
 
 ## Write safety guard
 
@@ -267,6 +270,29 @@ precondition for a handoff to exist, be created, or be mirrored.
 
 All existing Draft-flow tests pass unchanged — see full-suite result in
 the Phase 6B foundation report.
+
+## Live-proof status summary (Phase 6B.1, exact)
+
+- **Production**: `read_customers` and `write_orders` are both active
+  (live-confirmed). **No production Order has ever been mutated by this
+  feature** — every live-write proof in Phase 6B.1 ran exclusively against
+  `stones4u-control-center-staging` / `stones4u-dev.myshopify.com`.
+- **Staging**: `read_customers` and `write_orders` are both active
+  (live-confirmed, granted between Phase 6B and 6B.1).
+- **Verified live** (staging only): `Order` read, `Order.customer` read,
+  the `orderUpdate` mutation shape (`input: OrderInput!` with `id` nested
+  inside), attribute preservation across multiple writes, date replacement
+  across multiple writes.
+- **Verified live, current behavior** (not changed to force a different
+  outcome): re-mirroring an already-current date performs the same safe,
+  idempotent read-merge-write again rather than skipping.
+- **Synthetic Order `#1023`** (`gid://shopify/Order/13299205374297`) on
+  `stones4u-dev.myshopify.com` is **test-only** — no real customer, no real
+  payment, no fulfillment, clearly marked in its note/line-item text. It
+  could not be deleted (Shopify does not support deleting a completed
+  Order) and remains in the dev store, visibly marked as test data.
+- **OfferteApp**: no involvement anywhere in Phase 6B or 6B.1 — never
+  opened, read, called, or deployed.
 
 ## Next phase boundary (Phase 6C)
 

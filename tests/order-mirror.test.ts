@@ -103,6 +103,12 @@ describe("mirrorRequestedDeliveryDateToOrder — minimal query, read-merge-write
     const mutationCall = fetchMock.mock.calls[3]!;
     const mutationBody = JSON.parse(mutationCall[1].body as string);
     expect(mutationBody.variables.input.customAttributes).toEqual([{ key: "requested_delivery_date", value: "2026-12-01" }]);
+    // Live-verified in Phase 6B.1: orderUpdate takes only `input:
+    // OrderInput!` — the target id lives inside that input, never as a
+    // separate top-level mutation argument (unlike draftOrderUpdate).
+    expect(mutationBody.variables.input.id).toBe("gid://shopify/Order/1");
+    expect(mutationBody.variables.id).toBeUndefined();
+    expect(mutationBody.query).not.toMatch(/orderUpdate\(id:/);
   });
 
   // B. existing unrelated attrs → preserved
