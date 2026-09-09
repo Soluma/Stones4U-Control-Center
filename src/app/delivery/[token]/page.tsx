@@ -1,11 +1,17 @@
 import { notFound } from "next/navigation";
-import { Truck } from "lucide-react";
 import { getHandoffByRawToken } from "@/modules/delivery/delivery-handoff.service";
 import { DeliveryDateForm } from "./DeliveryDateForm";
 
 // Public, unauthenticated route — no getSessionUser()/requireUser() call,
 // same precedent as src/app/login (the only other public page in this
 // app). Authorization is the opaque token itself, never a session.
+//
+// No order/draft reference is shown here (e.g. "#D684") — the
+// DeliveryDateHandoff row carries no locally-stored, customer-safe
+// reference of its own (only the Shopify Draft Order GID, which must
+// never be exposed), and this page deliberately makes no Shopify call of
+// its own to fetch one. Never fabricate a reference; omit the context
+// entirely when a trustworthy one isn't already available.
 
 type PageProps = { params: Promise<{ token: string }> };
 
@@ -18,23 +24,41 @@ export default async function DeliveryDatePage({ params }: PageProps) {
   if (!handoff) notFound();
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-canvas px-4">
-      <div className="w-full max-w-sm">
-        <div className="mb-8 flex flex-col items-center text-center">
-          <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-lg bg-accent-500 text-white">
-            <Truck className="h-5 w-5" aria-hidden />
+    <div className="flex min-h-screen items-center justify-center bg-canvas px-4 py-12">
+      <div className="w-full max-w-md">
+        <div className="mb-8 text-center">
+          <p className="text-xs font-medium uppercase tracking-wide text-ink-tertiary">Bestelling afronden</p>
+          <div className="mt-2 flex items-center justify-center gap-2 text-xs font-medium">
+            <span className="text-accent-600">1. Gewenste leverdatum</span>
+            <span className="text-ink-tertiary" aria-hidden="true">
+              &rarr;
+            </span>
+            <span className="text-ink-tertiary">2. Factuur &amp; betaling</span>
           </div>
-          <p className="text-lg font-semibold tracking-tight text-ink-primary">Gewenste leverdatum</p>
-          <p className="mt-1 text-sm text-ink-tertiary">
-            Geef aan op welke datum u de bestelling bij voorkeur geleverd wilt hebben. Wij proberen hier zoveel
-            mogelijk rekening mee te houden. De definitieve leverdatum wordt door Stones4U bevestigd.
+
+          <h1 className="mt-4 text-2xl font-semibold tracking-tight text-ink-primary">
+            Wanneer mogen we langskomen?
+          </h1>
+          <p className="mt-2 text-sm leading-relaxed text-ink-tertiary">
+            Geef aan welke leverdatum u het beste uitkomt. We doen ons best om uw bestelling op deze datum te
+            leveren.
           </p>
         </div>
-        <div className="cc-card p-6">
+
+        <div className="cc-card p-6 sm:p-8">
           <DeliveryDateForm
             token={token}
             currentValue={handoff.requestedDeliveryDate ? handoff.requestedDeliveryDate.toISOString().slice(0, 10) : ""}
           />
+        </div>
+
+        <div className="mt-6 space-y-2 text-center text-xs leading-relaxed text-ink-tertiary">
+          <h2 className="font-medium text-ink-secondary">Wat gebeurt er daarna?</h2>
+          <p>
+            Na het kiezen van uw gewenste leverdatum gaat u verder naar uw factuur en betaling. Uw voorkeursdatum
+            wordt bij uw bestelling opgeslagen en meegenomen in onze planning.
+          </p>
+          <p>De levering is pas definitief nadat deze door Stones4U is bevestigd.</p>
         </div>
       </div>
     </div>

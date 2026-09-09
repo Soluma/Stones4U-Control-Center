@@ -47,10 +47,11 @@ export function DeliveryDateForm({ token, currentValue }: { token: string; curre
         min={todayIsoDate()}
         value={date}
         onChange={(e) => setDate(e.target.value)}
+        hint="De gekozen datum is een voorkeursdatum. De definitieve leverdatum wordt door Stones4U bevestigd."
+        error={error ?? undefined}
       />
-      {error && <p className="text-sm text-danger-500">{error}</p>}
       <Button type="submit" variant="primary" className="w-full" loading={loading}>
-        Verder naar betaling
+        Leverdatum opslaan en verder naar factuur
       </Button>
     </form>
   );
