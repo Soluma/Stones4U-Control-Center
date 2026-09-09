@@ -60,7 +60,9 @@ export type AuditAction =
   // Phase 7 — docs/QUOTE-DELIVERY-DATE-PORTAL-BUILD.md
   | "delivery_handoff.created"
   | "delivery_handoff.date_requested"
-  | "delivery_handoff.mirror_failed";
+  | "delivery_handoff.mirror_failed"
+  // Phase 5A — docs/QUOTE-DELIVERY-DATE-MANUAL-ACTIVATION.md
+  | "delivery_handoff.token_regenerated";
 
 export type AuditEntityType =
   | "User"

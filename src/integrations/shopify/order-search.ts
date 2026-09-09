@@ -103,3 +103,73 @@ export async function searchShopifyOrders(term: string, limit = 8): Promise<Orde
 
   return [...orders, ...draftOrders].slice(0, limit);
 }
+
+// Phase 7 (5A) — dedicated draft-order search for the "create a delivery
+// date link" staff flow (docs/QUOTE-DELIVERY-DATE-MANUAL-ACTIVATION.md). A
+// new, separate query rather than reusing SEARCH_DRAFT_ORDERS_QUERY above:
+// that one drops any result without a Shopify customer (there is nowhere
+// in the command palette to navigate a customer-less order to), but a
+// delivery-date handoff must stay creatable for a draft order with no
+// attached customer — a real, valid state (docs/QUOTE-DELIVERY-DATE-PORTAL-
+// BUILD.md §1: customerProfileId is optional). Also needs `status`, which
+// the command-palette query never fetches. Read-only, no new Shopify
+// scope — same `read_draft_orders` already granted.
+const SEARCH_DRAFT_ORDERS_FOR_HANDOFF_QUERY = /* GraphQL */ `
+  query SearchDraftOrdersForHandoff($query: String!, $first: Int!) {
+    draftOrders(first: $first, query: $query) {
+      edges {
+        node {
+          id
+          legacyResourceId
+          name
+          status
+          customer {
+            id
+            displayName
+          }
+        }
+      }
+    }
+  }
+`;
+
+type RawDraftOrderForHandoffNode = {
+  id: string;
+  legacyResourceId: string;
+  name: string;
+  status: string;
+  customer: { id: string; displayName: string } | null;
+};
+type RawDraftOrdersForHandoffResponse = { draftOrders: { edges: { node: RawDraftOrderForHandoffNode }[] } };
+
+export type DraftOrderForHandoffResult = {
+  gid: string;
+  legacyResourceId: string;
+  name: string;
+  status: string;
+  customerGid: string | null;
+  customerName: string | null;
+};
+
+/** Read-only. Matches on draft-order name only (same bare-wildcard syntax
+ * as searchShopifyOrders() above — a scoped `name:` filter is silently
+ * ignored by Shopify on draftOrders, confirmed live). Never mutates
+ * anything — search/selection is always a plain GraphQL query. */
+export async function searchDraftOrdersForHandoff(term: string, limit = 8): Promise<DraftOrderForHandoffResult[]> {
+  const sanitizedTerm = term.replace(/["\\]/g, "");
+  const query = `*${sanitizedTerm}*`;
+
+  const data = await shopifyGraphQL<RawDraftOrdersForHandoffResponse>(SEARCH_DRAFT_ORDERS_FOR_HANDOFF_QUERY, {
+    query,
+    first: limit,
+  });
+
+  return data.draftOrders.edges.map(({ node }) => ({
+    gid: node.id,
+    legacyResourceId: node.legacyResourceId,
+    name: node.name,
+    status: node.status,
+    customerGid: node.customer?.id ?? null,
+    customerName: node.customer?.displayName ?? null,
+  }));
+}

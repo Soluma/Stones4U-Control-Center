@@ -11,6 +11,7 @@ import {
   UserCog,
   Settings,
   TrendingUp,
+  CalendarClock,
   type LucideIcon,
 } from "lucide-react";
 
@@ -47,6 +48,11 @@ export const NAV_SECTIONS: NavSection[] = [
       // below (those stay federated-document placeholders, untouched by
       // Phase 4a — docs/platform-discovery/32 §7/§20).
       { label: "Verkoopkansen", href: "/opportunities", icon: TrendingUp },
+      // Phase 5A — docs/QUOTE-DELIVERY-DATE-MANUAL-ACTIVATION.md. Distinct
+      // from "Leveringen" below (Operations, still comingSoon — a future,
+      // broader transport/logistics module) — this is narrowly the
+      // customer-wish delivery-date link, not transport planning.
+      { label: "Leverdatum-links", href: "/delivery-handoffs", icon: CalendarClock },
       { label: "Offertes", icon: FileText, comingSoon: true },
       { label: "Orders", icon: ShoppingCart, comingSoon: true },
     ],

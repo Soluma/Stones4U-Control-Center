@@ -120,6 +120,65 @@ export async function listDeliveryDateHandoffsForCustomer(customerProfileId: str
   });
 }
 
+export type DeliveryDateHandoffWithCustomer = DeliveryDateHandoff & {
+  customerProfile: { id: string; displayName: string | null; companyName: string | null } | null;
+};
+
+/** Read-only, for the Phase 5A staff management view — every handoff
+ * (portal-wide, not customer-scoped), newest-updated first. */
+export async function listAllDeliveryDateHandoffs(limit = 50): Promise<DeliveryDateHandoffWithCustomer[]> {
+  return prisma.deliveryDateHandoff.findMany({
+    orderBy: { updatedAt: "desc" },
+    take: limit,
+    include: { customerProfile: { select: { id: true, displayName: true, companyName: true } } },
+  });
+}
+
+/** Read-only — resolves a Shopify Customer GID to an existing
+ * CustomerProfile.id, or null. NEVER creates a CustomerProfile (that is
+ * syncCustomerIdentityFromShopify()'s job, in the CRM module, and is
+ * deliberately not called from here — a delivery-date handoff must never
+ * fabricate a customer record purely to have someone to link to,
+ * docs/QUOTE-DELIVERY-DATE-MANUAL-ACTIVATION.md §4). */
+export async function resolveCustomerProfileIdForShopifyGid(shopifyCustomerGid: string | null | undefined): Promise<string | null> {
+  if (!shopifyCustomerGid) return null;
+  const profile = await prisma.customerProfile.findUnique({
+    where: { shopifyCustomerGid },
+    select: { id: true },
+  });
+  return profile?.id ?? null;
+}
+
+/**
+ * Staff-facing token reissue. The raw token is never retrievable after
+ * creation (only its hash is stored) — this is the safe recovery path
+ * when staff loses a link before sharing it: generate a brand-new raw
+ * token, overwrite publicTokenHash on the SAME row (never a new row —
+ * (sourceSystem, externalId) stays unique, requestedDeliveryDate/status/
+ * shopifyDraftOrderGid all untouched), which permanently invalidates the
+ * old link. Throws Prisma's standard "record not found" (mapped to 404 by
+ * toErrorResponse()) for an unknown handoffId.
+ */
+export async function regeneratePublicToken(handoffId: string, actorId: string): Promise<{ handoff: DeliveryDateHandoff; rawToken: string }> {
+  const rawToken = generatePublicToken();
+  const publicTokenHash = hashPublicToken(rawToken);
+
+  const handoff = await prisma.deliveryDateHandoff.update({
+    where: { id: handoffId },
+    data: { publicTokenHash },
+  });
+
+  await logAudit({
+    userId: actorId,
+    action: "delivery_handoff.token_regenerated",
+    entityType: "DeliveryDateHandoff",
+    entityId: handoff.id,
+    metadata: { shopifyDraftOrderGid: handoff.shopifyDraftOrderGid },
+  });
+
+  return { handoff, rawToken };
+}
+
 /** Public, unauthenticated lookup — resolves a raw bearer token to its
  * DeliveryDateHandoff row, or null for any unknown/malformed token
  * (callers must always respond with the same generic 404 regardless of

@@ -229,3 +229,89 @@ describe("mirrorRequestedDeliveryDateToShopify — minimal query, read-merge-wri
     await expect(mirrorRequestedDeliveryDateToShopify("gid://shopify/DraftOrder/999", "2026-12-01")).rejects.toThrow();
   });
 });
+
+describe("searchDraftOrdersForHandoff — Phase 5A staff draft-order lookup", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    for (const key of ENV_KEYS) delete process.env[key];
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("is read-only — a single GraphQL query, never a mutation, and never queries the write-safety guard", async () => {
+    setShopifyEnv();
+    const fetchMock = vi.fn();
+    fetchMock.mockResolvedValueOnce(tokenResponse()).mockResolvedValueOnce(
+      jsonResponse({ data: { draftOrders: { edges: [] } } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { searchDraftOrdersForHandoff } = await import("@/integrations/shopify/order-search");
+    await searchDraftOrdersForHandoff("D24");
+
+    // Exactly the token request + the search query — no third call (no
+    // shop-identity/write-allowlist check, which only applies to writes).
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const searchCall = fetchMock.mock.calls[1]!;
+    const body = JSON.parse(searchCall[1].body as string);
+    expect(body.query).toMatch(/draftOrders/);
+    expect(body.query).not.toMatch(/mutation/i);
+  });
+
+  it("includes results without a Shopify customer (unlike the command-palette search) and maps status", async () => {
+    setShopifyEnv();
+    const fetchMock = vi.fn();
+    fetchMock.mockResolvedValueOnce(tokenResponse()).mockResolvedValueOnce(
+      jsonResponse({
+        data: {
+          draftOrders: {
+            edges: [
+              {
+                node: {
+                  id: "gid://shopify/DraftOrder/1",
+                  legacyResourceId: "1",
+                  name: "#D1",
+                  status: "OPEN",
+                  customer: null,
+                },
+              },
+              {
+                node: {
+                  id: "gid://shopify/DraftOrder/2",
+                  legacyResourceId: "2",
+                  name: "#D2",
+                  status: "COMPLETED",
+                  customer: { id: "gid://shopify/Customer/9", displayName: "Jan Jansen" },
+                },
+              },
+            ],
+          },
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { searchDraftOrdersForHandoff } = await import("@/integrations/shopify/order-search");
+    const results = await searchDraftOrdersForHandoff("D");
+
+    expect(results).toHaveLength(2);
+    expect(results[0]).toEqual({
+      gid: "gid://shopify/DraftOrder/1",
+      legacyResourceId: "1",
+      name: "#D1",
+      status: "OPEN",
+      customerGid: null,
+      customerName: null,
+    });
+    expect(results[1]).toEqual({
+      gid: "gid://shopify/DraftOrder/2",
+      legacyResourceId: "2",
+      name: "#D2",
+      status: "COMPLETED",
+      customerGid: "gid://shopify/Customer/9",
+      customerName: "Jan Jansen",
+    });
+  });
+});

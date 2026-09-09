@@ -3,8 +3,11 @@ import { prisma } from "@/platform/db/prisma";
 import {
   createDeliveryDateHandoff,
   getHandoffByRawToken,
+  listAllDeliveryDateHandoffs,
   listDeliveryDateHandoffsForCustomer,
   parseRequestedDeliveryDate,
+  regeneratePublicToken,
+  resolveCustomerProfileIdForShopifyGid,
   submitRequestedDeliveryDate,
 } from "@/modules/delivery/delivery-handoff.service";
 import { DeliveryHandoffError } from "@/modules/delivery/errors";
@@ -314,6 +317,133 @@ describe("delivery-handoff.service", () => {
       expect(listed.map((h) => h.id)).toEqual([newer.handoff.id, older.handoff.id]);
 
       await cleanupCustomerProfile(profile.id);
+    });
+
+    it("lists across all customers (management view), newest-updated first, with the linked customer included", async () => {
+      const profile = await createTestCustomerProfile();
+      const linked = await createDeliveryDateHandoff({
+        shopifyDraftOrderGid: `gid://shopify/DraftOrder/${crypto.randomUUID()}`,
+        customerProfileId: profile.id,
+        createdById: userId,
+      });
+      // Not pushed to createdHandoffIds — cleanupCustomerProfile(profile.id)
+      // below already removes it (same note as the identical pattern
+      // earlier in this file).
+      const unlinked = await createDeliveryDateHandoff({
+        shopifyDraftOrderGid: `gid://shopify/DraftOrder/${crypto.randomUUID()}`,
+        createdById: userId,
+      });
+      createdHandoffIds.push(unlinked.handoff.id);
+
+      const all = await listAllDeliveryDateHandoffs();
+      const linkedRow = all.find((h) => h.id === linked.handoff.id);
+      const unlinkedRow = all.find((h) => h.id === unlinked.handoff.id);
+
+      expect(linkedRow?.customerProfile?.id).toBe(profile.id);
+      expect(unlinkedRow?.customerProfile).toBeNull();
+
+      await cleanupCustomerProfile(profile.id);
+    });
+  });
+
+  describe("customer matching — read-only, never fabricates a CustomerProfile", () => {
+    it("resolves to an existing CustomerProfile's id when the Shopify Customer GID matches one", async () => {
+      const profile = await createTestCustomerProfile();
+      const resolved = await resolveCustomerProfileIdForShopifyGid(profile.shopifyCustomerGid);
+      expect(resolved).toBe(profile.id);
+      await cleanupCustomerProfile(profile.id);
+    });
+
+    it("returns null for a Shopify Customer GID with no matching CustomerProfile — never creates one", async () => {
+      const gid = `gid://shopify/Customer/${crypto.randomUUID()}`;
+      const before = await prisma.customerProfile.count();
+      const resolved = await resolveCustomerProfileIdForShopifyGid(gid);
+      const after = await prisma.customerProfile.count();
+
+      expect(resolved).toBeNull();
+      expect(after).toBe(before);
+    });
+
+    it("returns null for an absent/undefined Shopify Customer GID", async () => {
+      expect(await resolveCustomerProfileIdForShopifyGid(undefined)).toBeNull();
+      expect(await resolveCustomerProfileIdForShopifyGid(null)).toBeNull();
+      expect(await resolveCustomerProfileIdForShopifyGid("")).toBeNull();
+    });
+
+    it("a handoff created without a matching customer stays unlinked, not fabricated", async () => {
+      const unknownGid = `gid://shopify/Customer/${crypto.randomUUID()}`;
+      const resolved = await resolveCustomerProfileIdForShopifyGid(unknownGid);
+      const { handoff } = await createDeliveryDateHandoff({
+        shopifyDraftOrderGid: `gid://shopify/DraftOrder/${crypto.randomUUID()}`,
+        customerProfileId: resolved,
+        createdById: userId,
+      });
+      createdHandoffIds.push(handoff.id);
+      expect(handoff.customerProfileId).toBeNull();
+    });
+  });
+
+  describe("token lifecycle — regeneration", () => {
+    it("issues a new token that resolves, while the old token stops resolving — same row, other fields untouched", async () => {
+      const { handoff, rawToken: originalToken } = await createDeliveryDateHandoff({
+        shopifyDraftOrderGid: `gid://shopify/DraftOrder/${crypto.randomUUID()}`,
+        createdById: userId,
+      });
+      createdHandoffIds.push(handoff.id);
+      await submitRequestedDeliveryDate(handoff, TOMORROW);
+
+      const { handoff: regenerated, rawToken: newToken } = await regeneratePublicToken(handoff.id, userId);
+
+      expect(newToken).not.toBe(originalToken);
+      expect(regenerated.id).toBe(handoff.id);
+      // Same row — requestedDeliveryDate/status survive the regeneration.
+      expect(regenerated.requestedDeliveryDate?.toISOString().slice(0, 10)).toBe(TOMORROW);
+      expect(regenerated.status).toBe("MIRRORED");
+
+      await expect(getHandoffByRawToken(originalToken!)).resolves.toBeNull();
+      const resolved = await getHandoffByRawToken(newToken);
+      expect(resolved?.id).toBe(handoff.id);
+
+      const total = await prisma.deliveryDateHandoff.count({ where: { id: handoff.id } });
+      expect(total).toBe(1);
+
+      const audit = await prisma.auditEvent.findFirst({
+        where: { entityId: handoff.id, action: "delivery_handoff.token_regenerated" },
+      });
+      expect(audit).not.toBeNull();
+    });
+
+    it("throws (mapped to 404 by the route layer via Prisma's own not-found error) for an unknown handoff id", async () => {
+      await expect(regeneratePublicToken("does-not-exist", userId)).rejects.toThrow();
+    });
+  });
+
+  describe("no Shopify mutation during creation or customer resolution", () => {
+    it("createDeliveryDateHandoff never calls the Shopify mirror", async () => {
+      mockMirror.mockClear();
+      const { handoff } = await createDeliveryDateHandoff({
+        shopifyDraftOrderGid: `gid://shopify/DraftOrder/${crypto.randomUUID()}`,
+        createdById: userId,
+      });
+      createdHandoffIds.push(handoff.id);
+      expect(mockMirror).not.toHaveBeenCalled();
+    });
+
+    it("resolveCustomerProfileIdForShopifyGid never calls the Shopify mirror (it is a local DB read only)", async () => {
+      mockMirror.mockClear();
+      await resolveCustomerProfileIdForShopifyGid(`gid://shopify/Customer/${crypto.randomUUID()}`);
+      expect(mockMirror).not.toHaveBeenCalled();
+    });
+
+    it("regeneratePublicToken never calls the Shopify mirror", async () => {
+      const { handoff } = await createDeliveryDateHandoff({
+        shopifyDraftOrderGid: `gid://shopify/DraftOrder/${crypto.randomUUID()}`,
+        createdById: userId,
+      });
+      createdHandoffIds.push(handoff.id);
+      mockMirror.mockClear();
+      await regeneratePublicToken(handoff.id, userId);
+      expect(mockMirror).not.toHaveBeenCalled();
     });
   });
 });
