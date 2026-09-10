@@ -395,6 +395,15 @@ describe("getOrderForHandoff — Phase 6B Order read client", () => {
       nativeFulfillmentMode: "UNKNOWN",
       explicitFulfillmentMode: null,
       fulfillmentResolution: { mode: "UNKNOWN", source: "NONE", conflict: false, diagnostic: "NONE" },
+      // Phase 6W — no customer on the Order means no classification is even
+      // attempted, and the fail-closed UNKNOWN result records why.
+      customerClassification: {
+        paymentPolicy: "UNKNOWN",
+        customerType: "UNKNOWN",
+        source: "NO_CUSTOMER",
+        paymentPolicyStatus: "ABSENT",
+        customerTypeStatus: "ABSENT",
+      },
     });
   });
 
@@ -425,6 +434,19 @@ describe("getOrderForHandoff — Phase 6B Order read client", () => {
         },
       }),
     );
+    // Phase 6W — the Order has a customer, so a second, separate query reads
+    // that customer's two classification metafields by exact namespace/key.
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        data: {
+          customer: {
+            id: "gid://shopify/Customer/9",
+            paymentPolicy: { value: "op rekening" },
+            customerType: { value: "zakelijk" },
+          },
+        },
+      }),
+    );
     vi.stubGlobal("fetch", fetchMock);
 
     const { getOrderForHandoff } = await import("@/integrations/shopify/order-for-handoff");
@@ -444,7 +466,128 @@ describe("getOrderForHandoff — Phase 6B Order read client", () => {
       explicitFulfillmentMode: null,
       // Layer 1 says DELIVERY; Layer 2 refuses to act on that alone.
       fulfillmentResolution: { mode: "UNKNOWN", source: "NONE", conflict: false, diagnostic: "NATIVE_NOT_TRUSTED" },
+      // Phase 6W — the exact Shopify choice strings, mapped to internal
+      // values. Note "op rekening" -> ON_ACCOUNT and "zakelijk" -> BUSINESS
+      // arriving independently: neither was derived from the other.
+      customerClassification: {
+        paymentPolicy: "ON_ACCOUNT",
+        customerType: "BUSINESS",
+        source: "CUSTOMER_METAFIELDS",
+        paymentPolicyStatus: "VALID",
+        customerTypeStatus: "VALID",
+      },
     });
+  });
+
+  it("reads the customer classification by exact namespace/key, never by enumerating the customer's metafields", async () => {
+    setShopifyEnv();
+    const fetchMock = vi.fn();
+    fetchMock
+      .mockResolvedValueOnce(tokenResponse())
+      .mockResolvedValueOnce(
+        jsonResponse({
+          data: {
+            order: {
+              id: "gid://shopify/Order/7",
+              name: "#7000",
+              cancelledAt: null,
+              displayFulfillmentStatus: "UNFULFILLED",
+              fullyPaid: true,
+              customer: { id: "gid://shopify/Customer/7" },
+              shippingAddress: { city: "Venlo" },
+              customAttributes: [{ key: "stones4u_fulfillment_mode", value: "DELIVERY" }],
+              fulfillmentOrders: {
+                pageInfo: { hasNextPage: false },
+                edges: [{ node: { deliveryMethod: { methodType: "SHIPPING" } } }],
+              },
+            },
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          data: {
+            customer: {
+              id: "gid://shopify/Customer/7",
+              paymentPolicy: { value: "betaling vooraf" },
+              customerType: { value: "particulier" },
+            },
+          },
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { getOrderForHandoff } = await import("@/integrations/shopify/order-for-handoff");
+    const result = await getOrderForHandoff("gid://shopify/Order/7");
+
+    const classificationBody = JSON.parse(fetchMock.mock.calls[2]![1].body as string);
+    expect(classificationBody.query).toMatch(/metafield\(namespace:/);
+    expect(classificationBody.query).not.toMatch(/metafields\(/);
+    expect(classificationBody.query).not.toMatch(/mutation/i);
+    // No PII is ever requested alongside the classification.
+    for (const field of ["email", "phone", "firstName", "lastName", "defaultAddress"]) {
+      expect(classificationBody.query).not.toContain(field);
+    }
+    expect(classificationBody.variables).toEqual({
+      id: "gid://shopify/Customer/7",
+      namespace: "custom",
+      paymentPolicyKey: "payment_policy",
+      customerTypeKey: "customer_type",
+    });
+
+    expect(result?.customerClassification).toEqual({
+      paymentPolicy: "PREPAID",
+      customerType: "CONSUMER",
+      source: "CUSTOMER_METAFIELDS",
+      paymentPolicyStatus: "VALID",
+      customerTypeStatus: "VALID",
+    });
+    // The explicit contract value plus a non-contradicting native SHIPPING
+    // resolves to a trusted DELIVERY — the input the decision engine needs.
+    expect(result?.fulfillmentResolution.mode).toBe("DELIVERY");
+  });
+
+  it("a failed classification read fails closed to UNKNOWN and never breaks the Order read (build instruction §6)", async () => {
+    setShopifyEnv();
+    const fetchMock = vi.fn();
+    fetchMock
+      .mockResolvedValueOnce(tokenResponse())
+      .mockResolvedValueOnce(
+        jsonResponse({
+          data: {
+            order: {
+              id: "gid://shopify/Order/8",
+              name: "#8000",
+              cancelledAt: null,
+              displayFulfillmentStatus: "UNFULFILLED",
+              fullyPaid: true,
+              customer: { id: "gid://shopify/Customer/8" },
+              shippingAddress: { city: "Venlo" },
+              customAttributes: [],
+              fulfillmentOrders: { pageInfo: { hasNextPage: false }, edges: [] },
+            },
+          },
+        }),
+      )
+      // Shopify refuses the classification query (e.g. a missing scope).
+      .mockResolvedValue(jsonResponse({ errors: [{ message: "Access denied" }] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { getOrderForHandoff } = await import("@/integrations/shopify/order-for-handoff");
+    const result = await getOrderForHandoff("gid://shopify/Order/8");
+
+    // The Order itself still read successfully — that is the whole point.
+    expect(result?.gid).toBe("gid://shopify/Order/8");
+    expect(result?.customerClassification).toEqual({
+      paymentPolicy: "UNKNOWN",
+      customerType: "UNKNOWN",
+      source: "UNREADABLE",
+      paymentPolicyStatus: "ABSENT",
+      customerTypeStatus: "ABSENT",
+    });
+    // Never PREPAID, never inferred from the Order being paid.
+    expect(result?.fullyPaid).toBe(true);
+    expect(result?.customerClassification.paymentPolicy).not.toBe("PREPAID");
   });
 
   it("a split Order whose FulfillmentOrders disagree (shipped + collected) reads as UNKNOWN, never as DELIVERY", async () => {

@@ -3,7 +3,12 @@ import { prisma } from "@/platform/db/prisma";
 import { getOrderForHandoff } from "@/integrations/shopify/order-for-handoff";
 import { createOrGetOrderDeliveryHandoff } from "./delivery-handoff.service";
 import { markWebhookProcessed, markWebhookFailed } from "./webhook-receipt.service";
-import { evaluateDeliveryRequestDecision, type DeliveryRequestTrigger, type DeliveryRequestDecision } from "./delivery-request-decision";
+import {
+  deliveryPolicyForPaymentPolicy,
+  evaluateDeliveryRequestDecision,
+  type DeliveryRequestTrigger,
+  type DeliveryRequestDecision,
+} from "./delivery-request-decision";
 
 // Phase 6F — everything that happens after a webhook delivery has been
 // authenticated and claimed, shared by ORDERS_CREATE and ORDERS_PAID
@@ -12,6 +17,32 @@ import { evaluateDeliveryRequestDecision, type DeliveryRequestTrigger, type Deli
 // the outcome — and differ only in which trigger they record. Neither
 // sends email, writes requested_delivery_date back to Shopify, performs
 // any Shopify mutation, or creates a customer-facing Activity.
+
+/**
+ * **THE RUNTIME KILL SWITCH (Phase 6W build instruction §12).**
+ *
+ * Since 6W the pure decision engine is genuinely capable of returning
+ * `READY_FOR_DELIVERY_REQUEST` for an Order whose every trusted input lines
+ * up. This constant is what decides whether such a decision is ever ACTED ON.
+ * While it is `false`, a positive decision is still fully evaluated and still
+ * fully recorded on the webhook receipt — it simply creates nothing and
+ * contacts nobody.
+ *
+ * Keeping the evaluation live while the action is disabled is the point: it
+ * makes the classification observable in staging (and, later, safely in
+ * production) before anything customer-visible is switched on.
+ *
+ * Flipping this to `true` is an explicit, separately-authorized business
+ * decision. It is deliberately a source constant rather than an environment
+ * variable, so enabling automatic customer contact requires a code change,
+ * review and deploy — never a console command against a running machine.
+ *
+ * Note that this is only the innermost of several independent locks. Today
+ * there is also NO ORDERS_PAID/ORDERS_CREATE webhook subscription registered
+ * in production at all, and no notification/email sender exists anywhere in
+ * this codebase, so no customer could be contacted even if this were `true`.
+ */
+export const DELIVERY_REQUEST_AUTOMATION_ENABLED = false;
 
 export type OrderWebhookProcessingResult =
   /** The Order could not be read back — plausibly a read-after-write race;
@@ -53,18 +84,23 @@ export async function processOrderWebhookEvent(input: {
       return { outcome: "ORDER_NOT_READABLE" };
     }
 
-    // No trustworthy per-Order classification source exists yet (build
-    // instruction §4/§13) — automatic webhook processing always passes
-    // UNKNOWN explicitly, never REGULAR_CONSUMER. This is a compile-time
-    // requirement now (policy is a required argument), not a convention to
-    // remember.
-    const decision = evaluateDeliveryRequestDecision({ order, trigger: input.trigger, policy: "UNKNOWN" });
+    // Phase 6W — the policy is no longer hard-coded UNKNOWN. It comes from
+    // the attached Shopify Customer's own `payment_policy` metafield, read
+    // live as part of the canonical Order read, and mapped through the one
+    // documented mapping function.
+    //
+    // Two properties this deliberately preserves: an Order with no customer,
+    // or whose classification could not be read, still yields UNKNOWN (so
+    // nothing changed for those); and `customerType` is never consulted here
+    // — BUSINESS does not imply ON_ACCOUNT (build instruction §3).
+    const policy = deliveryPolicyForPaymentPolicy(order.customerClassification.paymentPolicy);
+    const decision = evaluateDeliveryRequestDecision({ order, trigger: input.trigger, policy });
 
     let createdHandoffId: string | null = null;
-    if (decision.shouldRequest) {
-      // No live code path produces shouldRequest: true yet — this branch
-      // exists so a future positive classification rule does not also
-      // require route/handler changes.
+    if (decision.shouldRequest && DELIVERY_REQUEST_AUTOMATION_ENABLED) {
+      // Gated on the runtime kill switch above, NOT merely on the decision.
+      // A positive decision with automation disabled is recorded on the
+      // receipt and otherwise does nothing at all.
       const createdById = await resolveWebhookCreatedById();
       if (!createdById) {
         throw new Error("NO_ACTIVE_ADMIN_TO_ATTRIBUTE_WEBHOOK_HANDOFF");

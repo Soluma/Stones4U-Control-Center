@@ -7,6 +7,8 @@ import {
   type ExplicitFulfillmentMode,
   type FulfillmentModeResolution,
 } from "./fulfillment-contract";
+import { readCustomerClassification } from "./customer-classification-read";
+import type { CustomerClassification } from "./customer-classification";
 
 // Phase 6B — read-only lookup used when creating an Order-based
 // DeliveryDateHandoff (manual staff action today; a future webhook later).
@@ -125,9 +127,16 @@ export type OrderForHandoffResult = {
   // The authoritative resolution — the field callers should actually use.
   // Callers must never re-derive authority from the two signals above; that
   // is exactly what this field exists to prevent (build instruction §8).
-  // Still a signal only: not wired into evaluateDeliveryRequestDecision()
-  // this phase, and READY_FOR_DELIVERY_REQUEST stays unreachable.
+  // Phase 6W — now genuinely wired into evaluateDeliveryRequestDecision():
+  // only a resolved DELIVERY may pass the fulfillment gate.
   fulfillmentResolution: FulfillmentModeResolution;
+  // Phase 6W — the attached Shopify Customer's classification, read live
+  // from that customer's own metafields rather than duplicated onto the
+  // Order (see customer-classification.ts for why the Customer is the source
+  // of truth). Always present: an Order without a customer, or a
+  // classification that could not be read, yields the fail-closed UNKNOWN
+  // result rather than null, so no caller has to remember to handle absence.
+  customerClassification: CustomerClassification;
 };
 
 /** Read-only. Never called during the public /delivery/[token] flow — only
@@ -151,6 +160,12 @@ export async function getOrderForHandoff(orderGid: string): Promise<OrderForHand
     hasUnreadFulfillmentOrders: fulfillmentOrders.pageInfo.hasNextPage,
   });
 
+  // A second, deliberately independent read (see readCustomerClassification()
+  // for why it may not be folded into the query above): it never throws, so a
+  // classification problem can only ever produce UNKNOWN — it can never stop
+  // an Order from being read.
+  const customerClassification = await readCustomerClassification(data.order.customer?.id ?? null);
+
   return {
     gid: data.order.id,
     name: data.order.name,
@@ -164,5 +179,6 @@ export async function getOrderForHandoff(orderGid: string): Promise<OrderForHand
     nativeFulfillmentMode,
     explicitFulfillmentMode: explicit.status === "VALID" ? explicit.mode : null,
     fulfillmentResolution: resolveFulfillmentMode({ explicit, native: nativeFulfillmentMode }),
+    customerClassification,
   };
 }

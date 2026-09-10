@@ -91,6 +91,13 @@ export default async function DeliveryDatePage({ params }: PageProps) {
           <DeliveryDateForm
             token={token}
             currentValue={handoff.requestedDeliveryDate ? handoff.requestedDeliveryDate.toISOString().slice(0, 10) : ""}
+            // Phase 6W §26 — computed from exactly the same inputs
+            // submitRequestedDeliveryDate() validates with, so the picker can
+            // never offer a date the POST handler will reject.
+            earliestDeliveryDate={getEarliestRequestedDeliveryDate({
+              orderCreatedAt: handoff.createdAt,
+              now: new Date(),
+            })}
           />
         </div>
 

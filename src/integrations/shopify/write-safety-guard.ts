@@ -7,11 +7,30 @@ import { ShopifyConfigError, ShopifyShopIdentityMismatchError } from "./errors";
 // write this repo has ever performed). Distinct from
 // assertShopifyShopIdentity() (guard.ts): that guard checks the live shop
 // against a SINGLE expected domain read from the same environment's own
-// config, which today is set to the real Stones4U shop in every
-// environment (staging and production share one real shop — see
-// docs/QUOTE-DELIVERY-DATE-PORTAL-DISCOVERY.md §3/§11). Reusing it alone
-// would currently let staging write to the real shop, since staging's own
-// config currently declares the real shop as "expected."
+// config, whereas this one checks an explicit per-environment allowlist.
+//
+// SHOP IDENTITIES, verified live in Phase 6X (2026-09-10) — do not restate
+// these from memory, and do not assume a config FILE's name tells you which
+// shop it addresses:
+//
+//   9h7x2c-ku.myshopify.com    PRODUCTION. Shop name "Stones4U", primary
+//                              domain www.stones4u.eu, paid Shopify plan,
+//                              plan.partnerDevelopment = false.
+//   stones4u-dev.myshopify.com DEVELOPMENT/STAGING. Shop name "Stones4U_dev",
+//                              plan "Grow App Development",
+//                              plan.partnerDevelopment = true.
+//
+// An earlier version of this comment said staging and production shared one
+// real shop. That was true once, is no longer true, and the stale wording
+// contributed directly to the Phase 6W incident in which ad-hoc tooling —
+// using local credentials that addressed PRODUCTION — created eight real
+// Orders and two real Draft Orders on the production shop.
+//
+// That incident did not defeat this guard; it BYPASSED it, by calling the
+// Shopify API with raw fetch instead of going through shopifyGraphQL(). The
+// lesson is therefore not "add another check here" but: every Shopify write,
+// including one-off investigation scripts, must go through the app's own
+// client so that this guard runs at all.
 //
 // This guard is deliberately a SEPARATE, uniform mechanism across every
 // environment: writes are allowed only against myshopifyDomain values

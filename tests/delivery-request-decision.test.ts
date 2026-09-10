@@ -1,8 +1,24 @@
 import { describe, expect, it } from "vitest";
-import { evaluateDeliveryRequestDecision, type DeliveryCustomerPolicy } from "@/modules/delivery/delivery-request-decision";
+import {
+  deliveryPolicyForPaymentPolicy,
+  evaluateDeliveryRequestDecision,
+  type DeliveryCustomerPolicy,
+} from "@/modules/delivery/delivery-request-decision";
 import type { OrderForHandoffResult } from "@/integrations/shopify/order-for-handoff";
+import type { FulfillmentMode } from "@/integrations/shopify/fulfillment-mode";
+import type { CustomerType, PaymentPolicy } from "@/integrations/shopify/customer-classification";
 
 const ALL_POLICIES: DeliveryCustomerPolicy[] = ["UNKNOWN", "REGULAR_CONSUMER", "B2B_ON_ACCOUNT", "MANUAL_ONLY"];
+
+function classification(paymentPolicy: PaymentPolicy, customerType: CustomerType = "UNKNOWN") {
+  return {
+    paymentPolicy,
+    customerType,
+    source: "CUSTOMER_METAFIELDS" as const,
+    paymentPolicyStatus: (paymentPolicy === "UNKNOWN" ? "ABSENT" : "VALID") as "ABSENT" | "VALID",
+    customerTypeStatus: (customerType === "UNKNOWN" ? "ABSENT" : "VALID") as "ABSENT" | "VALID",
+  };
+}
 
 function baseOrder(overrides: Partial<OrderForHandoffResult> = {}): OrderForHandoffResult {
   return {
@@ -17,21 +33,42 @@ function baseOrder(overrides: Partial<OrderForHandoffResult> = {}): OrderForHand
     fullyPaid: false,
     nativeFulfillmentMode: "UNKNOWN",
     explicitFulfillmentMode: null,
+    // Deliberately UNKNOWN by default — an Order nobody classified is the
+    // historical norm, and must stay the conservative default in tests too.
     fulfillmentResolution: { mode: "UNKNOWN", source: "NONE", conflict: false, diagnostic: "NONE" },
+    customerClassification: classification("UNKNOWN"),
     ...overrides,
   };
 }
 
-describe("evaluateDeliveryRequestDecision — policy is required, never silently REGULAR_CONSUMER (final review, this round)", () => {
+/** An Order whose Stones4U fulfillment mode resolved to a trusted DELIVERY —
+ * i.e. OfferteApp explicitly said so and no native negative contradicted it. */
+function deliveryOrder(overrides: Partial<OrderForHandoffResult> = {}): OrderForHandoffResult {
+  return baseOrder({
+    explicitFulfillmentMode: "DELIVERY",
+    nativeFulfillmentMode: "DELIVERY",
+    fulfillmentResolution: { mode: "DELIVERY", source: "EXPLICIT", conflict: false, diagnostic: "NONE" },
+    ...overrides,
+  });
+}
+
+function resolvedAs(mode: FulfillmentMode, overrides: Partial<OrderForHandoffResult> = {}): OrderForHandoffResult {
+  return baseOrder({
+    fulfillmentResolution: { mode, source: mode === "UNKNOWN" ? "NONE" : "EXPLICIT", conflict: false, diagnostic: "NONE" },
+    ...overrides,
+  });
+}
+
+describe("evaluateDeliveryRequestDecision — policy is required, never silently REGULAR_CONSUMER", () => {
   it("policy is a required argument — TypeScript itself refuses a call that omits it (this test exists to document that guarantee in prose; the real enforcement is the compiler)", () => {
     // @ts-expect-error — policy omitted on purpose, proving the type system rejects it.
     const call = () => evaluateDeliveryRequestDecision({ order: baseOrder(), trigger: "ORDER_CREATED" });
     expect(typeof call).toBe("function");
   });
 
-  it("UNKNOWN policy, unpaid, otherwise-unremarkable Order — INSUFFICIENT_CLASSIFICATION, never WAITING_FOR_PAYMENT (the core bug this round fixes)", () => {
+  it("UNKNOWN policy, unpaid, otherwise-unremarkable delivery Order — INSUFFICIENT_CLASSIFICATION, never WAITING_FOR_PAYMENT", () => {
     const result = evaluateDeliveryRequestDecision({
-      order: baseOrder({ fullyPaid: false, hasShippingAddress: true }),
+      order: deliveryOrder({ fullyPaid: false, hasShippingAddress: true }),
       trigger: "ORDER_CREATED",
       policy: "UNKNOWN",
     });
@@ -40,14 +77,14 @@ describe("evaluateDeliveryRequestDecision — policy is required, never silently
   });
 
   it("UNKNOWN policy never consults fullyPaid at all — paid or unpaid makes no difference to the outcome", () => {
-    const unpaid = evaluateDeliveryRequestDecision({ order: baseOrder({ fullyPaid: false }), trigger: "ORDER_PAID", policy: "UNKNOWN" });
-    const paid = evaluateDeliveryRequestDecision({ order: baseOrder({ fullyPaid: true }), trigger: "ORDER_PAID", policy: "UNKNOWN" });
+    const unpaid = evaluateDeliveryRequestDecision({ order: deliveryOrder({ fullyPaid: false }), trigger: "ORDER_PAID", policy: "UNKNOWN" });
+    const paid = evaluateDeliveryRequestDecision({ order: deliveryOrder({ fullyPaid: true }), trigger: "ORDER_PAID", policy: "UNKNOWN" });
     expect(unpaid.reason).toBe("INSUFFICIENT_CLASSIFICATION");
     expect(paid.reason).toBe("INSUFFICIENT_CLASSIFICATION");
   });
 
   it("the exact same Order/trigger produces a different outcome depending only on explicit policy — proving UNKNOWN and REGULAR_CONSUMER are genuinely distinct code paths, not aliases", () => {
-    const order = baseOrder({ fullyPaid: false, hasShippingAddress: true });
+    const order = deliveryOrder({ fullyPaid: false, hasShippingAddress: true });
     const unknown = evaluateDeliveryRequestDecision({ order, trigger: "ORDER_CREATED", policy: "UNKNOWN" });
     const regular = evaluateDeliveryRequestDecision({ order, trigger: "ORDER_CREATED", policy: "REGULAR_CONSUMER" });
     expect(unknown.reason).toBe("INSUFFICIENT_CLASSIFICATION");
@@ -56,11 +93,11 @@ describe("evaluateDeliveryRequestDecision — policy is required, never silently
   });
 });
 
-describe("evaluateDeliveryRequestDecision — priority order (build instruction §5)", () => {
-  it("1. cancelled order — never, regardless of payment, policy, or anything else", () => {
+describe("evaluateDeliveryRequestDecision — priority order (Phase 6W build instruction §11)", () => {
+  it("1. cancelled order — never, regardless of payment, policy, fulfillment mode, or anything else", () => {
     for (const policy of ALL_POLICIES) {
       const result = evaluateDeliveryRequestDecision({
-        order: baseOrder({ isCancelled: true, fullyPaid: true }),
+        order: deliveryOrder({ isCancelled: true, fullyPaid: true }),
         trigger: "ORDER_PAID",
         policy,
       });
@@ -68,10 +105,10 @@ describe("evaluateDeliveryRequestDecision — priority order (build instruction 
     }
   });
 
-  it("2. an existing requested_delivery_date suppresses the request under every policy — even paid REGULAR_CONSUMER and unpaid B2B_ON_ACCOUNT alike (build instruction §7)", () => {
+  it("2. an existing requested_delivery_date suppresses the request under every policy — even paid REGULAR_CONSUMER on a trusted DELIVERY Order", () => {
     for (const policy of ALL_POLICIES) {
       const result = evaluateDeliveryRequestDecision({
-        order: baseOrder({ hasRequestedDeliveryDateAlready: true, requestedDeliveryDate: "2026-09-24", fullyPaid: true }),
+        order: deliveryOrder({ hasRequestedDeliveryDateAlready: true, requestedDeliveryDate: "2026-09-24", fullyPaid: true }),
         trigger: "ORDER_PAID",
         policy,
       });
@@ -81,7 +118,7 @@ describe("evaluateDeliveryRequestDecision — priority order (build instruction 
 
   it("2b. existing-date suppression fires regardless of provenance — the decision has no concept of where the date came from", () => {
     const result = evaluateDeliveryRequestDecision({
-      order: baseOrder({ hasRequestedDeliveryDateAlready: true, requestedDeliveryDate: "2026-01-01", fullyPaid: false }),
+      order: deliveryOrder({ hasRequestedDeliveryDateAlready: true, requestedDeliveryDate: "2026-01-01", fullyPaid: false }),
       trigger: "ORDER_CREATED",
       policy: "UNKNOWN",
     });
@@ -89,10 +126,21 @@ describe("evaluateDeliveryRequestDecision — priority order (build instruction 
     expect(result.reason).toBe("ALREADY_HAS_REQUESTED_DELIVERY_DATE");
   });
 
-  it("3. no shipping address — a reliable negative, checked before policy/payment, under every policy", () => {
+  it("2c. payment completing later never reopens a suppressed Order (build instruction §10)", () => {
+    const order = deliveryOrder({
+      hasRequestedDeliveryDateAlready: true,
+      requestedDeliveryDate: "2026-09-24",
+      fullyPaid: true,
+      customerClassification: classification("PREPAID", "CONSUMER"),
+    });
+    const result = evaluateDeliveryRequestDecision({ order, trigger: "ORDER_PAID", policy: "REGULAR_CONSUMER" });
+    expect(result.reason).toBe("ALREADY_HAS_REQUESTED_DELIVERY_DATE");
+  });
+
+  it("3. no shipping address — a reliable negative, checked before fulfillment/policy/payment, under every policy", () => {
     for (const policy of ALL_POLICIES) {
       const result = evaluateDeliveryRequestDecision({
-        order: baseOrder({ hasShippingAddress: false, fullyPaid: true }),
+        order: deliveryOrder({ hasShippingAddress: false, fullyPaid: true }),
         trigger: "ORDER_PAID",
         policy,
       });
@@ -102,7 +150,7 @@ describe("evaluateDeliveryRequestDecision — priority order (build instruction 
 
   it("4a. UNKNOWN policy — INSUFFICIENT_CLASSIFICATION, never asks automatically, payment never consulted", () => {
     const result = evaluateDeliveryRequestDecision({
-      order: baseOrder({ fullyPaid: false }),
+      order: deliveryOrder({ fullyPaid: false }),
       trigger: "ORDER_CREATED",
       policy: "UNKNOWN",
     });
@@ -111,7 +159,7 @@ describe("evaluateDeliveryRequestDecision — priority order (build instruction 
 
   it("4b. MANUAL_ONLY policy — its own distinct reason, never asks automatically, payment never consulted", () => {
     const result = evaluateDeliveryRequestDecision({
-      order: baseOrder({ fullyPaid: true, hasShippingAddress: true }),
+      order: deliveryOrder({ fullyPaid: true, hasShippingAddress: true }),
       trigger: "ORDER_PAID",
       policy: "MANUAL_ONLY",
     });
@@ -120,35 +168,69 @@ describe("evaluateDeliveryRequestDecision — priority order (build instruction 
 
   it("5. REGULAR_CONSUMER, not yet paid — WAITING_FOR_PAYMENT, not a permanent rejection", () => {
     const result = evaluateDeliveryRequestDecision({
-      order: baseOrder({ fullyPaid: false }),
+      order: deliveryOrder({ fullyPaid: false }),
       trigger: "ORDER_CREATED",
       policy: "REGULAR_CONSUMER",
     });
     expect(result).toEqual({ shouldRequest: false, reason: "WAITING_FOR_PAYMENT", trigger: "ORDER_CREATED" });
   });
 
-  it("5b. REGULAR_CONSUMER, paid — still cannot become READY without a trustworthy positive delivery classification (INSUFFICIENT_CLASSIFICATION, not a false positive)", () => {
+  it("6. B2B_ON_ACCOUNT is never rejected merely for being unpaid — payment is not that policy's trigger", () => {
     const result = evaluateDeliveryRequestDecision({
-      order: baseOrder({ fullyPaid: true, hasShippingAddress: true }),
+      order: deliveryOrder({ fullyPaid: false }),
+      trigger: "ORDER_CREATED",
+      policy: "B2B_ON_ACCOUNT",
+    });
+    expect(result.reason).not.toBe("WAITING_FOR_PAYMENT");
+    expect(result.reason).toBe("READY_FOR_DELIVERY_REQUEST");
+  });
+});
+
+describe("evaluateDeliveryRequestDecision — fulfillment gate (Phase 6W build instruction §8)", () => {
+  it("every definite non-delivery mode blocks the request, even paid and fully classified", () => {
+    for (const mode of ["CUSTOMER_PICKUP", "PICKUP_POINT", "RETAIL", "NONE"] as const) {
+      const result = evaluateDeliveryRequestDecision({
+        order: resolvedAs(mode, { fullyPaid: true, customerClassification: classification("PREPAID", "CONSUMER") }),
+        trigger: "ORDER_PAID",
+        policy: "REGULAR_CONSUMER",
+      });
+      expect(result).toEqual({ shouldRequest: false, reason: "NOT_A_DELIVERY_ORDER", trigger: "ORDER_PAID" });
+    }
+  });
+
+  it("UNKNOWN fulfillment blocks the request and is reported as INSUFFICIENT_CLASSIFICATION, not NOT_A_DELIVERY_ORDER — 'we don't know' and 'we know it's a pickup' stay distinct", () => {
+    const result = evaluateDeliveryRequestDecision({
+      order: resolvedAs("UNKNOWN", { fullyPaid: true }),
       trigger: "ORDER_PAID",
       policy: "REGULAR_CONSUMER",
     });
     expect(result).toEqual({ shouldRequest: false, reason: "INSUFFICIENT_CLASSIFICATION", trigger: "ORDER_PAID" });
   });
 
-  it("6. B2B_ON_ACCOUNT is never rejected merely for being unpaid — payment is not that policy's trigger", () => {
+  it("the fulfillment gate runs BEFORE the payment gate — an unpaid pickup Order is NOT_A_DELIVERY_ORDER, never WAITING_FOR_PAYMENT", () => {
     const result = evaluateDeliveryRequestDecision({
-      order: baseOrder({ fullyPaid: false }),
+      order: resolvedAs("CUSTOMER_PICKUP", { fullyPaid: false }),
       trigger: "ORDER_CREATED",
-      policy: "B2B_ON_ACCOUNT",
+      policy: "REGULAR_CONSUMER",
     });
-    expect(result.reason).not.toBe("WAITING_FOR_PAYMENT");
-    // Still lands on the conservative default — no positive rule exists for
-    // B2B either; this only proves payment isn't what stops it.
+    expect(result.reason).toBe("NOT_A_DELIVERY_ORDER");
+  });
+
+  it("a bare native SHIPPING that never resolved is still not enough — the Phase 6I production lesson stays enforced", () => {
+    const nativeOnly = baseOrder({
+      nativeFulfillmentMode: "DELIVERY",
+      explicitFulfillmentMode: null,
+      // What resolveFulfillmentMode() actually returns for untrusted native SHIPPING.
+      fulfillmentResolution: { mode: "UNKNOWN", source: "NONE", conflict: false, diagnostic: "NATIVE_NOT_TRUSTED" },
+      fullyPaid: true,
+      customerClassification: classification("PREPAID"),
+    });
+    const result = evaluateDeliveryRequestDecision({ order: nativeOnly, trigger: "ORDER_PAID", policy: "REGULAR_CONSUMER" });
+    expect(result.shouldRequest).toBe(false);
     expect(result.reason).toBe("INSUFFICIENT_CLASSIFICATION");
   });
 
-  it("shipping address presence alone is never sufficient for shouldRequest: true, even paid REGULAR_CONSUMER and otherwise unremarkable", () => {
+  it("shipping address presence alone is never sufficient — an unclassified Order with an address stays blocked", () => {
     const result = evaluateDeliveryRequestDecision({
       order: baseOrder({ fullyPaid: true, hasShippingAddress: true, fulfillmentStatus: "UNFULFILLED" }),
       trigger: "ORDER_PAID",
@@ -156,45 +238,180 @@ describe("evaluateDeliveryRequestDecision — priority order (build instruction 
     });
     expect(result.shouldRequest).toBe(false);
   });
+});
 
-  it("never returns shouldRequest: true for any input today, under any policy — no positive classification rule exists yet", () => {
-    const cases: OrderForHandoffResult[] = [
-      baseOrder({ fullyPaid: true }),
-      baseOrder({ fullyPaid: true, customerGid: "gid://shopify/Customer/1" }),
-      baseOrder({ fullyPaid: true, fulfillmentStatus: "FULFILLED" }),
-    ];
-    for (const order of cases) {
-      for (const policy of ALL_POLICIES) {
-        expect(evaluateDeliveryRequestDecision({ order, trigger: "ORDER_PAID", policy }).shouldRequest).toBe(false);
-      }
-    }
+describe("evaluateDeliveryRequestDecision — payment policy mapping (build instruction §3/§9)", () => {
+  it("maps each PaymentPolicy to exactly one decision policy, and nothing else", () => {
+    expect(deliveryPolicyForPaymentPolicy("PREPAID")).toBe("REGULAR_CONSUMER");
+    expect(deliveryPolicyForPaymentPolicy("ON_ACCOUNT")).toBe("B2B_ON_ACCOUNT");
+    expect(deliveryPolicyForPaymentPolicy("UNKNOWN")).toBe("UNKNOWN");
+  });
+
+  it("customer_type NEVER changes the outcome — BUSINESS+PREPAID behaves exactly like CONSUMER+PREPAID", () => {
+    const business = deliveryOrder({ fullyPaid: false, customerClassification: classification("PREPAID", "BUSINESS") });
+    const consumer = deliveryOrder({ fullyPaid: false, customerClassification: classification("PREPAID", "CONSUMER") });
+    const b = evaluateDeliveryRequestDecision({ order: business, trigger: "ORDER_CREATED", policy: deliveryPolicyForPaymentPolicy(business.customerClassification.paymentPolicy) });
+    const c = evaluateDeliveryRequestDecision({ order: consumer, trigger: "ORDER_CREATED", policy: deliveryPolicyForPaymentPolicy(consumer.customerClassification.paymentPolicy) });
+    expect(b.reason).toBe("WAITING_FOR_PAYMENT");
+    expect(c.reason).toBe("WAITING_FOR_PAYMENT");
+    expect(b).toEqual(c);
+  });
+
+  it("BUSINESS never implies ON_ACCOUNT — a BUSINESS customer marked PREPAID still waits for payment", () => {
+    const order = deliveryOrder({ fullyPaid: false, customerClassification: classification("PREPAID", "BUSINESS") });
+    const result = evaluateDeliveryRequestDecision({
+      order,
+      trigger: "ORDER_CREATED",
+      policy: deliveryPolicyForPaymentPolicy(order.customerClassification.paymentPolicy),
+    });
+    expect(result.reason).toBe("WAITING_FOR_PAYMENT");
+    expect(result.reason).not.toBe("READY_FOR_DELIVERY_REQUEST");
   });
 });
 
-describe("evaluateDeliveryRequestDecision — policy never inferred from Order data (build instruction §3)", () => {
-  it("cancellation and existing-date still win even under B2B_ON_ACCOUNT/MANUAL_ONLY — those checks run before policy is consulted", () => {
-    const cancelled = evaluateDeliveryRequestDecision({
-      order: baseOrder({ isCancelled: true }),
+// Phase 6W build instruction §23 — the deterministic matrix, case for case.
+describe("evaluateDeliveryRequestDecision — build instruction §23 decision matrix", () => {
+  function decide(order: OrderForHandoffResult) {
+    return evaluateDeliveryRequestDecision({
+      order,
       trigger: "ORDER_PAID",
-      policy: "B2B_ON_ACCOUNT",
+      policy: deliveryPolicyForPaymentPolicy(order.customerClassification.paymentPolicy),
     });
-    expect(cancelled.reason).toBe("ORDER_CANCELLED");
+  }
 
-    const hasDate = evaluateDeliveryRequestDecision({
-      order: baseOrder({ hasRequestedDeliveryDateAlready: true, requestedDeliveryDate: "2026-09-24" }),
-      trigger: "ORDER_PAID",
-      policy: "MANUAL_ONLY",
-    });
-    expect(hasDate.reason).toBe("ALREADY_HAS_REQUESTED_DELIVERY_DATE");
+  it("A. DELIVERY + PREPAID + paid + no date -> READY candidate", () => {
+    const result = decide(deliveryOrder({ fullyPaid: true, customerClassification: classification("PREPAID", "CONSUMER") }));
+    expect(result).toEqual({ shouldRequest: true, reason: "READY_FOR_DELIVERY_REQUEST", trigger: "ORDER_PAID" });
   });
 
-  it("a payment webhook (ORDER_PAID) with UNKNOWN policy remains conservative even though fullyPaid just became true (build instruction §8)", () => {
+  it("B. DELIVERY + PREPAID + not paid + no date -> WAITING_FOR_PAYMENT", () => {
+    const result = decide(deliveryOrder({ fullyPaid: false, customerClassification: classification("PREPAID", "CONSUMER") }));
+    expect(result.reason).toBe("WAITING_FOR_PAYMENT");
+    expect(result.shouldRequest).toBe(false);
+  });
+
+  it("C. DELIVERY + ON_ACCOUNT + not paid + no date -> proceeds past the payment gate", () => {
+    const result = decide(deliveryOrder({ fullyPaid: false, customerClassification: classification("ON_ACCOUNT", "BUSINESS") }));
+    expect(result.reason).not.toBe("WAITING_FOR_PAYMENT");
+    expect(result).toEqual({ shouldRequest: true, reason: "READY_FOR_DELIVERY_REQUEST", trigger: "ORDER_PAID" });
+  });
+
+  it("D. CUSTOMER_PICKUP + PREPAID + paid + no date -> NO delivery request", () => {
+    const result = decide(resolvedAs("CUSTOMER_PICKUP", { fullyPaid: true, customerClassification: classification("PREPAID", "CONSUMER") }));
+    expect(result.shouldRequest).toBe(false);
+    expect(result.reason).toBe("NOT_A_DELIVERY_ORDER");
+  });
+
+  it("E. DELIVERY + UNKNOWN payment policy + paid -> INSUFFICIENT_CLASSIFICATION", () => {
+    const result = decide(deliveryOrder({ fullyPaid: true, customerClassification: classification("UNKNOWN") }));
+    expect(result.shouldRequest).toBe(false);
+    expect(result.reason).toBe("INSUFFICIENT_CLASSIFICATION");
+  });
+
+  it("F. UNKNOWN fulfillment + PREPAID + paid -> INSUFFICIENT_CLASSIFICATION", () => {
+    const result = decide(resolvedAs("UNKNOWN", { fullyPaid: true, customerClassification: classification("PREPAID", "CONSUMER") }));
+    expect(result.shouldRequest).toBe(false);
+    expect(result.reason).toBe("INSUFFICIENT_CLASSIFICATION");
+  });
+
+  it("G. DELIVERY + PREPAID + paid + requested date exists -> ALREADY_HAS_REQUESTED_DELIVERY_DATE", () => {
+    const result = decide(
+      deliveryOrder({
+        fullyPaid: true,
+        hasRequestedDeliveryDateAlready: true,
+        requestedDeliveryDate: "2026-09-24",
+        customerClassification: classification("PREPAID", "CONSUMER"),
+      }),
+    );
+    expect(result.shouldRequest).toBe(false);
+    expect(result.reason).toBe("ALREADY_HAS_REQUESTED_DELIVERY_DATE");
+  });
+
+  it("H. cancelled -> no request, even with every other input perfect", () => {
+    const result = decide(
+      deliveryOrder({ isCancelled: true, fullyPaid: true, customerClassification: classification("PREPAID", "CONSUMER") }),
+    );
+    expect(result.shouldRequest).toBe(false);
+    expect(result.reason).toBe("ORDER_CANCELLED");
+  });
+
+  it("I. BUSINESS + PREPAID -> payment handling follows PREPAID, not customer_type", () => {
+    const unpaid = decide(deliveryOrder({ fullyPaid: false, customerClassification: classification("PREPAID", "BUSINESS") }));
+    const paid = decide(deliveryOrder({ fullyPaid: true, customerClassification: classification("PREPAID", "BUSINESS") }));
+    expect(unpaid.reason).toBe("WAITING_FOR_PAYMENT");
+    expect(paid.reason).toBe("READY_FOR_DELIVERY_REQUEST");
+  });
+
+  it("J. BUSINESS + ON_ACCOUNT -> payment handling follows ON_ACCOUNT", () => {
+    const unpaid = decide(deliveryOrder({ fullyPaid: false, customerClassification: classification("ON_ACCOUNT", "BUSINESS") }));
+    expect(unpaid.reason).toBe("READY_FOR_DELIVERY_REQUEST");
+    expect(unpaid.reason).not.toBe("WAITING_FOR_PAYMENT");
+  });
+});
+
+describe("evaluateDeliveryRequestDecision — what a positive decision actually requires", () => {
+  it("READY is reachable ONLY with a trusted DELIVERY resolution plus a known payment policy that is satisfied", () => {
+    // Every single-factor degradation of the one passing case must fail.
+    const passing = deliveryOrder({ fullyPaid: true, customerClassification: classification("PREPAID", "CONSUMER") });
+    const policy = deliveryPolicyForPaymentPolicy(passing.customerClassification.paymentPolicy);
+    expect(evaluateDeliveryRequestDecision({ order: passing, trigger: "ORDER_PAID", policy }).shouldRequest).toBe(true);
+
+    const degradations: OrderForHandoffResult[] = [
+      { ...passing, isCancelled: true },
+      { ...passing, hasShippingAddress: false },
+      { ...passing, hasRequestedDeliveryDateAlready: true, requestedDeliveryDate: "2026-09-24" },
+      { ...passing, fulfillmentResolution: { mode: "UNKNOWN", source: "NONE", conflict: false, diagnostic: "NONE" } },
+      { ...passing, fulfillmentResolution: { mode: "CUSTOMER_PICKUP", source: "EXPLICIT", conflict: false, diagnostic: "NONE" } },
+      { ...passing, fullyPaid: false },
+    ];
+    for (const order of degradations) {
+      expect(evaluateDeliveryRequestDecision({ order, trigger: "ORDER_PAID", policy }).shouldRequest).toBe(false);
+    }
+
+    // ...and losing the payment classification alone also blocks it.
+    expect(
+      evaluateDeliveryRequestDecision({ order: passing, trigger: "ORDER_PAID", policy: "UNKNOWN" }).shouldRequest,
+    ).toBe(false);
+  });
+
+  it("an Order with no customer can never be READY — its classification is UNKNOWN by construction", () => {
+    const noCustomer = deliveryOrder({
+      fullyPaid: true,
+      customerGid: null,
+      customerClassification: {
+        paymentPolicy: "UNKNOWN",
+        customerType: "UNKNOWN",
+        source: "NO_CUSTOMER",
+        paymentPolicyStatus: "ABSENT",
+        customerTypeStatus: "ABSENT",
+      },
+    });
     const result = evaluateDeliveryRequestDecision({
-      order: baseOrder({ fullyPaid: true, hasShippingAddress: true }),
+      order: noCustomer,
       trigger: "ORDER_PAID",
-      policy: "UNKNOWN",
+      policy: deliveryPolicyForPaymentPolicy(noCustomer.customerClassification.paymentPolicy),
     });
     expect(result.shouldRequest).toBe(false);
+    expect(result.reason).toBe("INSUFFICIENT_CLASSIFICATION");
+  });
+
+  it("an unreadable classification fails closed exactly like an absent one", () => {
+    const unreadable = deliveryOrder({
+      fullyPaid: true,
+      customerGid: "gid://shopify/Customer/1",
+      customerClassification: {
+        paymentPolicy: "UNKNOWN",
+        customerType: "UNKNOWN",
+        source: "UNREADABLE",
+        paymentPolicyStatus: "ABSENT",
+        customerTypeStatus: "ABSENT",
+      },
+    });
+    const result = evaluateDeliveryRequestDecision({
+      order: unreadable,
+      trigger: "ORDER_PAID",
+      policy: deliveryPolicyForPaymentPolicy(unreadable.customerClassification.paymentPolicy),
+    });
     expect(result.reason).toBe("INSUFFICIENT_CLASSIFICATION");
   });
 });
@@ -208,7 +425,7 @@ describe("evaluateDeliveryRequestDecision — trigger is recorded, never re-deri
   });
 
   it("is pure — never mutates the input order object", () => {
-    const order = baseOrder({ fullyPaid: true });
+    const order = deliveryOrder({ fullyPaid: true, customerClassification: classification("PREPAID") });
     const snapshot = JSON.stringify(order);
     evaluateDeliveryRequestDecision({ order, trigger: "ORDER_PAID", policy: "REGULAR_CONSUMER" });
     expect(JSON.stringify(order)).toBe(snapshot);

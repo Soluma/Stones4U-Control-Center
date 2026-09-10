@@ -16,6 +16,13 @@ function baseOrder(overrides: Partial<OrderForHandoffResult> = {}): OrderForHand
     nativeFulfillmentMode: "UNKNOWN",
     explicitFulfillmentMode: null,
     fulfillmentResolution: { mode: "UNKNOWN", source: "NONE", conflict: false, diagnostic: "NONE" },
+    customerClassification: {
+      paymentPolicy: "UNKNOWN",
+      customerType: "UNKNOWN",
+      source: "NO_CUSTOMER",
+      paymentPolicyStatus: "ABSENT",
+      customerTypeStatus: "ABSENT",
+    },
     ...overrides,
   };
 }

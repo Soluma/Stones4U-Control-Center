@@ -46,6 +46,49 @@ describe("customer form — lead-time copy", () => {
   });
 });
 
+// Phase 6W build instruction §26 — the legacy pre-payment Draft form had been
+// left on a browser-clock minimum, which is what produced the mismatch Fons
+// reported from production: the picker offered 11-09-2026 while the server's
+// earliest valid date was 15-09-2026. The server was never wrong; the picker
+// was offering what the server would refuse.
+describe("legacy Draft form — date minimum matches the authoritative server policy (§26)", () => {
+  const draftForm = readFileSync(
+    fileURLToPath(new URL("../src/app/delivery/[token]/DeliveryDateForm.tsx", import.meta.url)),
+    "utf-8",
+  );
+
+  it("uses the server-computed earliest date, never a client-side today", () => {
+    expect(draftForm).toContain("min={earliestDeliveryDate}");
+    // The minimum arrives as a prop rather than being derived in the browser.
+    expect(draftForm).toMatch(/earliestDeliveryDate:\s*string/);
+    expect(draftForm).not.toContain("todayIsoDate");
+    // Assert on code, not prose: the doc comment above the component
+    // deliberately explains what `new Date()` used to do here.
+    const code = draftForm.replace(/\/\/.*$/gm, "");
+    expect(code).not.toContain("new Date(");
+  });
+
+  it("the page computes it from the same inputs the POST handler validates with", () => {
+    const draftCallSite = page.slice(page.indexOf("<DeliveryDateForm"));
+    expect(draftCallSite).toContain("earliestDeliveryDate={getEarliestRequestedDeliveryDate({");
+    expect(draftCallSite).toContain("orderCreatedAt: handoff.createdAt");
+    // submitRequestedDeliveryDate() validates with exactly these two inputs.
+    expect(service).toContain("orderCreatedAt: handoff.createdAt");
+  });
+
+  it("stays date-only — §26 explicitly does NOT add truck access or a comment to the legacy form", () => {
+    expect(draftForm).not.toContain("grote vrachtwagen");
+    expect(draftForm).not.toContain("Opmerking voor de levering");
+    expect(draftForm).not.toContain("largeTruckAccessConfirmed");
+    expect(draftForm).not.toContain("deliveryComment");
+  });
+
+  it("leaves the payment redirect untouched", () => {
+    expect(draftForm).toContain("window.location.href = body.redirectUrl");
+    expect(draftForm).toContain("Leverdatum opslaan en verder naar factuur");
+  });
+});
+
 // Phase 6R — the form must show the customer their own last answers back.
 // Before this, reopening a link presented an empty comment box and an
 // unticked checkbox, so an otherwise innocent resubmission silently wiped

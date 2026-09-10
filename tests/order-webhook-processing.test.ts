@@ -62,6 +62,16 @@ describe("processOrderWebhookEvent", () => {
       nativeFulfillmentMode: "UNKNOWN",
       explicitFulfillmentMode: null,
       fulfillmentResolution: { mode: "UNKNOWN", source: "NONE", conflict: false, diagnostic: "NONE" },
+      // Phase 6W — the canonical Order read always carries a classification;
+      // an Order with no customer carries the fail-closed UNKNOWN one, which
+      // is what every pre-6W fixture here implicitly assumed.
+      customerClassification: {
+        paymentPolicy: "UNKNOWN",
+        customerType: "UNKNOWN",
+        source: "NO_CUSTOMER",
+        paymentPolicyStatus: "ABSENT",
+        customerTypeStatus: "ABSENT",
+      },
       ...overrides,
     };
   }

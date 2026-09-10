@@ -4,11 +4,31 @@ import { useState, type FormEvent } from "react";
 import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 
-function todayIsoDate(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-
-export function DeliveryDateForm({ token, currentValue }: { token: string; currentValue: string }) {
+// Phase 6W (build instruction §26) — the date minimum now comes from the
+// server, not from the browser's clock.
+//
+// Before this, `min` was `new Date()` in the visitor's own timezone: the
+// picker happily offered dates the server then rejected, which is exactly
+// what Fons saw in production (a prefilled 11-09-2026 while the earliest
+// valid date was 15-09-2026). The server has always been authoritative — it
+// validates every submission through validateRequestedDeliveryDate() — so
+// this only stops the form from *offering* what the server will refuse.
+//
+// `earliestDeliveryDate` must be computed with getEarliestRequestedDeliveryDate()
+// from the SAME inputs the POST handler validates with (the handoff's own
+// createdAt and now), or the picker and the validator can disagree again.
+//
+// This is the only change to the legacy Draft form: no truck-access
+// question, no delivery comment, and the payment redirect is untouched.
+export function DeliveryDateForm({
+  token,
+  currentValue,
+  earliestDeliveryDate,
+}: {
+  token: string;
+  currentValue: string;
+  earliestDeliveryDate: string;
+}) {
   const [date, setDate] = useState(currentValue);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -44,7 +64,7 @@ export function DeliveryDateForm({ token, currentValue }: { token: string; curre
         id="requestedDeliveryDate"
         type="date"
         required
-        min={todayIsoDate()}
+        min={earliestDeliveryDate}
         value={date}
         onChange={(e) => setDate(e.target.value)}
         hint="De gekozen datum is een voorkeursdatum. De definitieve leverdatum wordt door Stones4U bevestigd."

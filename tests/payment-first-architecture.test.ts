@@ -32,6 +32,7 @@ const service = read("../src/modules/delivery/delivery-handoff.service.ts");
 const decision = read("../src/modules/delivery/delivery-request-decision.ts");
 const orderMirror = read("../src/integrations/shopify/order-mirror.ts");
 const metafields = read("../src/integrations/shopify/order-logistics-metafields.ts");
+const webhookProcessing = read("../src/modules/delivery/order-webhook-processing.ts");
 
 describe("payment-first architecture — the REAL Order collects delivery logistics", () => {
   it("the Order form asks all three questions", () => {
@@ -127,8 +128,25 @@ describe("payment-first architecture — no pre-payment logistics machinery surv
 });
 
 describe("payment-first architecture — automation stays switched off", () => {
-  it("READY_FOR_DELIVERY_REQUEST remains unreachable", () => {
-    expect(decision).toMatch(/function hasTrustworthyDeliveryOrderClassification\(\): boolean \{\s*return false;/);
+  // Phase 6W changed WHERE this guarantee lives, deliberately, and the test
+  // moved with it rather than being deleted.
+  //
+  // Until 6W the pure decision engine could not return READY at all
+  // (`hasTrustworthyDeliveryOrderClassification()` was a hard `return false`).
+  // 6W gave the engine a genuine trusted input — OfferteApp's explicit
+  // fulfillment mode plus the Customer's payment policy — so the engine can
+  // now say "yes". What must stay switched off is ACTING on that, and that is
+  // now one explicit runtime constant.
+  it("runtime automation stays switched off — a positive decision creates nothing", () => {
+    expect(webhookProcessing).toMatch(/export const DELIVERY_REQUEST_AUTOMATION_ENABLED = false;/);
+    // The handoff-creating branch must be gated on the switch, not on the
+    // decision alone.
+    expect(webhookProcessing).toContain("if (decision.shouldRequest && DELIVERY_REQUEST_AUTOMATION_ENABLED)");
+  });
+
+  it("the pure engine's READY capability requires a trusted DELIVERY resolution — never a bare native mode", () => {
+    expect(decision).toContain('order.fulfillmentResolution.mode === "DELIVERY"');
+    expect(decision).not.toContain("nativeFulfillmentMode ===");
   });
 
   it("no delivery email sender or notification outbox exists", () => {

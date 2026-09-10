@@ -1,5 +1,7 @@
 import "server-only";
 import type { OrderForHandoffResult } from "@/integrations/shopify/order-for-handoff";
+import type { FulfillmentMode } from "@/integrations/shopify/fulfillment-mode";
+import type { PaymentPolicy } from "@/integrations/shopify/customer-classification";
 import { evaluateDeliveryDateEligibility } from "./eligibility";
 
 // Phase 6F — the single, typed business decision: "should Stones4U ask
@@ -52,6 +54,11 @@ export type DeliveryRequestDecisionReason =
   | "ORDER_CANCELLED"
   | "ALREADY_HAS_REQUESTED_DELIVERY_DATE"
   | "NO_SHIPPING_ADDRESS"
+  /** Phase 6W — the resolved Stones4U fulfillment mode is a definite
+   * non-delivery (CUSTOMER_PICKUP / RETAIL / NONE / PICKUP_POINT). Distinct
+   * from INSUFFICIENT_CLASSIFICATION on purpose: this is "we know, and the
+   * answer is no", not "we don't know". */
+  | "NOT_A_DELIVERY_ORDER"
   | "MANUAL_ONLY_POLICY"
   | "WAITING_FOR_PAYMENT"
   | "INSUFFICIENT_CLASSIFICATION"
@@ -80,21 +87,64 @@ const POLICY_REQUIRES_PAYMENT: Record<DeliveryCustomerPolicy, boolean> = {
  * Whether this Order is *positively* known to be a genuine, delivery-bound
  * customer order that Stones4U should proactively ask a date for.
  *
- * Still `false` for everything (build instruction §16). Phase 6A discovery
- * and the Phase 6C/6F re-checks found no trustworthy positive signal: tags
- * are empty on real orders, `sourceName` values are ambiguous, and a
- * shipping address is only a useful *negative* filter — its presence alone
- * proves nothing about whether this is a regular delivery order, a
- * staff-created one, or something else. A paid Order with a shipping
- * address and no delivery date must therefore still NOT silently become
- * eligible; it lands on INSUFFICIENT_CLASSIFICATION, which is the correct,
- * accepted outcome until a real signal exists. This function is the single
- * place a future positive rule gets added — it will need to inspect the
- * Order at that point, so its signature is expected to grow a parameter
- * then, not now.
+ * **Phase 6W — this is where the long-standing hard `return false` finally
+ * went away, and it is worth being precise about what replaced it.**
+ *
+ * From Phase 6C through 6V this function returned `false` unconditionally,
+ * because no trustworthy positive signal existed: tags are empty on real
+ * orders, `sourceName` is ambiguous, and a shipping address is only a useful
+ * *negative* filter. Phase 6I then proved the point in production — native
+ * SHIPPING was wrong about 29 real pickup Orders.
+ *
+ * What changed is not this function's caution but the input available to it.
+ * OfferteApp now states the mode explicitly at quote time, and the Phase 6K
+ * resolver only ever reports `DELIVERY` when an explicit, exactly-spelled
+ * Stones4U signal says so AND no trustworthy native negative contradicts it.
+ * A bare native SHIPPING still resolves to `UNKNOWN` and still fails here.
+ *
+ * So the rule is deliberately narrow: the resolved mode must be exactly
+ * `DELIVERY`. Every other mode — including `UNKNOWN` — is not a positive
+ * classification. This function does not soften, second-guess, or re-derive
+ * the resolver's answer; it only refuses to act on anything weaker.
  */
-function hasTrustworthyDeliveryOrderClassification(): boolean {
-  return false;
+function hasTrustworthyDeliveryOrderClassification(order: OrderForHandoffResult): boolean {
+  return order.fulfillmentResolution.mode === "DELIVERY";
+}
+
+/** Modes that are a definite, knowable "this is not a delivery". Separated
+ * from `UNKNOWN` so the recorded reason distinguishes "we know it's a pickup"
+ * from "we could not establish anything" — the two need different follow-up
+ * from staff (build instruction §8). */
+const DEFINITE_NON_DELIVERY_MODES: ReadonlySet<FulfillmentMode> = new Set<FulfillmentMode>([
+  "CUSTOMER_PICKUP",
+  "PICKUP_POINT",
+  "RETAIL",
+  "NONE",
+]);
+
+/**
+ * Maps the Customer's payment policy onto the decision engine's policy
+ * vocabulary (build instruction §9).
+ *
+ * NOTE ON THE NAME `REGULAR_CONSUMER`: it predates Phase 6W and describes
+ * *payment timing*, not consumer-versus-business. A BUSINESS customer with
+ * `payment_policy = betaling vooraf` maps here to `REGULAR_CONSUMER` and that
+ * is correct — build instruction §3 requires that BUSINESS never implies
+ * ON_ACCOUNT, and this mapping is the place that guarantee holds: it reads
+ * ONLY `paymentPolicy`. `customerType` is not a parameter of this function
+ * and cannot influence it. The name is misleading enough to be worth
+ * renaming in a later, dedicated phase; renaming it here would have churned a
+ * committed, working decision engine for cosmetics.
+ */
+export function deliveryPolicyForPaymentPolicy(paymentPolicy: PaymentPolicy): DeliveryCustomerPolicy {
+  switch (paymentPolicy) {
+    case "PREPAID":
+      return "REGULAR_CONSUMER";
+    case "ON_ACCOUNT":
+      return "B2B_ON_ACCOUNT";
+    case "UNKNOWN":
+      return "UNKNOWN";
+  }
 }
 
 /**
@@ -109,8 +159,16 @@ function hasTrustworthyDeliveryOrderClassification(): boolean {
  *    or an unattributed legacy value, under UNKNOWN/REGULAR_CONSUMER/
  *    B2B_ON_ACCOUNT/MANUAL_ONLY alike. Provenance is deliberately not
  *    tracked and never inferred, and this is the rule that stops Stones4U
- *    asking a customer a question it already knows the answer to.
+ *    asking a customer a question it already knows the answer to. Payment
+ *    happening later never reopens this (build instruction §10).
  * 3. No shipping address — a reliable negative for a delivery request.
+ * 3b. **Phase 6W — fulfillment classification.** The resolved Stones4U mode
+ *    must be exactly `DELIVERY`. A definite non-delivery (CUSTOMER_PICKUP,
+ *    PICKUP_POINT, RETAIL, NONE) reports `NOT_A_DELIVERY_ORDER`; `UNKNOWN`
+ *    reports `INSUFFICIENT_CLASSIFICATION`. Placed ahead of policy and
+ *    payment deliberately: whether Stones4U is delivering at all is a more
+ *    fundamental question than who pays when, and a pickup Order must never
+ *    be reported as merely `WAITING_FOR_PAYMENT`.
  * 4. Policy is `UNKNOWN` or `MANUAL_ONLY` — never asks automatically.
  *    `UNKNOWN` reports `INSUFFICIENT_CLASSIFICATION` (we don't know
  *    enough, not "we know this should never happen"); `MANUAL_ONLY`
@@ -121,8 +179,20 @@ function hasTrustworthyDeliveryOrderClassification(): boolean {
  * 5. `REGULAR_CONSUMER` specifically, and only that policy, gates on
  *    `fullyPaid` — unmet payment reports `WAITING_FOR_PAYMENT`.
  * 6. `B2B_ON_ACCOUNT` is never rejected merely for being unpaid.
- * 7. No trustworthy positive classification — the conservative default,
- *    and where every real Order still lands today regardless of policy.
+ * 7. No trustworthy positive classification — the conservative default.
+ *    Since 6W this is reachable-past only for a resolved `DELIVERY`, so in
+ *    practice step 3b already decided it; the check is kept as the single
+ *    named place a future additional positive requirement would go.
+ *
+ * **PURE ENGINE vs RUNTIME AUTOMATION (build instruction §12).** Since Phase
+ * 6W this function CAN return `READY_FOR_DELIVERY_REQUEST` — when, and only
+ * when, every trusted input lines up. That is a property of this pure
+ * function and says nothing about whether anything actually happens. Whether
+ * a positive decision is ever *acted on* is a separate, explicit runtime
+ * switch that lives in order-webhook-processing.ts and is OFF. Do not
+ * conflate the two: making the engine capable of saying "yes" is what makes
+ * it testable; the runtime switch is what keeps customers from being
+ * contacted.
  *
  * Pure: never calls Shopify, never touches the database, never sends
  * anything. Callers persist the result; they do not re-derive it.
@@ -148,6 +218,15 @@ export function evaluateDeliveryRequestDecision(input: {
     return { shouldRequest: false, reason: eligibility.reason, trigger };
   }
 
+  // Step 3b (Phase 6W): fulfillment classification, before policy/payment.
+  const fulfillmentMode = order.fulfillmentResolution.mode;
+  if (DEFINITE_NON_DELIVERY_MODES.has(fulfillmentMode)) {
+    return { shouldRequest: false, reason: "NOT_A_DELIVERY_ORDER", trigger };
+  }
+  if (fulfillmentMode !== "DELIVERY") {
+    return { shouldRequest: false, reason: "INSUFFICIENT_CLASSIFICATION", trigger };
+  }
+
   if (policy === "UNKNOWN") {
     return { shouldRequest: false, reason: "INSUFFICIENT_CLASSIFICATION", trigger };
   }
@@ -159,7 +238,7 @@ export function evaluateDeliveryRequestDecision(input: {
     return { shouldRequest: false, reason: "WAITING_FOR_PAYMENT", trigger };
   }
 
-  if (!hasTrustworthyDeliveryOrderClassification()) {
+  if (!hasTrustworthyDeliveryOrderClassification(order)) {
     return { shouldRequest: false, reason: "INSUFFICIENT_CLASSIFICATION", trigger };
   }
 
