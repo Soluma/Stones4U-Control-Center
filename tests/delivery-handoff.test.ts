@@ -13,6 +13,7 @@ import {
   submitRequestedDeliveryDateForOrder,
 } from "@/modules/delivery/delivery-handoff.service";
 import { DeliveryHandoffError } from "@/modules/delivery/errors";
+import { OrderCancelledError } from "@/integrations/shopify/errors";
 import { generatePublicToken, hashPublicToken } from "@/modules/delivery/token";
 import {
   createTestCustomerProfile,
@@ -166,6 +167,9 @@ describe("delivery-handoff.service", () => {
       const reloaded = await prisma.deliveryDateHandoff.findUniqueOrThrow({ where: { id: handoff.id } });
       expect(reloaded.status).toBe("MIRRORED");
       expect(reloaded.lastMirrorAt).not.toBeNull();
+      // Dispatch check (Phase 6D): a Draft handoff never reaches the Order
+      // mirror, even indirectly.
+      expect(mockOrderMirror).not.toHaveBeenCalled();
     });
 
     it("never calls the Shopify mirror at all when the date itself is invalid", async () => {
@@ -617,6 +621,28 @@ describe("delivery-handoff.service", () => {
 
       await expect(submitRequestedDeliveryDateForOrder(handoff, "not-a-date")).rejects.toThrow(DeliveryHandoffError);
       expect(mockOrderMirror).not.toHaveBeenCalled();
+    });
+
+    it("a cancelled Order fails closed — non-retryable, customer-friendly, never implies the date was accepted (build instruction §10)", async () => {
+      mockOrderMirror.mockRejectedValueOnce(new OrderCancelledError("gid://shopify/Order/1"));
+      const { handoff } = await createOrGetOrderDeliveryHandoff({
+        shopifyOrderGid: `gid://shopify/Order/${crypto.randomUUID()}`,
+        createdById: userId,
+      });
+      createdHandoffIds.push(handoff.id);
+
+      const error = await submitRequestedDeliveryDateForOrder(handoff, TOMORROW).catch((e) => e);
+      expect(error).toBeInstanceOf(DeliveryHandoffError);
+      expect((error as InstanceType<typeof DeliveryHandoffError>).retryable).toBe(false);
+      expect((error as Error).message).not.toMatch(/probeer het opnieuw/i);
+      expect((error as Error).message).not.toMatch(/gid:\/\/shopify/i);
+
+      const reloaded = await prisma.deliveryDateHandoff.findUniqueOrThrow({ where: { id: handoff.id } });
+      // Locally chosen date remains persisted per existing proven service
+      // semantics (build instruction §10) — cancellation is a mirror
+      // failure, not an input-validation failure.
+      expect(reloaded.requestedDeliveryDate?.toISOString().slice(0, 10)).toBe(TOMORROW);
+      expect(reloaded.status).toBe("ERROR");
     });
 
     it("a genuinely changed date writes a second Activity; resubmitting the same date keeps exactly one", async () => {

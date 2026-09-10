@@ -1,7 +1,7 @@
 import "server-only";
 import { shopifyGraphQL } from "./client";
 import { assertShopifyWriteAllowed } from "./write-safety-guard";
-import { ShopifyApiError } from "./errors";
+import { ShopifyApiError, OrderCancelledError } from "./errors";
 
 // Phase 6B — Order-equivalent of draft-order-mirror.ts. Deliberately its
 // own file, not a modification of the Draft version: Draft Orders and
@@ -84,7 +84,10 @@ export type OrderMirrorResult = { orderGid: string };
  * checked as part of the same read used for the merge, so a stale/
  * cancelled-in-the-meantime Order never gets a pointless or misleading
  * write (docs/ORDER-DELIVERY-HANDOFF-FOUNDATION.md §"Cancelled Order
- * safety").
+ * safety"). Throws the distinct `OrderCancelledError` for that case (Phase
+ * 6D) rather than the generic `ShopifyApiError` — the public submit flow
+ * needs to tell "permanently won't work" apart from "transient, safe to
+ * retry" without string-matching an error message.
  */
 export async function mirrorRequestedDeliveryDateToOrder(orderGid: string, dateIso: string): Promise<OrderMirrorResult> {
   await assertShopifyWriteAllowed();
@@ -94,7 +97,7 @@ export async function mirrorRequestedDeliveryDateToOrder(orderGid: string, dateI
     throw new ShopifyApiError(`Order ${orderGid} bestaat niet (meer) in Shopify.`);
   }
   if (current.order.cancelledAt) {
-    throw new ShopifyApiError(`Order ${orderGid} is geannuleerd — geen leverdatum-mirror mogelijk.`);
+    throw new OrderCancelledError(orderGid);
   }
 
   const merged = current.order.customAttributes.filter((a) => a.key !== REQUESTED_DELIVERY_DATE_ATTRIBUTE_KEY);

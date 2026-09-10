@@ -25,3 +25,14 @@ export class ShopifyShopIdentityMismatchError extends Error {
     this.name = "ShopifyShopIdentityMismatchError";
   }
 }
+
+// Phase 6D — a distinct type from the generic ShopifyApiError so callers
+// (submitRequestedDeliveryDateForOrder) can tell "this Order is cancelled,
+// resubmitting will never help" apart from a genuinely transient failure,
+// without resorting to fragile message-string matching.
+export class OrderCancelledError extends Error {
+  constructor(orderGid: string) {
+    super(`Order ${orderGid} is geannuleerd — geen leverdatum-mirror mogelijk.`);
+    this.name = "OrderCancelledError";
+  }
+}

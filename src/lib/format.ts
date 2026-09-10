@@ -28,6 +28,23 @@ export function formatDate(value: string | Date | null | undefined): string {
   }).format(date);
 }
 
+/** Full Dutch month name ("15 november 2026") — distinct from formatDate()'s
+ * abbreviated month ("15 nov. 2026"), used where the brief calls for the
+ * long form (Phase 6D public Order success state). Safe for a bare
+ * YYYY-MM-DD date-only string too: `new Date("2026-11-15")` parses as UTC
+ * midnight, and Amsterdam is always *ahead* of UTC, so formatting in
+ * AMSTERDAM_TZ never rolls the displayed calendar day backward. */
+export function formatDateLong(value: string | Date | null | undefined): string {
+  if (!value) return "—";
+  const date = typeof value === "string" ? new Date(value) : value;
+  return new Intl.DateTimeFormat("nl-NL", {
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+    timeZone: AMSTERDAM_TZ,
+  }).format(date);
+}
+
 export function formatDateTime(value: string | Date | null | undefined): string {
   if (!value) return "—";
   const date = typeof value === "string" ? new Date(value) : value;

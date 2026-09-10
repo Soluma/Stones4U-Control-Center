@@ -519,15 +519,89 @@ unregistered, the synthetic Order cancelled (`refund: false` — no payment
 was ever captured, so there was nothing to refund; not a payment/refund
 flow, a pure state cleanup).
 
-## Next phase boundary (Phase 6D and onward)
+## Post-order public UX (Phase 6D)
 
-Explicitly **not** built in Phase 6C: notification outbox, any provider
-integration, any transactional mail, any staff UI change, any public page
-change, a positive eligibility rule, production webhook registration. All
-of that is Phase 6D onward, per the Phase 6A discovery artifact's phased
-plan (6D: post-order public UX; 6E: notification outbox; 6F: manual staff
-fallback; 6G: full staging E2E including the customer-facing form; 6H:
-production readiness; 6I: production canary).
+The public `/delivery/[token]` flow now serves two fully separate
+experiences from one route, dispatched exclusively by the handoff's own
+persisted `commerceObjectType` — never a client-supplied value, a GID
+sniff, or a query param. `SHOPIFY_DRAFT_ORDER` keeps the original,
+byte-for-byte unmodified checkout-oriented experience (`DeliveryDateForm`,
+`submitRequestedDeliveryDate`, unchanged Mollie/invoice-redirect
+semantics). `SHOPIFY_ORDER` renders a dedicated post-order experience
+(`OrderDeliveryDateForm`) that never shows payment/checkout copy and never
+redirects — a successful submission replaces the form in place with an
+in-page "Bedankt!" success state showing the chosen date in Dutch
+(`formatDateLong()`, full month name, `Europe/Amsterdam`). An unrecognized
+`commerceObjectType` fails closed (404 on the page, a generic 500 on the
+POST route) rather than guessing.
+
+The POST route now returns a discriminated union
+(`src/modules/delivery/submit-response.ts`): `{outcome:"REDIRECT",
+redirectUrl}` for Draft, `{outcome:"COMPLETED", requestedDeliveryDate}` for
+Order — the Order shape structurally has no `redirectUrl` field at all, so
+there is no redirect authority to accidentally exercise on that path. The
+client branches only on the server-declared `outcome`, never on field
+presence.
+
+**Cancelled-Order semantics**: a new `OrderCancelledError` (distinct from
+the generic `ShopifyApiError`) lets `submitRequestedDeliveryDateForOrder()`
+tell "this Order is permanently cancelled" apart from a transient mirror
+failure. Either way, `status` is set to `ERROR` — never `MIRRORED` —
+*before* the error-type check runs, and the `MIRRORED` update later in the
+function is only reachable if the mirror call actually succeeded; a
+cancelled-Order submission structurally cannot leave the row looking
+successfully mirrored. The customer's locally persisted
+`requestedDeliveryDate` remains exactly what the existing `ERROR` status
+already means ("the most recent mirror attempt failed; requestedDeliveryDate
+is safely persisted locally regardless" — see the enum's own comment in
+schema.prisma) — a historical attempted preference, not a confirmed one.
+The customer sees "Deze bestelling is geannuleerd." and no success state.
+
+### Staging live E2E proof (2026-09-10, staging v41)
+
+Created a synthetic Order (`#1025`) via a custom, non-catalog draft-order
+line item (this app's OAuth scope has no `read_products`, discovered live)
+completed with no payment gateway, then created an Order handoff with the
+real, deployed `createOrGetOrderDeliveryHandoff()`. Proved, against the
+real deployed endpoints:
+
+- **Public page**: `200`, the Order-specific heading/context copy present,
+  `#1025` rendered as the public reference, zero payment-step copy, zero
+  Shopify GID exposed.
+- **First submit**: real `POST`, `200`, `{outcome:"COMPLETED",
+  requestedDeliveryDate:"2026-09-20"}`, no `redirectUrl` key in the
+  response at all.
+- **Order `customAttributes`**: exactly one `requested_delivery_date`,
+  value `2026-09-20`.
+- **Date change**: a second real submit changed the value to
+  `2026-09-30` — attribute count stayed at exactly one throughout, never
+  two.
+- **Activity**: `0` at every step — this synthetic handoff was created
+  without a linked `CustomerProfile` (deliberately, to avoid fabricating
+  one), so this proves the "no linked profile → no Activity" path live; the
+  "changed date → new Activity / same date → no duplicate" rule for a
+  *linked* profile is proven at the service-layer level in
+  `tests/delivery-handoff.test.ts` and was untouched this phase.
+- **Cleanup**: the Order was cancelled (`orderCancel`, no refund, no
+  restock, no customer notification — confirmed `cancelledAt` set
+  afterward) and the CRM handoff row deleted. One honest observation: the
+  completed Order showed `displayFinancialStatus: PAID` despite no payment
+  gateway ever being supplied to `draftOrderComplete` — this store appears
+  to default a gateway-less completion to paid; no payment-collection call
+  was made by any script.
+- **Production**: zero mutations, zero deploys. **OfferteApp**: not
+  touched.
+
+## Next phase boundary (Phase 6E and onward)
+
+Explicitly **not** built in Phase 6C or 6D: notification outbox, any
+provider integration, any transactional mail, a staff UI for creating
+Order-based handoffs (today only reachable via the unreachable webhook
+eligibility path or ad-hoc test tooling), a positive eligibility rule,
+production webhook registration. Per the Phase 6A discovery artifact's
+phased plan: 6E notification outbox; 6F manual staff fallback; 6G full
+staging E2E including the customer-facing form; 6H production readiness;
+6I production canary.
 
 ## Open decisions for Fons (unchanged from Phase 6A, still unresolved)
 

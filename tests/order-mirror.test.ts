@@ -231,7 +231,12 @@ describe("mirrorRequestedDeliveryDateToOrder — minimal query, read-merge-write
     vi.stubGlobal("fetch", fetchMock);
 
     const { mirrorRequestedDeliveryDateToOrder } = await import("@/integrations/shopify/order-mirror");
-    await expect(mirrorRequestedDeliveryDateToOrder("gid://shopify/Order/1", "2026-12-01")).rejects.toThrow(/geannuleerd/i);
+    const error = await mirrorRequestedDeliveryDateToOrder("gid://shopify/Order/1", "2026-12-01").catch((e) => e);
+    expect(error.message).toMatch(/geannuleerd/i);
+    // Phase 6D — a distinct type, not the generic ShopifyApiError, so
+    // submitRequestedDeliveryDateForOrder can fail closed with a
+    // non-retryable message instead of a generic "try again".
+    expect(error.name).toBe("OrderCancelledError");
 
     // Exactly token + identity + order-read — never a fourth call for the mutation.
     expect(fetchMock).toHaveBeenCalledTimes(3);

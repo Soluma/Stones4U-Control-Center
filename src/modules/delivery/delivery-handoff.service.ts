@@ -5,6 +5,7 @@ import { generatePublicToken, hashPublicToken } from "./token";
 import { DeliveryHandoffError } from "./errors";
 import { mirrorRequestedDeliveryDateToShopify } from "@/integrations/shopify/draft-order-mirror";
 import { mirrorRequestedDeliveryDateToOrder } from "@/integrations/shopify/order-mirror";
+import { OrderCancelledError } from "@/integrations/shopify/errors";
 import type { DeliveryDateHandoff, PaymentProvider } from "@/generated/prisma";
 
 // Quote Delivery Date Handoff — native Control Center implementation
@@ -444,6 +445,16 @@ export async function submitRequestedDeliveryDateForOrder(
       entityId: persisted.id,
       metadata: { errorCode },
     });
+    // A cancelled Order will never succeed on retry — fail closed with a
+    // clear, non-retryable message rather than implying the customer's
+    // date was (or could still be) accepted (build instruction §10).
+    // Every other mirror failure is treated as transient/retryable, same
+    // as the Draft flow.
+    if (error instanceof OrderCancelledError) {
+      throw new DeliveryHandoffError("Deze bestelling is geannuleerd. Neem contact op met Stones4U.", {
+        retryable: false,
+      });
+    }
     throw new DeliveryHandoffError("Kon uw leverdatum nog niet doorgeven aan het bestelsysteem. Probeer het opnieuw.", {
       retryable: true,
     });
