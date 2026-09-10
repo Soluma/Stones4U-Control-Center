@@ -748,19 +748,264 @@ cookie, or Authorization value must capture that response to a local file
 (`curl -o`) rather than print it, and only ever print values derived from
 it (status codes, booleans, non-secret fields).
 
-## Next phase boundary (Phase 6F and onward)
+## Payment trigger & delivery request decision engine (Phase 6F)
 
-Explicitly **not** built in Phase 6C, 6D, or 6E: notification outbox, any
+### Verified payment event (build instruction §3)
+
+Live-introspected against this API version's schema (never assumed):
+`ORDERS_PAID` exists in `WebhookSubscriptionTopic`, alongside
+`ORDERS_CANCELLED`/`ORDERS_CREATE`/`ORDERS_UPDATED`/`ORDERS_FULFILLED`/
+`ORDERS_PARTIALLY_FULFILLED`/etc. — the REST-style header value is
+`orders/paid`, mirroring the `orders/create` vs `ORDERS_CREATE` duality
+already confirmed for the first webhook in Phase 6C, so both spellings are
+accepted defensively here too. Payload shape and Order-id availability are
+identical to `orders/create` (a numeric `id`) — the same trusted-id
+derivation and canonical re-read apply unchanged. Retry semantics are
+Shopify's standard webhook contract (up to 8 attempts over 4 hours on a
+non-2xx response) — nothing payment-specific there. An Order created
+already paid still fires `ORDERS_CREATE` once and `ORDERS_PAID` once (two
+separate deliveries, handled identically by the shared idempotency layer);
+a Draft-to-Order completion is indistinguishable from any other Order
+creation at the webhook level.
+
+### Canonical payment-state field (build instruction §7)
+
+`Order.fullyPaid: Boolean` — live-introspected alongside several other
+candidates (`displayFinancialStatus`, `totalOutstandingSet`,
+`paymentCollectionDetails`, `netPaymentSet`, `unpaid`). `fullyPaid` is the
+minimal, direct answer to the one question this feature ever needs
+("is the regular-customer payment condition currently satisfied?") without
+fetching any amount, gateway name, or payment-method detail. The webhook
+is only ever a wake-up signal; `fullyPaid` is read fresh from the Order on
+every evaluation, never inferred from which webhook happened to arrive.
+
+### Technical event vs. business decision (build instruction §4)
+
+`ORDERS_CREATE` and `ORDERS_PAID` are **technical events** — "an Order now
+exists" / "this Order's payment state may have changed". Neither means
+"create a handoff" or "send an email"; each is only a trigger to
+re-evaluate the Order's current state via one shared function,
+`evaluateDeliveryRequestDecision()` (`src/modules/delivery/
+delivery-request-decision.ts`), which returns the **business decision**:
+`{ shouldRequest: boolean, reason: DeliveryRequestDecisionReason, trigger }`.
+No loose booleans are scattered through the webhook handlers — every
+route calls this one function and persists exactly what it returns.
+
+Priority order (build instruction §6), composing the existing Phase 6C
+eligibility engine rather than duplicating it:
+
+1. `ORDER_CANCELLED` — never, regardless of payment.
+2. `ALREADY_HAS_REQUESTED_DELIVERY_DATE` — never, **regardless of
+   provenance** (quote, Draft, staff, portal, B2B, unattributed legacy —
+   see Phase 6E's own provenance section above, unchanged this round).
+3. `NO_SHIPPING_ADDRESS` — a reliable negative.
+4. `MANUAL_ONLY_POLICY` — a policy that never asks automatically.
+5. `WAITING_FOR_PAYMENT` — the policy's payment precondition isn't met yet
+   (only `REGULAR_CONSUMER` has one; see below).
+6. `INSUFFICIENT_CLASSIFICATION` — the conservative default; every real
+   Order still lands here today, same as Phase 6C/6E. Shipping-address
+   presence is still never sufficient on its own for `shouldRequest: true`
+   (build instruction §16) — a paid Order with an address and no date is
+   still `INSUFFICIENT_CLASSIFICATION`, not a false positive.
+7. `READY_FOR_DELIVERY_REQUEST` — only reachable once a real positive
+   classification signal exists; still unreachable today.
+
+### `ORDERS_CREATE` / `ORDERS_PAID` relationship (build instruction §10)
+
+```
+ORDERS_CREATE:  requested date absent, regular flow, not paid
+                → WAITING_FOR_PAYMENT
+
+  (later)       staff/quote enters requested_delivery_date, OR
+                customer pays — either way, re-evaluation happens on
+                the next event, always against a fresh Shopify read
+
+ORDERS_PAID:    requested date still absent, paid, but no trustworthy
+                positive classification signal exists yet
+                → INSUFFICIENT_CLASSIFICATION (not READY — see below)
+```
+
+Both routes (`src/app/api/webhooks/shopify/orders-create/route.ts`,
+`.../orders-paid/route.ts`) are now thin wrappers around two shared
+modules — `intakeShopifyOrderWebhook()` (HMAC → shop identity → topic →
+webhook id → idempotency claim → payload parse → trusted Order id) and
+`processOrderWebhookEvent()` (canonical re-read → decision → persist) —
+differing only in their expected topic set and the `trigger` they record.
+This is the reuse build instruction §2 asked for: one implementation of
+the security/receipt path, not duplicated per topic.
+
+### Requested-date-before-payment scenarios (build instructions §11, §12)
+
+Both proven by dedicated tests (`tests/order-webhook-processing.test.ts`)
+and live on staging (below): a quote/Draft-stage date that survives onto
+the Order is caught by `ORDERS_PAID`'s own canonical re-read and
+suppresses the decision exactly the same as a date entered any other way
+— and critically, a date added *between* `ORDERS_CREATE` and `ORDERS_PAID`
+(e.g. staff enters it manually after the Order exists but before payment)
+is still caught, because the re-read is always fresh, never a cache of
+whatever `ORDERS_CREATE` saw.
+
+### Regular-customer rule and B2B compatibility (build instructions §13, §20)
+
+`DeliveryCustomerPolicy` is `UNKNOWN` / `REGULAR_CONSUMER` /
+`B2B_ON_ACCOUNT` / `MANUAL_ONLY`. **Final review found and fixed a real
+safety bug this round**: the original implementation made `policy` an
+*optional* argument that silently defaulted to `REGULAR_CONSUMER` when
+omitted — meaning every real webhook call today (none passed `policy`
+explicitly) was implicitly activating consumer payment semantics for
+Orders nobody had actually classified. Concretely, this meant an
+unclassified, unpaid B2B/on-account Order would have been reported
+`WAITING_FOR_PAYMENT` — a real business Order that has nothing to do with
+payment, mislabeled as if payment were the only thing blocking it.
+
+The fix: `policy` is now a **required** argument — TypeScript itself
+refuses a call that omits it (chosen deliberately over "optional,
+defaults to `UNKNOWN`": a required field is harder for a future caller to
+misuse by accident than a default they might not realize they need to
+override). `UNKNOWN` is a genuinely distinct, structurally separate value
+from `REGULAR_CONSUMER` — the decision function never consults `fullyPaid`
+at all for `UNKNOWN` (nor for `MANUAL_ONLY`), so an unpaid, unclassified
+Order always lands on `INSUFFICIENT_CLASSIFICATION`, never
+`WAITING_FOR_PAYMENT`. Every real webhook caller today passes `UNKNOWN`
+explicitly, since no per-Order classification source exists yet — this is
+now enforced by the type system, not a convention to remember.
+
+Only `REGULAR_CONSUMER` — and only that policy — gates on `fullyPaid`;
+`B2B_ON_ACCOUNT` is proven (unit test, and an integration test through the
+real webhook-processing path) to never be rejected merely for being
+unpaid. Order, payment, invoice and delivery remain four independent
+concepts — none of this phase's code ever equates them. Policy is never
+inferred from payment state, shipping-address presence, customer
+presence, `sourceName`, or `tags` — only a genuinely trustworthy future
+classifier may set anything other than `UNKNOWN`.
+
+### Classification gaps (build instruction §14)
+
+No new investigation was needed this round — Phase 6A/6C/6E already
+established, and nothing since has changed, that: `tags` are empty on
+real sampled orders; the two observed `sourceName` values are ambiguous;
+shipping-address presence is a reliable *negative* filter only, never
+positive proof of a genuine delivery order. `fullyPaid` (this round's new
+field) does not help classification either — it answers "has payment
+happened", not "is this a delivery-bound consumer order". Until a real
+signal exists (a tagging convention, a confirmed `sourceName` meaning, an
+order-type field), `hasTrustworthyDeliveryOrderClassification()` in
+`delivery-request-decision.ts` stays hard-coded `false` — the single place
+a future rule gets added.
+
+### Durable state design (build instruction §15)
+
+No new table. The decision is persisted on the existing
+`ShopifyWebhookEvent.eligible`/`eligibilityReason` columns (schema.prisma
+comment updated to reflect the broadened meaning) — the same "one
+technical receipt row, no separate workflow table" design Phase 6C
+established, now shared by both topics instead of reserved for one. A
+`WAITING_FOR_PAYMENT` outcome on `ORDERS_CREATE` is simply overwritten by
+whatever `ORDERS_PAID` (or a later re-delivery) determines next; there is
+no multi-row history of an Order's readiness over time, which is an
+accepted, deliberate simplicity trade-off for this phase.
+
+### Auto-handoff policy, manual fallback, Activity (build instructions §16, §17, §19)
+
+No handoff is auto-created for any real Order today — `shouldRequest`
+cannot yet be `true`. Phase 6E's staff Order handoff management is
+untouched and remains the deliberate manual fallback regardless of what
+the automatic decision says; an automatic `INSUFFICIENT_CLASSIFICATION` or
+`WAITING_FOR_PAYMENT` never blocks a staff member from creating a handoff
+by hand where they know better. No new staff UI was added — a readiness
+label was judged not clearly useful yet, since nothing today ever reaches
+`READY_FOR_DELIVERY_REQUEST` for staff to be informed about. Neither
+webhook creates a `DELIVERY_DATE_REQUESTED` Activity or any other
+Customer 360-visible record — technical outcomes live only on
+`ShopifyWebhookEvent`/`AuditEvent`, proven by a dedicated test.
+
+### Staging live E2E proof (2026-09-10, staging v44)
+
+Registered `ORDERS_PAID` only (never `ORDERS_CREATE`, per this round's
+scope — the earlier subscription stays unregistered, matching Phase 6C's
+own cleanup policy) against `stones4u-dev.myshopify.com`. Discovery made
+during setup: on this dev store, completing a gateway-less draft order
+(the same technique Phase 6D/6E/6F all use for a synthetic test Order)
+already yields `fullyPaid: true` immediately — so both proofs below are
+**real, unprompted `orders/paid` webhook deliveries** that Shopify itself
+fired as part of order completion, never a hand-crafted request (the one
+explicit ask of build instruction §21). Two synthetic Orders:
+
+- **Normal path** (`#1028`): a fresh synthetic Order, no shipping address.
+  The real `orders/paid` webhook arrived (a genuine UUID webhook id), HMAC
+  and shop identity verified, claimed exactly once, canonical re-read
+  confirmed `fullyPaid: true`, decision persisted as `NO_SHIPPING_ADDRESS`
+  — a correctly-suppressed outcome for this order's real shape (checked
+  before the payment/classification steps in the priority order). Zero
+  handoffs, zero emails.
+- **Known-date path** (`#1029`, **critical scenario, build instruction
+  §22**): `requested_delivery_date: "2026-09-24"` set on the Draft *before*
+  completion, simulating a quote/Draft-stage value surviving onto the
+  Order. A second, genuinely distinct real webhook delivery arrived;
+  canonical re-read saw the existing date and persisted
+  `ALREADY_HAS_REQUESTED_DELIVERY_DATE` — no handoff, no notification, no
+  overwrite of the existing Shopify attribute.
+- **Duplicate delivery** (build instruction §23): the exact `#1029`
+  webhook id was replayed with a freshly, validly HMAC-signed body (signed
+  in-process on the container using the real `SHOPIFY_CLIENT_SECRET`,
+  which was never logged or printed) — `200 {"status":"already
+  processed"}`, no reprocessing, proving the claim keys on
+  `(shopDomain, webhookId)` alone and rejects a replay before the body is
+  even parsed.
+
+Cleanup: both synthetic Orders cancelled (no refund, no restock, no
+customer notification), the `ORDERS_PAID` subscription unregistered and
+confirmed empty on read-back, all ephemeral scripts removed from the
+container's writable layer. Full mutation accounting is in the Phase 6F
+final chat report, not duplicated here to avoid drift between the two.
+
+### Final-review policy fix — staging v45, no new live Shopify proof needed
+
+The `policy`-defaults-to-`REGULAR_CONSUMER` bug (see the corrected
+"Regular-customer rule and B2B compatibility" section above) was caught
+and fixed in final review, deployed to staging as **v45**. Per this
+round's own explicit guidance, no new synthetic paid Order was created to
+re-prove already-proven Shopify webhook mechanics (HMAC, shop identity,
+idempotency, canonical re-read) that this fix does not touch — those stay
+proven by the `#1028`/`#1029` live proof above, which remains accurate
+unchanged (`NO_SHIPPING_ADDRESS` and `ALREADY_HAS_REQUESTED_DELIVERY_DATE`
+both fire before policy is ever consulted, so neither result depends on
+the fix either way). Instead: 767 tests (29 for the decision engine and
+webhook processing alone) prove the fix at the source level, and the
+deployed v45 artifact was confirmed on staging — without any Shopify
+interaction — to genuinely contain it, by inspecting the compiled server
+bundle directly (`grep` for the `POLICY_REQUIRES_PAYMENT` map and the
+`policy === "UNKNOWN"` branch in `.next/server/chunks/`), not merely
+trusting that the deploy pipeline carried the local fix across.
+
+## Next phase boundary (revised this round — read before planning 6G)
+
+Explicitly **not** built in Phase 6C through 6F: notification outbox, any
 provider integration, any transactional mail, the quote-stage
 `requested_delivery_date` field (OfferteApp, untouched), any
-requested-delivery-date provenance/source tracking, the payment-trigger
-automation, B2B trigger logic, a positive eligibility rule, production
-webhook registration. Per the Phase 6A discovery artifact's phased plan:
-6E manual staff fallback (this round); 6F notification outbox; 6G full
-staging E2E including the customer-facing form; 6H production readiness;
-6I production canary — the exact 6E/6F pairing was swapped from the
-original plan once the manual-fallback work turned out to depend on this
-round's business-rule clarification first.
+requested-delivery-date provenance/source tracking, B2B trigger logic, a
+positive Order classification rule, production webhook registration of
+any topic.
+
+**The notification outbox is explicitly NOT the recommended next step**,
+correcting Phase 6F's own original final-report recommendation. The
+reason is structural, not sequencing preference: `READY_FOR_DELIVERY_REQUEST`
+is *intentionally* unreachable — `hasTrustworthyDeliveryOrderClassification()`
+is hard-coded `false` because no reliable signal exists yet for "which
+Orders should receive an automatic delivery-date request". An outbox built
+now would have no real Order to ever send for; its correctness could not
+be meaningfully verified against anything but the always-`false` case.
+
+**The recommended next phase is Delivery Order Classification Discovery /
+Design** — establishing a genuinely trustworthy signal (a tagging
+convention, a confirmed `sourceName` meaning, a dedicated order-type
+field, or something not yet considered) for "this is a regular,
+delivery-bound consumer Order" before any notification-sending
+infrastructure is built. Only once that exists does building the outbox
+become meaningful work with a real business outcome to verify against.
+The B2B/on-account classifier is a related, likely-later question — it
+needs its own signal and its own non-payment readiness rule, and per the
+brief's own boundary is explicitly out of scope until then.
 
 ## Open decisions for Fons (unchanged from Phase 6A, still unresolved)
 

@@ -12,6 +12,7 @@ function baseOrder(overrides: Partial<OrderForHandoffResult> = {}): OrderForHand
     hasShippingAddress: true,
     hasRequestedDeliveryDateAlready: false,
     requestedDeliveryDate: null,
+    fullyPaid: false,
     ...overrides,
   };
 }

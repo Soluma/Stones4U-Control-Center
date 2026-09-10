@@ -367,6 +367,7 @@ describe("getOrderForHandoff — Phase 6B Order read client", () => {
             name: "#1234",
             cancelledAt: null,
             displayFulfillmentStatus: "UNFULFILLED",
+            fullyPaid: false,
             customer: null,
             shippingAddress: null,
             customAttributes: [],
@@ -388,6 +389,7 @@ describe("getOrderForHandoff — Phase 6B Order read client", () => {
       hasShippingAddress: false,
       hasRequestedDeliveryDateAlready: false,
       requestedDeliveryDate: null,
+      fullyPaid: false,
     });
   });
 
@@ -402,6 +404,7 @@ describe("getOrderForHandoff — Phase 6B Order read client", () => {
             name: "#5678",
             cancelledAt: "2026-09-01T00:00:00Z",
             displayFulfillmentStatus: "FULFILLED",
+            fullyPaid: true,
             customer: { id: "gid://shopify/Customer/9" },
             shippingAddress: { city: "Tilburg" },
             customAttributes: [{ key: "requested_delivery_date", value: "2026-09-01" }],
@@ -423,6 +426,7 @@ describe("getOrderForHandoff — Phase 6B Order read client", () => {
       hasShippingAddress: true,
       hasRequestedDeliveryDateAlready: true,
       requestedDeliveryDate: "2026-09-01",
+      fullyPaid: true,
     });
   });
 

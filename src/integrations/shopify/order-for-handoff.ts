@@ -24,6 +24,7 @@ const ORDER_FOR_HANDOFF_QUERY = /* GraphQL */ `
       name
       cancelledAt
       displayFulfillmentStatus
+      fullyPaid
       customer {
         id
       }
@@ -44,6 +45,7 @@ type RawOrderForHandoff = {
     name: string;
     cancelledAt: string | null;
     displayFulfillmentStatus: string;
+    fullyPaid: boolean;
     customer: { id: string } | null;
     shippingAddress: { city: string | null } | null;
     customAttributes: { key: string; value: string }[];
@@ -70,6 +72,15 @@ export type OrderForHandoffResult = {
   // createOrderDeliveryHandoffForStaff() for the full provenance-neutral
   // reasoning.
   requestedDeliveryDate: string | null;
+  // Phase 6F — the canonical, current payment state, read live from
+  // Shopify rather than inferred from which webhook woke us up (a webhook
+  // is only a wake-up signal; the Order read is the source of truth —
+  // build instruction §7). Deliberately the single `fullyPaid` boolean and
+  // nothing else: no amounts, no gateway names, no payment-method or
+  // financial detail is fetched or stored, because the only question this
+  // feature ever needs answered is "is the regular-customer payment
+  // condition currently satisfied?".
+  fullyPaid: boolean;
 };
 
 /** Read-only. Never called during the public /delivery/[token] flow — only
@@ -89,5 +100,6 @@ export async function getOrderForHandoff(orderGid: string): Promise<OrderForHand
     hasShippingAddress: !!data.order.shippingAddress,
     hasRequestedDeliveryDateAlready: requestedDeliveryDateAttribute !== undefined,
     requestedDeliveryDate: requestedDeliveryDateAttribute?.value ?? null,
+    fullyPaid: data.order.fullyPaid,
   };
 }

@@ -980,17 +980,26 @@ model ShopifyWebhookEvent {
 
   status ShopifyWebhookEventStatus @default(RECEIVED)
 
-  // Structured eligibility outcome (Phase 6C §"Eligibility engine") —
-  // populated once the pipeline reaches that step; null while still
-  // RECEIVED or if HMAC/shop-identity/topic verification rejected the
-  // request before ever reaching business logic (those rejections are not
-  // persisted here at all — see the route's own doc comment for why).
+  // Structured decision outcome — originally the Phase 6C eligibility
+  // result, broadened in Phase 6F to the general delivery-request decision
+  // (evaluateDeliveryRequestDecision(); `eligible` = `shouldRequest`,
+  // `eligibilityReason` = the decision's `reason`, e.g.
+  // "WAITING_FOR_PAYMENT"/"ALREADY_HAS_REQUESTED_DELIVERY_DATE"). Field
+  // names kept as-is deliberately — this is the same "one technical
+  // receipt row, no separate workflow table" design Phase 6C already
+  // established (docs/ORDER-DELIVERY-HANDOFF-FOUNDATION.md §"Payment
+  // trigger"), just now shared by ORDERS_CREATE and ORDERS_PAID rather
+  // than a single topic. Populated once the pipeline reaches that step;
+  // null while still RECEIVED or if HMAC/shop-identity/topic verification
+  // rejected the request before ever reaching business logic (those
+  // rejections are not persisted here at all — see the routes' own doc
+  // comments for why).
   eligible         Boolean?
   eligibilityReason String?
 
-  // The DeliveryDateHandoff created as a result, if the eligibility
-  // decision was ever genuinely `eligible = true` (never happens yet in
-  // Phase 6C — see the eligibility engine's own doc comment).
+  // The DeliveryDateHandoff created as a result, if the decision was ever
+  // genuinely `shouldRequest = true` (still never happens as of Phase 6F —
+  // see delivery-request-decision.ts's own doc comment).
   createdHandoffId String?
 
   // Short category string only, same discipline as
