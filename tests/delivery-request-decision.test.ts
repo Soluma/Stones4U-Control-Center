@@ -15,7 +15,9 @@ function baseOrder(overrides: Partial<OrderForHandoffResult> = {}): OrderForHand
     hasRequestedDeliveryDateAlready: false,
     requestedDeliveryDate: null,
     fullyPaid: false,
-    fulfillmentMode: "UNKNOWN",
+    nativeFulfillmentMode: "UNKNOWN",
+    explicitFulfillmentMode: null,
+    fulfillmentResolution: { mode: "UNKNOWN", source: "NONE", conflict: false, diagnostic: "NONE" },
     ...overrides,
   };
 }

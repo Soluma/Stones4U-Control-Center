@@ -392,7 +392,9 @@ describe("getOrderForHandoff — Phase 6B Order read client", () => {
       hasRequestedDeliveryDateAlready: false,
       requestedDeliveryDate: null,
       fullyPaid: false,
-      fulfillmentMode: "UNKNOWN",
+      nativeFulfillmentMode: "UNKNOWN",
+      explicitFulfillmentMode: null,
+      fulfillmentResolution: { mode: "UNKNOWN", source: "NONE", conflict: false, diagnostic: "NONE" },
     });
   });
 
@@ -438,7 +440,10 @@ describe("getOrderForHandoff — Phase 6B Order read client", () => {
       hasRequestedDeliveryDateAlready: true,
       requestedDeliveryDate: "2026-09-01",
       fullyPaid: true,
-      fulfillmentMode: "DELIVERY",
+      nativeFulfillmentMode: "DELIVERY",
+      explicitFulfillmentMode: null,
+      // Layer 1 says DELIVERY; Layer 2 refuses to act on that alone.
+      fulfillmentResolution: { mode: "UNKNOWN", source: "NONE", conflict: false, diagnostic: "NATIVE_NOT_TRUSTED" },
     });
   });
 
@@ -473,7 +478,7 @@ describe("getOrderForHandoff — Phase 6B Order read client", () => {
     const { getOrderForHandoff } = await import("@/integrations/shopify/order-for-handoff");
     const result = await getOrderForHandoff("gid://shopify/Order/3");
 
-    expect(result?.fulfillmentMode).toBe("UNKNOWN");
+    expect(result?.nativeFulfillmentMode).toBe("UNKNOWN");
   });
 
   it("a truncated fulfillmentOrders connection reads as UNKNOWN even when every visible FulfillmentOrder agrees", async () => {
@@ -504,7 +509,137 @@ describe("getOrderForHandoff — Phase 6B Order read client", () => {
     const { getOrderForHandoff } = await import("@/integrations/shopify/order-for-handoff");
     const result = await getOrderForHandoff("gid://shopify/Order/4");
 
-    expect(result?.fulfillmentMode).toBe("UNKNOWN");
+    expect(result?.nativeFulfillmentMode).toBe("UNKNOWN");
+  });
+
+  // Phase 6K — the explicit Stones4U contract, read off the same
+  // customAttributes the Order query already fetches (no new query fields,
+  // no new scope, no PII).
+  function orderResponseWithAttributes(customAttributes: { key: string; value: string }[], methodType: string | null) {
+    return jsonResponse({
+      data: {
+        order: {
+          id: "gid://shopify/Order/7",
+          name: "#7000",
+          cancelledAt: null,
+          displayFulfillmentStatus: "UNFULFILLED",
+          fullyPaid: true,
+          customer: null,
+          shippingAddress: { __typename: "MailingAddress" },
+          customAttributes,
+          fulfillmentOrders: {
+            pageInfo: { hasNextPage: false },
+            edges: methodType === null ? [] : [{ node: { deliveryMethod: { methodType } } }],
+          },
+        },
+      },
+    });
+  }
+
+  async function readOrderWith(customAttributes: { key: string; value: string }[], methodType: string | null) {
+    setShopifyEnv();
+    const fetchMock = vi.fn();
+    fetchMock.mockResolvedValueOnce(tokenResponse()).mockResolvedValueOnce(orderResponseWithAttributes(customAttributes, methodType));
+    vi.stubGlobal("fetch", fetchMock);
+    const { getOrderForHandoff } = await import("@/integrations/shopify/order-for-handoff");
+    const result = await getOrderForHandoff("gid://shopify/Order/7");
+    return { result, fetchMock };
+  }
+
+  it("extracts an explicit CUSTOMER_PICKUP and lets it override an untrusted native DELIVERY (the Phase 6I 'Ophalen' case)", async () => {
+    const { result } = await readOrderWith([{ key: "stones4u_fulfillment_mode", value: "CUSTOMER_PICKUP" }], "SHIPPING");
+
+    expect(result?.nativeFulfillmentMode).toBe("DELIVERY");
+    expect(result?.explicitFulfillmentMode).toBe("CUSTOMER_PICKUP");
+    expect(result?.fulfillmentResolution).toEqual({
+      mode: "CUSTOMER_PICKUP",
+      source: "EXPLICIT",
+      conflict: false,
+      diagnostic: "EXPLICIT_OVERRODE_NATIVE",
+    });
+  });
+
+  it("an explicit DELIVERY agreeing with native SHIPPING resolves to DELIVERY via the explicit signal", async () => {
+    const { result } = await readOrderWith([{ key: "stones4u_fulfillment_mode", value: "DELIVERY" }], "SHIPPING");
+
+    expect(result?.explicitFulfillmentMode).toBe("DELIVERY");
+    expect(result?.fulfillmentResolution.mode).toBe("DELIVERY");
+    expect(result?.fulfillmentResolution.source).toBe("EXPLICIT");
+  });
+
+  it("an explicit DELIVERY contradicted by native PICK_UP resolves to UNKNOWN with a conflict", async () => {
+    const { result } = await readOrderWith([{ key: "stones4u_fulfillment_mode", value: "DELIVERY" }], "PICK_UP");
+
+    expect(result?.fulfillmentResolution).toEqual({
+      mode: "UNKNOWN",
+      source: "NONE",
+      conflict: true,
+      diagnostic: "EXPLICIT_DELIVERY_CONTRADICTED",
+    });
+  });
+
+  it("keeps requested_delivery_date intact alongside the fulfillment mode, and ignores unrelated attributes", async () => {
+    const { result } = await readOrderWith(
+      [
+        { key: "requested_delivery_date", value: "2026-09-24" },
+        { key: "some_other_app_key", value: "irrelevant" },
+        { key: "stones4u_fulfillment_mode", value: "DELIVERY" },
+      ],
+      "SHIPPING",
+    );
+
+    expect(result?.hasRequestedDeliveryDateAlready).toBe(true);
+    expect(result?.requestedDeliveryDate).toBe("2026-09-24");
+    expect(result?.explicitFulfillmentMode).toBe("DELIVERY");
+  });
+
+  it("a duplicated stones4u_fulfillment_mode key never yields DELIVERY — resolves UNKNOWN with a conflict", async () => {
+    const { result } = await readOrderWith(
+      [
+        { key: "stones4u_fulfillment_mode", value: "DELIVERY" },
+        { key: "stones4u_fulfillment_mode", value: "DELIVERY" },
+      ],
+      "SHIPPING",
+    );
+
+    expect(result?.explicitFulfillmentMode).toBeNull();
+    expect(result?.fulfillmentResolution).toEqual({
+      mode: "UNKNOWN",
+      source: "NONE",
+      conflict: true,
+      diagnostic: "DUPLICATE_EXPLICIT_KEY",
+    });
+  });
+
+  it("an invalid explicit value never yields DELIVERY — resolves UNKNOWN with a conflict", async () => {
+    const { result } = await readOrderWith([{ key: "stones4u_fulfillment_mode", value: "BEZORGEN" }], "SHIPPING");
+
+    expect(result?.explicitFulfillmentMode).toBeNull();
+    expect(result?.fulfillmentResolution.mode).toBe("UNKNOWN");
+    expect(result?.fulfillmentResolution.diagnostic).toBe("INVALID_EXPLICIT_VALUE");
+  });
+
+  it("a duplicated requested_delivery_date keeps its existing first-match-wins behaviour (deliberately unchanged in 6K)", async () => {
+    const { result } = await readOrderWith(
+      [
+        { key: "requested_delivery_date", value: "2026-09-24" },
+        { key: "requested_delivery_date", value: "2026-10-31" },
+      ],
+      "SHIPPING",
+    );
+
+    expect(result?.hasRequestedDeliveryDateAlready).toBe(true);
+    expect(result?.requestedDeliveryDate).toBe("2026-09-24");
+  });
+
+  it("reads the contract without any mutation and without requesting customer PII", async () => {
+    const { fetchMock } = await readOrderWith([{ key: "stones4u_fulfillment_mode", value: "RETAIL" }], "RETAIL");
+
+    const body = JSON.parse(fetchMock.mock.calls[1]![1].body as string);
+    expect(body.query).not.toMatch(/mutation/i);
+    expect(body.query).not.toMatch(/email|phone|firstName|lastName|address1/i);
+    // Exactly the token request plus the single read — no write-guard call.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("returns null for an unknown/nonexistent Order, never throws", async () => {

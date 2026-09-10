@@ -1241,6 +1241,144 @@ automation, no `requested_delivery_date` write, no production mutation, no
 OfferteApp interaction this round. Signal verification and typed foundation
 only.
 
+## Stones4U fulfillment contract (Phase 6K)
+
+### Why an explicit signal was needed — Phase 6I production evidence
+
+A read-only verification against 400 real production Orders
+(`9h7x2c-ku.myshopify.com`, 2026-04-13 → 2026-09-10) established that
+Shopify's own `DeliveryMethodType` describes how *Shopify* is configured,
+not what Stones4U is actually doing:
+
+- **Native `SHIPPING` cannot be trusted as positive evidence of delivery.**
+  29 genuinely-collected Orders ("Ophalen — Ophalen magazijn Beringe")
+  produced native `SHIPPING`, because staff type a free-text shipping line
+  instead of using Shopify's native local-pickup mechanism, and `SHIPPING`
+  is simply Shopify's default for "these line items are physical goods"
+  (root cause proven on staging in 6H: `methodType` follows the line item's
+  `requiresShipping` flag). **26 of those 29 were paid** — acting on the
+  native signal would have asked 26 customers when to deliver goods they
+  were collecting themselves. All 29 carried a shipping address, so the
+  existing `NO_SHIPPING_ADDRESS` filter does not catch them either.
+- **Native hard negatives are trustworthy.** `PICK_UP` (14 Orders),
+  `RETAIL` (15) and `NONE` (32) had zero observed false positives. All three
+  are non-delivery, so acting on them can only ever *stop* automation.
+- **The native pickup mechanism was abandoned.** Correct `PICK_UP` Orders
+  run 2026-04-15 → 2026-06-10; every pickup since is a typed shipping line
+  (2026-05-01 → 2026-09-08). This is current practice, not a legacy
+  artifact — which is also why a process-only fix was rejected in 6J: it had
+  already been tried and drifted.
+- **Attribution does not rescue it.** The misclassified Orders come from
+  "Draft Orders" and "OfferteApp" — the same sources as genuine deliveries.
+- `LOCAL` and `PICKUP_POINT` were **never observed** in production.
+
+### Two layers: translation is not authority
+
+| | Layer 1 — `fulfillment-mode.ts` | Layer 2 — `fulfillment-contract.ts` |
+|---|---|---|
+| Question | "What does Shopify mean?" | "What may Stones4U act on?" |
+| Input | `DeliveryMethodType` | explicit signal + Layer-1 result |
+| `LOCAL` | `DELIVERY` (correct translation) | not trusted alone → `UNKNOWN` |
+| Changed in 6K | **No** | new |
+
+Layer 1 is unchanged and stays correct as a *translation*. Layer 2 may
+legitimately answer `UNKNOWN` for an Order whose Layer-1 translation is a
+confident `DELIVERY`. Conflating the two is the exact mistake 6I caught.
+
+### The contract
+
+Carrier: a Shopify Order/DraftOrder **customAttribute** (chosen in 6J over a
+metafield — Draft→Order propagation of customAttributes is already proven
+here via `requested_delivery_date`, whereas Shopify's draft-order metafield
+copy requires matching definitions on both owner types and is undocumented
+for API-created drafts).
+
+```
+key    stones4u_fulfillment_mode      (exact, case-sensitive)
+values DELIVERY | CUSTOMER_PICKUP | PICKUP_POINT | RETAIL | NONE
+```
+
+`UNKNOWN` is deliberately **not** writable — it is a read outcome meaning
+"we could not establish this", never something a writer states.
+
+**Normalization is explicitly defined, not guessed**: exactly two lossless
+transformations are applied on read — trim surrounding whitespace, then
+upper-case. So `"DELIVERY "` and `"delivery"` both read as `DELIVERY`.
+Nothing else is accepted: `"BEZORGEN"`, `"PICKUP"` and `"Delivery Mode"` are
+`INVALID`, never coerced. Writes must emit a canonical value verbatim.
+
+| Read situation | Outcome |
+|---|---|
+| key absent, or value empty/whitespace | `ABSENT` |
+| value matches a canonical mode after normalization | `VALID` |
+| value present but unrecognized | `INVALID` (conflict) |
+| key present more than once | `DUPLICATE` (conflict) — never resolved by picking one |
+
+### Authority rules (Layer 2)
+
+| Explicit | Native | Resolved | Source | Conflict |
+|---|---|---|---|---|
+| `DELIVERY` | `DELIVERY` / `UNKNOWN` | `DELIVERY` | EXPLICIT | no |
+| `DELIVERY` | any non-delivery | `UNKNOWN` | NONE | **yes** |
+| non-delivery mode | anything | that mode | EXPLICIT | no |
+| `INVALID` / `DUPLICATE` | anything | `UNKNOWN` | NONE | **yes** |
+| absent | `CUSTOMER_PICKUP` / `RETAIL` / `NONE` | that mode | NATIVE | no |
+| absent | `DELIVERY` / `PICKUP_POINT` | `UNKNOWN` | NONE | no |
+| absent | `UNKNOWN` | `UNKNOWN` | NONE | no |
+
+**The asymmetry is a deliberate safety property.** Resolving to `DELIVERY`
+requires strictly stronger evidence than resolving to any non-delivery mode,
+because a wrong `DELIVERY` may contact a customer incorrectly (irreversible,
+customer-visible) while a wrong non-delivery merely stops automation and
+leaves staff to act manually (cheap, recoverable). Hence: an explicit
+non-delivery always wins; an explicit `DELIVERY` must not be contradicted;
+and a bare native `DELIVERY` is never enough.
+
+An untrustworthy explicit value resolves to `UNKNOWN` rather than falling
+back to the native mode — `UNKNOWN` routes to `INSUFFICIENT_CLASSIFICATION`,
+which is exactly the "a human should look at this" outcome a corrupted value
+deserves.
+
+`native` always arrives as the conservatively aggregated result of
+`aggregateFulfillmentMode()`, so a mixed-fulfillment Order enters Layer 2 as
+`UNKNOWN` and is never un-mixed afterwards.
+
+### Duplicate keys — a deliberate asymmetry with `requested_delivery_date`
+
+A duplicated `stones4u_fulfillment_mode` fails closed, while a duplicated
+`requested_delivery_date` keeps its existing first-match-wins behaviour
+(unchanged since 6E). This is not an inconsistency: a duplicated date can
+only ever *suppress* a request — safe whichever value wins — whereas a
+duplicated mode could *enable* customer contact, so only the latter has to
+fail closed.
+
+### Historical Orders
+
+**No backfill.** 6I proved that treating historical `SHIPPING` as `DELIVERY`
+would mislabel 29 real pickups. No migration is needed either: the mode is
+derived on read, so historical Orders simply resolve to `UNKNOWN` unless a
+trusted native negative applies.
+
+### Customer visibility
+
+A customAttribute is operational metadata that Shopify surfaces and themes
+*can* render (order status page, templates), the same as the existing
+`requested_delivery_date`. Accepted by Fons in 6J. No customer-facing UI or
+template change was made, and **Shopify's invoice/factuur communication
+remains completely independent and unchanged** — Control Center's
+fulfillment/delivery-date communication is additional only, and nothing in
+this contract touches invoice behavior.
+
+### Still out of scope after 6K
+
+No writer exists yet — no staff editor, no Order/Draft write endpoint, no
+OfferteApp or Source2POS integration, no webshop derivation. The resolved
+mode is **not** wired into `evaluateDeliveryRequestDecision()`, and
+`READY_FOR_DELIVERY_REQUEST` remains unreachable. `requested_delivery_date`
+stays entirely separate: the mode describes *how* goods are provided, the
+date *when* the customer wants them, and a mode change never deletes a
+historical date.
+
 ## Next phase boundary (revised this round — read before planning 6G)
 
 Explicitly **not** built in Phase 6C through 6F: notification outbox, any

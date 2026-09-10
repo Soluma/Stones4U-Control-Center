@@ -1,6 +1,12 @@
 import "server-only";
 import { shopifyGraphQL } from "./client";
 import { aggregateFulfillmentMode, type FulfillmentMode } from "./fulfillment-mode";
+import {
+  readExplicitFulfillmentMode,
+  resolveFulfillmentMode,
+  type ExplicitFulfillmentMode,
+  type FulfillmentModeResolution,
+} from "./fulfillment-contract";
 
 // Phase 6B — read-only lookup used when creating an Order-based
 // DeliveryDateHandoff (manual staff action today; a future webhook later).
@@ -98,16 +104,30 @@ export type OrderForHandoffResult = {
   // feature ever needs answered is "is the regular-customer payment
   // condition currently satisfied?".
   fullyPaid: boolean;
-  // Phase 6H — derived from every FulfillmentOrder's
-  // deliveryMethod.methodType, aggregated conservatively: a mixed or
-  // truncated set reads as `UNKNOWN` rather than picking a winner (see
-  // aggregateFulfillmentMode()). `UNKNOWN` also when there is no
-  // FulfillmentOrder yet or it has no deliveryMethod — never silently
-  // defaulted to any specific mode. This is a signal only; no decision code
-  // reads it yet (build instruction §10/§9 — not wired into
-  // evaluateDeliveryRequestDecision() this round). See
-  // docs/ORDER-DELIVERY-HANDOFF-FOUNDATION.md §"Fulfillment mode".
-  fulfillmentMode: FulfillmentMode;
+  // Phase 6H, renamed in 6K — LAYER 1: Shopify's own semantics, nothing
+  // more. Derived from every FulfillmentOrder's deliveryMethod.methodType,
+  // aggregated conservatively: a mixed or truncated set reads as `UNKNOWN`
+  // rather than picking a winner (see aggregateFulfillmentMode()). `UNKNOWN`
+  // also when there is no FulfillmentOrder yet or it has no deliveryMethod.
+  //
+  // Exposed for observability and correlation only. It is NOT the
+  // authoritative answer to "is Stones4U delivering this Order" — Phase 6I
+  // proved native DELIVERY is frequently wrong about that. Read
+  // `fulfillmentResolution` instead.
+  nativeFulfillmentMode: FulfillmentMode;
+  // Phase 6K — LAYER 2 inputs and result.
+  //
+  // The explicit Stones4U-owned signal as stated on the Order, or null when
+  // absent, invalid, or duplicated (the resolution's `diagnostic` says
+  // which). Exposed separately so migration progress can be measured without
+  // re-reading raw attributes.
+  explicitFulfillmentMode: ExplicitFulfillmentMode | null;
+  // The authoritative resolution — the field callers should actually use.
+  // Callers must never re-derive authority from the two signals above; that
+  // is exactly what this field exists to prevent (build instruction §8).
+  // Still a signal only: not wired into evaluateDeliveryRequestDecision()
+  // this phase, and READY_FOR_DELIVERY_REQUEST stays unreachable.
+  fulfillmentResolution: FulfillmentModeResolution;
 };
 
 /** Read-only. Never called during the public /delivery/[token] flow — only
@@ -116,8 +136,20 @@ export async function getOrderForHandoff(orderGid: string): Promise<OrderForHand
   const data = await shopifyGraphQL<RawOrderForHandoff>(ORDER_FOR_HANDOFF_QUERY, { id: orderGid });
   if (!data.order) return null;
 
+  // Deliberately unchanged from Phase 6E: first match wins for the date.
+  // The asymmetry with the stricter duplicate handling of the fulfillment
+  // mode below is intentional — a duplicated date can only ever *suppress* a
+  // request (safe direction, whichever value is picked), whereas a duplicated
+  // mode could *enable* customer contact, so only the latter has to fail
+  // closed. See docs/ORDER-DELIVERY-HANDOFF-FOUNDATION.md §"Duplicate keys".
   const requestedDeliveryDateAttribute = data.order.customAttributes.find((a) => a.key === "requested_delivery_date");
   const fulfillmentOrders = data.order.fulfillmentOrders;
+
+  const explicit = readExplicitFulfillmentMode(data.order.customAttributes);
+  const nativeFulfillmentMode = aggregateFulfillmentMode({
+    methodTypes: fulfillmentOrders.edges.map((edge) => edge.node.deliveryMethod?.methodType ?? null),
+    hasUnreadFulfillmentOrders: fulfillmentOrders.pageInfo.hasNextPage,
+  });
 
   return {
     gid: data.order.id,
@@ -129,9 +161,8 @@ export async function getOrderForHandoff(orderGid: string): Promise<OrderForHand
     hasRequestedDeliveryDateAlready: requestedDeliveryDateAttribute !== undefined,
     requestedDeliveryDate: requestedDeliveryDateAttribute?.value ?? null,
     fullyPaid: data.order.fullyPaid,
-    fulfillmentMode: aggregateFulfillmentMode({
-      methodTypes: fulfillmentOrders.edges.map((edge) => edge.node.deliveryMethod?.methodType ?? null),
-      hasUnreadFulfillmentOrders: fulfillmentOrders.pageInfo.hasNextPage,
-    }),
+    nativeFulfillmentMode,
+    explicitFulfillmentMode: explicit.status === "VALID" ? explicit.mode : null,
+    fulfillmentResolution: resolveFulfillmentMode({ explicit, native: nativeFulfillmentMode }),
   };
 }
