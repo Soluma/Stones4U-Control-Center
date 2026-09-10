@@ -944,3 +944,63 @@ model DeliveryDateHandoff {
   @@index([customerProfileId])
   @@index([shopifyDraftOrderGid])
 }
+
+// Phase 6C — durable webhook-delivery idempotency, deliberately separate
+// from DeliveryDateHandoff's own (sourceSystem, externalId) uniqueness:
+// that constraint protects against a *second handoff row*, not against
+// re-running business logic (eligibility evaluation, an Order re-read) for
+// a webhook Shopify redelivers. Shopify's own guidance is to dedupe on
+// X-Shopify-Webhook-Id (docs/ORDER-DELIVERY-HANDOFF-FOUNDATION.md
+// §"Webhook intake"). status starts RECEIVED, moves to PROCESSED only
+// after the full pipeline (HMAC → shop identity → topic → re-read →
+// eligibility → optional handoff) completes without error, or FAILED on
+// any transient error — FAILED is intentionally retryable (never a
+// permanent poison record): the same (shopDomain, webhookId) redelivery
+// finds the FAILED row and is allowed to reprocess.
+enum ShopifyWebhookEventStatus {
+  RECEIVED
+  PROCESSED
+  FAILED
+}
+
+model ShopifyWebhookEvent {
+  id String @id @default(cuid())
+
+  shopDomain String
+  // Shopify's X-Shopify-Webhook-Id header — "a unique composite key for
+  // each delivery that you use to identify and deduplicate individual
+  // deliveries" (Shopify's own webhook docs). Never a client-supplied
+  // value — always read server-side from the verified request header.
+  webhookId  String
+  // HTTP header value as-received (e.g. "orders/create" or "ORDERS_CREATE"
+  // — exact format confirmed empirically during Phase 6C's live E2E, see
+  // docs/ORDER-DELIVERY-HANDOFF-FOUNDATION.md). Stored verbatim for
+  // observability, never used for anything beyond an equality check.
+  topic      String
+
+  status ShopifyWebhookEventStatus @default(RECEIVED)
+
+  // Structured eligibility outcome (Phase 6C §"Eligibility engine") —
+  // populated once the pipeline reaches that step; null while still
+  // RECEIVED or if HMAC/shop-identity/topic verification rejected the
+  // request before ever reaching business logic (those rejections are not
+  // persisted here at all — see the route's own doc comment for why).
+  eligible         Boolean?
+  eligibilityReason String?
+
+  // The DeliveryDateHandoff created as a result, if the eligibility
+  // decision was ever genuinely `eligible = true` (never happens yet in
+  // Phase 6C — see the eligibility engine's own doc comment).
+  createdHandoffId String?
+
+  // Short category string only, same discipline as
+  // DeliveryDateHandoff.mirrorErrorCode — never a raw Shopify response
+  // body, never PII, never a stack trace.
+  errorSummary String?
+
+  receivedAt  DateTime  @default(now())
+  processedAt DateTime?
+
+  @@unique([shopDomain, webhookId])
+  @@index([status])
+}

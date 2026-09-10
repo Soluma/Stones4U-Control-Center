@@ -294,11 +294,253 @@ the Phase 6B foundation report.
 - **OfferteApp**: no involvement anywhere in Phase 6B or 6B.1 — never
   opened, read, called, or deployed.
 
-## Next phase boundary (Phase 6C)
+## Webhook intake (Phase 6C)
 
-Explicitly **not** built here: webhook endpoint, webhook registration,
-HMAC verification, notification outbox, any provider integration, any
-transactional mail, any staff UI change, any public page change, any
-automatic eligibility trigger. All of that is Phase 6C onward, per
-`docs/ORDER-DELIVERY-HANDOFF-FOUNDATION.md`'s companion Phase 6A discovery
-artifact's phased plan.
+### Verified Shopify webhook requirements
+
+Confirmed via Shopify's own current documentation (fetched live during this
+phase, not recalled from memory) plus live GraphQL introspection against
+`stones4u-dev.myshopify.com`:
+
+- Topic: `ORDERS_CREATE` exists in the live `WebhookSubscriptionTopic`
+  enum (confirmed alongside `ORDERS_CANCELLED`, for a possible future
+  phase).
+- `webhookSubscriptionCreate(topic: WebhookSubscriptionTopic!,
+  webhookSubscription: WebhookSubscriptionInput!)` — live-confirmed
+  argument names (`topic` + `webhookSubscription`, **not** a generic
+  `input`). `WebhookSubscriptionInput` fields: `format`, `includeFields`,
+  `filter`, `metafieldNamespaces`, `metafields`, `name`, `uri` (`uri` is
+  the callback URL).
+- HTTP delivery headers (Shopify's webhook documentation):
+  `X-Shopify-Topic`, `X-Shopify-Hmac-Sha256` (base64-encoded HMAC-SHA256
+  of the raw body), `X-Shopify-Shop-Domain`, `X-Shopify-API-Version`,
+  `X-Shopify-Webhook-Id` (the documented deduplication key),
+  `X-Shopify-Triggered-At`, `X-Shopify-Event-Id`.
+- Retry behavior: up to 8 retries over 4 hours on no response or a
+  non-2xx (3xx included) response; a `200` acknowledges success.
+- **Live-confirmed** (documentation alone did not settle this): a real
+  Shopify webhook delivery to the staging endpoint sent
+  `X-Shopify-Topic: orders/create` — REST-style, lowercase with a slash,
+  **not** `ORDERS_CREATE` — even though the subscription was registered
+  via the GraphQL `ORDERS_CREATE` enum value. The route still accepts
+  both variants defensively, but the real, observed value is
+  `orders/create`.
+
+### Webhook secret authority
+
+Live-verified via Shopify's documentation: webhook HMAC verification
+"uses your app's client secret as the key" — no distinction made for a
+client-credentials custom app, and this repo's `SHOPIFY_CLIENT_SECRET` is
+exactly that credential. **No new `SHOPIFY_WEBHOOK_SECRET` env var was
+introduced** — reusing the existing, already-required, already
+production/staging-isolated `SHOPIFY_CLIENT_SECRET` avoids a second name
+for the same value that could drift out of sync. Verification fails
+closed if the secret is unset.
+
+### HMAC verification
+
+`src/integrations/shopify/webhook-verify.ts` — `verifyShopifyWebhookHmac(rawBody, hmacHeader)`.
+Computes HMAC-SHA256 over the *exact raw request body string* (never a
+re-parsed/re-serialized version — `request.text()` is captured before any
+`JSON.parse`), base64-decodes the header, length-checks before comparing
+(an unequal length can never be valid and would otherwise leak timing
+information through `timingSafeEqual`'s own length assertion), and
+compares with `crypto.timingSafeEqual`. Missing secret or missing header →
+reject.
+
+### Shop identity
+
+`src/integrations/shopify/webhook-shop-identity.ts` —
+`isExpectedWebhookShopDomain()`. A pure, local, case-insensitive exact-match
+comparison of the `X-Shopify-Shop-Domain` header against
+`SHOPIFY_EXPECTED_MYSHOPIFY_DOMAIN` — deliberately **not** a live Shopify
+call (unlike `assertShopifyShopIdentity()` in `guard.ts`, which verifies
+*outbound* write identity). Runs only after HMAC verification succeeds —
+Shopify's webhook HMAC covers the body only, never headers, so this check
+remains meaningful defense-in-depth even post-HMAC, not a redundant step.
+No subdomain/suffix matching of any kind.
+
+### Idempotency data model
+
+New `ShopifyWebhookEvent` model (additive migration
+`20260910060931_phase6c_shopify_webhook_intake` — one new enum, one new
+table, one unique index, one plain index; zero changes to any existing
+table). Unique on `(shopDomain, webhookId)`, matching Shopify's own stated
+purpose for `X-Shopify-Webhook-Id`. `status`: `RECEIVED` → `PROCESSED` (on
+full pipeline success) or `FAILED` (any error) — `FAILED` is intentionally
+retryable, never a permanent poison record: a redelivery with the same
+`(shopDomain, webhookId)` finds the `FAILED` row and is allowed to
+reprocess rather than being silently skipped.
+
+**Concurrency safety (added during final review, 2026-09-10)**: the
+original find-then-create claim logic had two related gaps under genuinely
+simultaneous delivery of the same `(shopDomain, webhookId)` — Shopify's
+delivery is at-least-once at the transport level, so this is a real
+scenario, not only a theoretical one. First, two requests could both pass
+`findUnique` seeing nothing, then race on `create`; the losing `create`
+threw an unhandled Prisma `P2002`, propagating to the route's outer catch
+and incorrectly marking that delivery `FAILED` (self-healing on Shopify's
+own retry, but not actually race-safe). Second, and more commonly: any two
+near-simultaneous deliveries — not only the exact-same-instant case — could
+both find the same existing `RECEIVED` row (created moments apart, no
+exception involved at all) and both proceed into full business processing
+concurrently, which is the one thing the claim path exists to prevent.
+Fixed in `claimWebhookDelivery()`
+(`src/modules/delivery/webhook-receipt.service.ts`) with two changes: (1)
+the `create()` call is now wrapped in a catch for `P2002`, re-fetching and
+returning the winning row through the same logic below rather than letting
+the violation surface as a processing failure; (2) a `RECEIVED` row is now
+treated as `skip` (defer — another request is presumed still actively
+processing it) while younger than a 30-second in-flight lease window
+(`receivedAt`-based, no new column needed), and only treated as `retry`
+(safe to take over) once past that window — preserving the original
+crash-recovery intent (a `RECEIVED` row stuck forever because a prior
+attempt crashed mid-processing must still eventually be retryable) while
+closing the concurrent-double-processing gap for the realistic case.
+Proven with a real DB-level race in
+`tests/webhook-receipt.test.ts` (`Promise.all` of two simultaneous claims
+against the same `(shopDomain, webhookId)` — the test log confirms an
+actual Postgres unique-constraint collision occurs and is handled, not
+merely a theoretical code path), plus dedicated in-flight-lease and
+stale-lease-recovery tests. This is a real runtime-behavior change, but it
+only affects the internal claim race window — a scenario the prior manual
+staging E2E proof below could not exercise (it tested sequential duplicate
+delivery against an already-`PROCESSED` row, which was and remains correct
+and is unaffected by this fix) — so the existing staging proof's claims
+remain accurate as written and were not repeated for this change.
+
+### Endpoint & processing order
+
+`POST /api/webhooks/shopify/orders-create` —
+`src/app/api/webhooks/shopify/orders-create/route.ts`. Fixed order, never
+reordered: raw body → HMAC → shop identity → topic → idempotency claim →
+parse → derive Order GID → live Order re-read (`getOrderForHandoff()`,
+read-only) → eligibility → (only if genuinely eligible) handoff creation.
+Nothing is persisted at all for a request that fails HMAC, shop-identity,
+or topic verification — there is no receipt to dedupe or retry for a
+sender that was never proven authentic.
+
+### Trusted Order identifier
+
+The webhook payload's numeric `id` field (Shopify's REST-shaped webhook
+JSON, regardless of GraphQL/REST registration) is converted to a GID as
+`gid://shopify/Order/<id>` — Shopify's GID format is a stable, documented
+platform convention (`gid://shopify/<ResourceType>/<legacy_numeric_id>`),
+unlike the `orderUpdate` mutation shape from Phase 6B.1, which needed live
+verification. The Order id is read exclusively from the HMAC-verified
+payload — a public/client caller has no way to supply an arbitrary Order
+GID to this route at all. The payload's `id` is validated as a positive
+integer or an all-digit numeric string (`/^[1-9]\d*$/`) before the GID is
+constructed — added during final review; the original check only tested
+truthiness, which would have silently built a syntactically-plausible but
+semantically-wrong GID for any non-numeric `id` (a safe failure in
+practice, since `getOrderForHandoff()` would just return `null` for it, but
+not an explicit validated-format guard as intended).
+
+### Eligibility engine
+
+`src/modules/delivery/eligibility.ts` —
+`evaluateDeliveryDateEligibility(order)`. Deliberately conservative per
+this phase's explicit brief: missing an automatic handoff is preferable
+to creating one for the wrong Order. Three hard negatives checked in
+order (cancelled → already has a requested date → no shipping address),
+then an explicit `INSUFFICIENT_CLASSIFICATION` fallback that every real
+Order reaches today — **no code path currently returns `eligible: true`**.
+This is intentional: Phase 6A discovery's live sample of real production
+orders found `tags` empty everywhere and only two ambiguous `sourceName`
+patterns, neither trustworthy enough for a positive rule. Source-channel
+data was re-examined this phase (no new reliable signal found — see
+"Source channel findings" below) and shipping-address presence is treated
+only as a negative filter, never a positive eligibility signal, per this
+phase's explicit instruction not to treat it as a complete pickup rule.
+
+### Source channel findings (re-examined, Phase 6C)
+
+No new reliable positive signal found beyond what Phase 6A discovery
+already established. `tags` remain empty on real sampled orders; the two
+observed `sourceName` patterns (`"shopify_draft_order"` and an
+unidentified numeric app id) are not confirmed enough to build eligibility
+logic on. This remains an explicit, open decision point for Fons (see
+blockers).
+
+### Auto-handoff policy
+
+Only `decision.eligible === true` may reach
+`createOrGetOrderDeliveryHandoff()` — structurally present in the route
+for forward-compatibility, but unreachable by any real Order today given
+the eligibility engine above. No email, no Shopify write, anywhere in
+this pipeline.
+
+### HTTP response policy
+
+| Situation | Status | Rationale |
+|---|---|---|
+| Invalid/missing HMAC | 401 | Reject before trusting anything; Shopify's generic retry loop still applies, but the security invariant (never process an unverified payload) matters more than optimizing retry count for a case that, if not an attack, is a real misconfiguration an operator should see and fix |
+| Wrong/missing shop domain | 401 | Same reasoning |
+| Unexpected/missing topic | 401 | Same reasoning |
+| Missing webhook id | 401 | Nothing to dedupe against |
+| Malformed JSON / missing or non-numeric Order id (despite valid HMAC) | 400 | Can't be Shopify's own payload — permanent, not retryable |
+| Duplicate, already `PROCESSED`, or another request still within the in-flight lease | 200 | Already handled (or being handled) — no reprocessing, still a success from Shopify's perspective |
+| Recorded, not eligible | 200 | Correct business outcome — no retry needed |
+| Transient error (e.g. Order re-read fails) | 500 | Lets Shopify's built-in retry (up to 8 over 4 hours) resume; `FAILED` status permits reprocessing on redelivery |
+
+No internal error detail is ever included in a response body. (Final review, 2026-09-10: the Order-not-found-on-reread case previously returned `200`/`"recorded"` in the shipped code — inconsistent with this table and with the `FAILED` status it set internally — corrected to `500` so it actually falls into the transient-error/retry-permitting row above, matching what this table already specified.)
+
+### Staging live E2E proof (2026-09-10)
+
+Registered exactly one webhook subscription (`ORDERS_CREATE`) against
+`stones4u-dev.myshopify.com`, pointing at the staging endpoint. Created a
+synthetic Order (`#1024`, `gid://shopify/Order/13299759120729`, via a
+synthetic Draft completed with `paymentPending: true` — no real customer,
+payment, or fulfillment). Proved, against the real deployed endpoint:
+
+- **Real Shopify delivery**: arrived, HMAC-verified, shop-identity-verified,
+  topic `orders/create` accepted, receipt claimed, Order re-read live,
+  classified `NO_SHIPPING_ADDRESS` (correct — this synthetic order has no
+  shipping address), `status: PROCESSED`, no handoff created.
+- **Duplicate delivery** (crafted, validly-signed, same synthetic
+  `X-Shopify-Webhook-Id`): second call returned `{"status":"already
+  processed"}` — no reprocessing, receipt count stayed at 1 for that id.
+- **Tampered body, stale signature**: `401 unauthorized` — HMAC correctly
+  rejected a body that no longer matched its signature.
+- **Wrong shop domain** (production's domain, otherwise valid): `401
+  unauthorized` — shop-identity check correctly rejected a cross-shop
+  attempt.
+- **Missing HMAC header**: `401 unauthorized`.
+- **Zero Shopify mutations for `requested_delivery_date`**: confirmed via
+  a direct read of the Order's `customAttributes` after the entire test —
+  empty, exactly as expected for a `NO_SHIPPING_ADDRESS`/not-eligible
+  outcome.
+- **Zero DeliveryDateHandoff rows created** at any point (confirmed via a
+  direct count — stayed `0` throughout).
+
+Cleanup: both `ShopifyWebhookEvent` rows deleted, the webhook subscription
+unregistered, the synthetic Order cancelled (`refund: false` — no payment
+was ever captured, so there was nothing to refund; not a payment/refund
+flow, a pure state cleanup).
+
+## Next phase boundary (Phase 6D and onward)
+
+Explicitly **not** built in Phase 6C: notification outbox, any provider
+integration, any transactional mail, any staff UI change, any public page
+change, a positive eligibility rule, production webhook registration. All
+of that is Phase 6D onward, per the Phase 6A discovery artifact's phased
+plan (6D: post-order public UX; 6E: notification outbox; 6F: manual staff
+fallback; 6G: full staging E2E including the customer-facing form; 6H:
+production readiness; 6I: production canary).
+
+## Open decisions for Fons (unchanged from Phase 6A, still unresolved)
+
+1. Notification-send provider (Microsoft Graph `Mail.Send` vs. a
+   dedicated transactional provider vs. staff-manual-only at first).
+2. Identity of the unconfirmed `sourceName` app id seen in production
+   order samples (Phase 6A) — would materially strengthen the eligibility
+   engine if resolved.
+3. Whether OfferteApp/Kassa Systeem should be asked (as separate, later
+   tasks in those repos) to stamp a recognizable tag/attribute on orders
+   they create, to give Phase 6D+ a trustworthy positive eligibility
+   signal.
+4. Token-expiry policy (Phase 6A recommended none — unchanged).
+5. **New this phase**: whether/when to register the `ORDERS_CREATE`
+   webhook on **production** — deliberately not done in Phase 6C (staging
+   only, per this phase's hard boundary).
