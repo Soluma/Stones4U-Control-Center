@@ -32,6 +32,11 @@ function normalizeWhitespace(text: string): string {
 
 const pageSourceFlat = normalizeWhitespace(pageSource);
 const formSourceFlat = normalizeWhitespace(formSource);
+// Phase 6T — the date field moved into the shared field component.
+const sharedFieldsSource = normalizeWhitespace(
+  readFileSync(fileURLToPath(new URL("../src/app/delivery/[token]/DeliveryLogisticsFields.tsx", import.meta.url)), "utf-8"),
+);
+
 
 describe("public delivery page — customer-facing copy", () => {
   it("shows the required heading, intro, and step context", () => {
@@ -64,8 +69,8 @@ describe("public delivery page — customer-facing copy", () => {
   });
 
   it("uses the required date-field label and helper text, framed as a preference", () => {
-    expect(formSourceFlat).toContain('label="Gewenste leverdatum"');
-    expect(formSourceFlat).toContain(
+    expect(sharedFieldsSource).toContain('label="Gewenste leverdatum"');
+    expect(sharedFieldsSource).toContain(
       "De gekozen datum is een voorkeursdatum. De definitieve leverdatum wordt door Stones4U bevestigd.",
     );
   });

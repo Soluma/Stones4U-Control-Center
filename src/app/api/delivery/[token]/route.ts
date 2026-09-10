@@ -48,7 +48,11 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
 
   try {
     if (handoff.commerceObjectType === "SHOPIFY_DRAFT_ORDER") {
-      const result = await submitRequestedDeliveryDate(handoff, body.requestedDeliveryDate);
+      const result = await submitRequestedDeliveryDate(handoff, {
+        rawDateInput: body.requestedDeliveryDate,
+        deliveryComment: body.deliveryComment,
+        largeTruckAccessConfirmed: body.largeTruckAccessConfirmed,
+      });
       const response: DeliveryDateSubmitResponse = { outcome: "REDIRECT", redirectUrl: result.redirectUrl };
       return NextResponse.json(response);
     }

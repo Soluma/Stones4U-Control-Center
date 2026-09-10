@@ -13,7 +13,7 @@ import {
   submitRequestedDeliveryDateForOrder,
 } from "@/modules/delivery/delivery-handoff.service";
 import { DeliveryHandoffError, ExistingRequestedDeliveryDateError } from "@/modules/delivery/errors";
-import { getEarliestRequestedDeliveryDate, addDeliveryBusinessDays } from "@/modules/delivery/delivery-lead-time";
+import { getEarliestRequestedDeliveryDate, addDeliveryBusinessDays, validateRequestedDeliveryDate } from "@/modules/delivery/delivery-lead-time";
 import { OrderCancelledError } from "@/integrations/shopify/errors";
 import { generatePublicToken, hashPublicToken } from "@/modules/delivery/token";
 import {
@@ -160,7 +160,7 @@ describe("delivery-handoff.service", () => {
       const { handoff } = await createDeliveryDateHandoff({ shopifyDraftOrderGid: `gid://shopify/DraftOrder/${crypto.randomUUID()}`, createdById: userId });
       createdHandoffIds.push(handoff.id);
 
-      await expect(submitRequestedDeliveryDate(handoff, VALID_DATE)).rejects.toThrow(DeliveryHandoffError);
+      await expect(submitRequestedDeliveryDate(handoff, { rawDateInput: VALID_DATE })).rejects.toThrow(DeliveryHandoffError);
 
       const reloaded = await prisma.deliveryDateHandoff.findUniqueOrThrow({ where: { id: handoff.id } });
       expect(reloaded.requestedDeliveryDate?.toISOString().slice(0, 10)).toBe(VALID_DATE);
@@ -172,7 +172,7 @@ describe("delivery-handoff.service", () => {
       const { handoff } = await createDeliveryDateHandoff({ shopifyDraftOrderGid: `gid://shopify/DraftOrder/${crypto.randomUUID()}`, createdById: userId });
       createdHandoffIds.push(handoff.id);
 
-      const result = await submitRequestedDeliveryDate(handoff, VALID_DATE);
+      const result = await submitRequestedDeliveryDate(handoff, { rawDateInput: VALID_DATE });
 
       expect(result.redirectUrl).toBe("https://test-shop.myshopify.com/12345/invoices/abc");
       const reloaded = await prisma.deliveryDateHandoff.findUniqueOrThrow({ where: { id: handoff.id } });
@@ -187,7 +187,7 @@ describe("delivery-handoff.service", () => {
       const { handoff } = await createDeliveryDateHandoff({ shopifyDraftOrderGid: `gid://shopify/DraftOrder/${crypto.randomUUID()}`, createdById: userId });
       createdHandoffIds.push(handoff.id);
 
-      await expect(submitRequestedDeliveryDate(handoff, "not-a-date")).rejects.toThrow(DeliveryHandoffError);
+      await expect(submitRequestedDeliveryDate(handoff, { rawDateInput: "not-a-date" })).rejects.toThrow(DeliveryHandoffError);
       expect(mockMirror).not.toHaveBeenCalled();
     });
   });
@@ -203,7 +203,7 @@ describe("delivery-handoff.service", () => {
       createdHandoffIds.push(handoff.id);
       mockMirror.mockResolvedValueOnce({ invoiceUrl: "https://test-shop.myshopify.com/999/invoices/xyz" });
 
-      const result = await submitRequestedDeliveryDate(handoff, VALID_DATE);
+      const result = await submitRequestedDeliveryDate(handoff, { rawDateInput: VALID_DATE });
       expect(result.redirectUrl).toBe("https://test-shop.myshopify.com/999/invoices/xyz");
     });
   });
@@ -221,9 +221,9 @@ describe("delivery-handoff.service", () => {
       // in scope of that helper); pushing it too would just make the
       // shared afterAll's cleanup attempt a harmless but noisy no-op.
 
-      await submitRequestedDeliveryDate(handoff, VALID_DATE);
+      await submitRequestedDeliveryDate(handoff, { rawDateInput: VALID_DATE });
       const afterFirst = await prisma.deliveryDateHandoff.findUniqueOrThrow({ where: { id: handoff.id } });
-      await submitRequestedDeliveryDate(afterFirst, VALID_DATE);
+      await submitRequestedDeliveryDate(afterFirst, { rawDateInput: VALID_DATE });
 
       const activityCount = await prisma.activity.count({
         where: { relatedDeliveryDateHandoffId: handoff.id, type: "DELIVERY_DATE_REQUESTED" },
@@ -246,9 +246,9 @@ describe("delivery-handoff.service", () => {
       // Not pushed to createdHandoffIds — see the identical note above.
       const laterDate = LATER_VALID_DATE;
 
-      await submitRequestedDeliveryDate(handoff, VALID_DATE);
+      await submitRequestedDeliveryDate(handoff, { rawDateInput: VALID_DATE });
       const afterFirst = await prisma.deliveryDateHandoff.findUniqueOrThrow({ where: { id: handoff.id } });
-      await submitRequestedDeliveryDate(afterFirst, laterDate);
+      await submitRequestedDeliveryDate(afterFirst, { rawDateInput: laterDate });
 
       const reloaded = await prisma.deliveryDateHandoff.findUniqueOrThrow({ where: { id: handoff.id } });
       expect(reloaded.requestedDeliveryDate?.toISOString().slice(0, 10)).toBe(laterDate);
@@ -269,7 +269,7 @@ describe("delivery-handoff.service", () => {
       });
       createdHandoffIds.push(handoff.id);
 
-      await submitRequestedDeliveryDate(handoff, VALID_DATE);
+      await submitRequestedDeliveryDate(handoff, { rawDateInput: VALID_DATE });
 
       const activityCount = await prisma.activity.count({ where: { relatedDeliveryDateHandoffId: handoff.id } });
       expect(activityCount).toBe(0);
@@ -291,7 +291,7 @@ describe("delivery-handoff.service", () => {
 
       let caught: unknown;
       try {
-        await submitRequestedDeliveryDate(handoff, VALID_DATE);
+        await submitRequestedDeliveryDate(handoff, { rawDateInput: VALID_DATE });
       } catch (error) {
         caught = error;
       }
@@ -316,7 +316,7 @@ describe("delivery-handoff.service", () => {
         data: { paymentProvider: "UNKNOWN" },
       });
 
-      await expect(submitRequestedDeliveryDate(handoff, VALID_DATE)).rejects.toThrow(DeliveryHandoffError);
+      await expect(submitRequestedDeliveryDate(handoff, { rawDateInput: VALID_DATE })).rejects.toThrow(DeliveryHandoffError);
     });
   });
 
@@ -414,7 +414,7 @@ describe("delivery-handoff.service", () => {
         createdById: userId,
       });
       createdHandoffIds.push(handoff.id);
-      await submitRequestedDeliveryDate(handoff, VALID_DATE);
+      await submitRequestedDeliveryDate(handoff, { rawDateInput: VALID_DATE });
 
       const { handoff: regenerated, rawToken: newToken } = await regeneratePublicToken(handoff.id, userId);
 
@@ -475,6 +475,125 @@ describe("delivery-handoff.service", () => {
   // no automatic eligibility yet: these tests exercise the new service
   // functions directly, the same way the Draft-based functions were
   // originally proven before any UI/route ever called them.
+  // Phase 6T — the Draft flow collects the same logistics answers as the
+  // Order flow, stores them locally, and keeps its payment redirect.
+  describe("Draft handoff — logistics details", () => {
+    async function draftHandoff() {
+      const { handoff } = await createDeliveryDateHandoff({
+        shopifyDraftOrderGid: `gid://shopify/DraftOrder/${crypto.randomUUID()}`,
+        createdById: userId,
+      });
+      createdHandoffIds.push(handoff.id);
+      return handoff;
+    }
+    const reload = (id: string) => prisma.deliveryDateHandoff.findUniqueOrThrow({ where: { id } });
+
+    it("stores comment and truck answer locally, and still returns the payment redirect", async () => {
+      const handoff = await draftHandoff();
+      const result = await submitRequestedDeliveryDate(handoff, {
+        rawDateInput: VALID_DATE,
+        deliveryComment: "Poort aan de zijkant.",
+        largeTruckAccessConfirmed: true,
+      });
+
+      expect(result.redirectUrl).toBe("https://test-shop.myshopify.com/12345/invoices/abc");
+      const row = await reload(handoff.id);
+      expect(row.deliveryComment).toBe("Poort aan de zijkant.");
+      expect(row.largeTruckAccessConfirmed).toBe(true);
+      expect(row.status).toBe("MIRRORED");
+    });
+
+    it("mirrors only the date to Shopify — the Draft metafield path is deliberately not used", async () => {
+      const handoff = await draftHandoff();
+      await submitRequestedDeliveryDate(handoff, {
+        rawDateInput: VALID_DATE,
+        deliveryComment: "Bel bij aankomst",
+        largeTruckAccessConfirmed: true,
+      });
+
+      expect(mockMirror).toHaveBeenCalledWith(handoff.shopifyDraftOrderGid, VALID_DATE);
+      // Draft metafields do not survive draftOrderComplete, so none are written.
+      expect(mockLogisticsMetafields).not.toHaveBeenCalled();
+    });
+
+    it("reopening returns the persisted answers for prefill", async () => {
+      const handoff = await draftHandoff();
+      await submitRequestedDeliveryDate(handoff, {
+        rawDateInput: VALID_DATE,
+        deliveryComment: "Bel bij aankomst",
+        largeTruckAccessConfirmed: true,
+      });
+
+      const reopened = await reload(handoff.id);
+      expect(reopened.requestedDeliveryDate?.toISOString().slice(0, 10)).toBe(VALID_DATE);
+      expect(reopened.deliveryComment).toBe("Bel bij aankomst");
+      expect(reopened.largeTruckAccessConfirmed).toBe(true);
+    });
+
+    it("changing only the date preserves the logistics answers", async () => {
+      const handoff = await draftHandoff();
+      await submitRequestedDeliveryDate(handoff, {
+        rawDateInput: VALID_DATE,
+        deliveryComment: "Bel bij aankomst",
+        largeTruckAccessConfirmed: true,
+      });
+
+      await submitRequestedDeliveryDate(await reload(handoff.id), { rawDateInput: LATER_VALID_DATE });
+
+      const after = await reload(handoff.id);
+      expect(after.requestedDeliveryDate?.toISOString().slice(0, 10)).toBe(LATER_VALID_DATE);
+      expect(after.deliveryComment).toBe("Bel bij aankomst");
+      expect(after.largeTruckAccessConfirmed).toBe(true);
+    });
+
+    it("an explicit empty comment clears it; an explicit false is stored", async () => {
+      const handoff = await draftHandoff();
+      await submitRequestedDeliveryDate(handoff, {
+        rawDateInput: VALID_DATE,
+        deliveryComment: "Bel bij aankomst",
+        largeTruckAccessConfirmed: true,
+      });
+      await submitRequestedDeliveryDate(await reload(handoff.id), {
+        rawDateInput: LATER_VALID_DATE,
+        deliveryComment: "",
+        largeTruckAccessConfirmed: false,
+      });
+
+      const after = await reload(handoff.id);
+      expect(after.deliveryComment).toBeNull();
+      expect(after.largeTruckAccessConfirmed).toBe(false);
+    });
+
+    it("rejects a comment over 500 characters", async () => {
+      const handoff = await draftHandoff();
+      await expect(
+        submitRequestedDeliveryDate(handoff, { rawDateInput: VALID_DATE, deliveryComment: "a".repeat(501) }),
+      ).rejects.toThrow(DeliveryHandoffError);
+    });
+
+    it("applies the same business-day policy — Thursday reference rejects the next day and accepts the third business day", async () => {
+      const handoff = await draftHandoff();
+      // Thursday 2026-09-10 -> Fri(1) Mon(2) Tue 2026-09-15(3).
+      const tooEarly = validateRequestedDeliveryDate({
+        raw: "2026-09-11",
+        orderCreatedAt: new Date("2026-09-01T09:00:00Z"),
+        now: new Date("2026-09-10T10:00:00Z"),
+      });
+      const accepted = validateRequestedDeliveryDate({
+        raw: "2026-09-15",
+        orderCreatedAt: new Date("2026-09-01T09:00:00Z"),
+        now: new Date("2026-09-10T10:00:00Z"),
+      });
+      expect(tooEarly.ok).toBe(false);
+      expect(accepted).toMatchObject({ ok: true, date: "2026-09-15" });
+
+      // And the Draft submit path enforces it for real.
+      await expect(
+        submitRequestedDeliveryDate(handoff, { rawDateInput: "2026-09-19" }),
+      ).rejects.toThrow(/zaterdag en zondag/i);
+    });
+  });
+
   describe("Order-based handoff — data model, uniqueness, idempotency", () => {
     it("creates an Order handoff with commerceObjectType SHOPIFY_ORDER, shopifyOrderGid set, shopifyDraftOrderGid null", async () => {
       const orderGid = `gid://shopify/Order/${crypto.randomUUID()}`;
