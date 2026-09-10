@@ -59,6 +59,7 @@ describe("processOrderWebhookEvent", () => {
       hasRequestedDeliveryDateAlready: false,
       requestedDeliveryDate: null,
       fullyPaid: false,
+      fulfillmentMode: "UNKNOWN",
       ...overrides,
     };
   }

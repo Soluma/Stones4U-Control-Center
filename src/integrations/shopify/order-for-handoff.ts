@@ -1,5 +1,6 @@
 import "server-only";
 import { shopifyGraphQL } from "./client";
+import { aggregateFulfillmentMode, type FulfillmentMode } from "./fulfillment-mode";
 
 // Phase 6B — read-only lookup used when creating an Order-based
 // DeliveryDateHandoff (manual staff action today; a future webhook later).
@@ -35,6 +36,18 @@ const ORDER_FOR_HANDOFF_QUERY = /* GraphQL */ `
         key
         value
       }
+      fulfillmentOrders(first: 50) {
+        pageInfo {
+          hasNextPage
+        }
+        edges {
+          node {
+            deliveryMethod {
+              methodType
+            }
+          }
+        }
+      }
     }
   }
 `;
@@ -49,6 +62,10 @@ type RawOrderForHandoff = {
     customer: { id: string } | null;
     shippingAddress: { city: string | null } | null;
     customAttributes: { key: string; value: string }[];
+    fulfillmentOrders: {
+      pageInfo: { hasNextPage: boolean };
+      edges: { node: { deliveryMethod: { methodType: string } | null } }[];
+    };
   } | null;
 };
 
@@ -81,6 +98,16 @@ export type OrderForHandoffResult = {
   // feature ever needs answered is "is the regular-customer payment
   // condition currently satisfied?".
   fullyPaid: boolean;
+  // Phase 6H — derived from every FulfillmentOrder's
+  // deliveryMethod.methodType, aggregated conservatively: a mixed or
+  // truncated set reads as `UNKNOWN` rather than picking a winner (see
+  // aggregateFulfillmentMode()). `UNKNOWN` also when there is no
+  // FulfillmentOrder yet or it has no deliveryMethod — never silently
+  // defaulted to any specific mode. This is a signal only; no decision code
+  // reads it yet (build instruction §10/§9 — not wired into
+  // evaluateDeliveryRequestDecision() this round). See
+  // docs/ORDER-DELIVERY-HANDOFF-FOUNDATION.md §"Fulfillment mode".
+  fulfillmentMode: FulfillmentMode;
 };
 
 /** Read-only. Never called during the public /delivery/[token] flow — only
@@ -90,6 +117,7 @@ export async function getOrderForHandoff(orderGid: string): Promise<OrderForHand
   if (!data.order) return null;
 
   const requestedDeliveryDateAttribute = data.order.customAttributes.find((a) => a.key === "requested_delivery_date");
+  const fulfillmentOrders = data.order.fulfillmentOrders;
 
   return {
     gid: data.order.id,
@@ -101,5 +129,9 @@ export async function getOrderForHandoff(orderGid: string): Promise<OrderForHand
     hasRequestedDeliveryDateAlready: requestedDeliveryDateAttribute !== undefined,
     requestedDeliveryDate: requestedDeliveryDateAttribute?.value ?? null,
     fullyPaid: data.order.fullyPaid,
+    fulfillmentMode: aggregateFulfillmentMode({
+      methodTypes: fulfillmentOrders.edges.map((edge) => edge.node.deliveryMethod?.methodType ?? null),
+      hasUnreadFulfillmentOrders: fulfillmentOrders.pageInfo.hasNextPage,
+    }),
   };
 }

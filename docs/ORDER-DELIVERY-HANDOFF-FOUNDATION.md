@@ -978,6 +978,269 @@ bundle directly (`grep` for the `POLICY_REQUIRES_PAYMENT` map and the
 `policy === "UNKNOWN"` branch in `.next/server/chunks/`), not merely
 trusting that the deploy pipeline carried the local fix across.
 
+## Fulfillment mode signal verification (Phase 6H)
+
+### Correction to Phase 6G's proposed mapping
+
+Phase 6G's final report proposed collapsing `PICK_UP`/`LOCAL`/`PICKUP_POINT`/
+`RETAIL` into a single `PICKUP` bucket. This was wrong and was **not**
+implemented. Per Shopify's own documented `DeliveryMethodType` semantics:
+
+- `SHIPPING` — the order is shipped.
+- `LOCAL` — the order is delivered using local delivery (a delivery, not a
+  pickup).
+- `PICK_UP` — the customer picks up the order.
+- `PICKUP_POINT` — the order is delivered to a pickup point (distinct from
+  both `PICK_UP` and `SHIPPING`).
+- `RETAIL` — in-store retail sale, no delivery leg at all.
+- `NONE` — no physical delivery needed.
+
+### Scope (build instruction §2)
+
+`read_merchant_managed_fulfillment_orders` was verified as a real, current
+Shopify access scope via the official Shopify docs (not assumed from
+memory). Staging (`stones4u-control-center-staging`) already had this scope
+granted at the start of this phase (confirmed live via
+`currentAppInstallation.accessScopes { handle }` self-introspection) — the
+brief's conditional STOP branch did not apply. Production was **not**
+touched or queried for this scope this round (build instruction §6) — see
+"Production read-only follow-up" below.
+
+### Live verification (build instructions §3, §5)
+
+Confirmed live on `stones4u-dev.myshopify.com` (staging):
+
+- `Order.fulfillmentOrders.deliveryMethod.methodType` is readable
+  immediately at Order creation (Draft Order → `draftOrderComplete`), before
+  fulfillment, and after cancellation (`status: CLOSED`) — no timing gap.
+- Every synthetic Order observed (this phase and prior phases) has exactly
+  one merchant-managed `FulfillmentOrder`. No split-fulfillment case has
+  been observed live; the aggregation rules below are therefore constructed
+  and unit-tested, not live-proven.
+- **`methodType` is driven by the line item's `requiresShipping: Boolean`
+  field, not by the mere presence of a shipping address or shipping line.**
+  This was not previously known and is the phase's central finding:
+  - A custom line item with a shipping address + a shipping line (with or
+    without an arbitrary `shippingRateHandle`) but no `requiresShipping`
+    flag → `methodType: "NONE"` (Orders `#1030`, `#1031`).
+  - The same setup with `requiresShipping: true` added to the line item →
+    `methodType: "SHIPPING"` (Order `#1032`).
+  - `requiresShipping: true` alone, with **no** shipping address and **no**
+    shipping line at all → still `methodType: "SHIPPING"` (Order `#1033`).
+    This shows `SHIPPING` is Shopify's default classification for "this
+    order requires physical delivery" whenever no more specific delivery
+    mechanism (local delivery, pickup, pickup point) is configured — a
+    generic-but-real positive signal, not a false one.
+  - Real Stones4U catalog products (genuine Shopify variants) are expected
+    to already have `requiresShipping` set correctly via normal product
+    configuration, so this mechanism should classify genuine webshop/Draft
+    Orders correctly without any special-casing — this is an expectation,
+    not yet independently confirmed against a real catalog-product order
+    (only custom/ad-hoc line items were used in live experiments, to avoid
+    touching real inventory).
+- `PICK_UP`, `LOCAL`, `PICKUP_POINT`, and `RETAIL` could **not** be
+  triggered live within this round's granted scopes. `deliveryProfiles`
+  (the likely path to a real local-delivery/pickup-point rate) returned an
+  access-denied error — the missing scope was not identified further and
+  was **not** requested, per the explicit instruction not to request scopes
+  preemptively. An arbitrary `shippingRateHandle` string (not tied to a
+  real configured rate) was accepted by `draftOrderCreate` without
+  validation but had no effect on `methodType`. This is a genuine,
+  honestly-reported gap, not a forced/simulated result — their mapping
+  below is asserted from Shopify's documented semantics (tested in
+  `tests/fulfillment-mode.test.ts`), not live-observed.
+
+### Coverage (build instruction §4)
+
+`read_merchant_managed_fulfillment_orders` covers every fulfillment order
+observed this phase (all merchant-fulfilled, single-location). No
+Stones4U-specific evidence was found this round that any fulfillment order
+is third-party-fulfilled — `read_third_party_fulfillment_orders` was not
+requested and there is no current reason to believe it is needed. This
+should be revisited only if a real coverage gap is actually observed (e.g.
+a production Order whose `fulfillmentOrders` connection is empty despite a
+known fulfillment having occurred).
+
+### Production read-only follow-up (build instruction §6)
+
+Production (`stones4u-control-center` / `9h7x2c-ku.myshopify.com`) was
+**not** touched, queried, or scope-checked this round. Per Phase 6G,
+production was already confirmed to lack any fulfillment-order read scope.
+To inspect production fulfillment mode in a future phase, production would
+need `read_merchant_managed_fulfillment_orders` granted (Fons decides
+separately) — no production scope change was made or requested this round.
+
+### Recommended next controlled step (corrected)
+
+Manufacturing every enum value in staging is **not** the goal, and no
+`read_locations`-family scope should be requested merely to do so. The
+values that matter are the ones real Stones4U Orders actually produce, and
+production is where those live. The controlled sequence is:
+
+- **A.** Commit and push Phase 6H (done — this section's own phase).
+- **B.** Fons adds **only** `read_merchant_managed_fulfillment_orders` to
+  the production Control Center Shopify app. No other scope.
+- **C.** Perform a **read-only** production fulfillment-mode verification.
+- **D.** Correlate against the real production Orders already characterised
+  in Phase 6G: delivery-like `shippingLines`, pickup-like "Ophalen" Orders,
+  POS Orders, Draft-created Orders, and an OfferteApp-created Order if one
+  is present.
+- **E.** Observe the actual `DeliveryMethodType` values those Orders carry.
+- **F.** No production mutations of any kind.
+
+Only if a genuinely relevant production Order then remains inaccessible —
+and the exact reason is proven, not guessed — should any further Shopify
+scope be requested.
+
+### `source2pos` attribution (build instruction §7)
+
+`attribution.handle === "source2pos-production"` remains **not** hardcoded
+as a `NOT_DELIVERY` signal. No POS-shaped live Order was created this round
+(would require production or a staging POS-equivalent order source, neither
+available/appropriate this round), so whether `DeliveryMethodType`
+naturally classifies POS-attributed orders (as `RETAIL`, `NONE`, or
+`PICK_UP`) is unconfirmed. `FulfillmentMode` (the Shopify-native read)
+remains the preferred authority once confirmed; attribution stays a
+possible future fallback only, never the primary classifier.
+
+### Target internal model (build instruction §8)
+
+Implemented as the smallest possible additive foundation, mirroring exactly
+how `fullyPaid` was added in Phase 6F:
+
+- `src/integrations/shopify/fulfillment-mode.ts` — `ShopifyDeliveryMethodType`,
+  `FulfillmentMode` (`DELIVERY | CUSTOMER_PICKUP | PICKUP_POINT | RETAIL |
+  NONE | UNKNOWN`), and the pure `classifyFulfillmentMode()` mapping
+  function per the corrected table above. Lives in `integrations/shopify`
+  rather than `modules/delivery` because `order-for-handoff.ts` (an
+  integrations-layer file) needs to call it, and this repo's module
+  boundary forbids integrations depending on modules.
+- `getOrderForHandoff()` now also queries `fulfillmentOrders(first: 50) {
+  pageInfo { hasNextPage } edges { node { deliveryMethod { methodType } } } }`
+  and exposes a derived `fulfillmentMode: FulfillmentMode` field on
+  `OrderForHandoffResult`.
+- No database migration — this is a derived, always-fresh read, same as
+  `fullyPaid`.
+
+### Multiple FulfillmentOrders (aggregation semantics)
+
+An Order can legitimately carry several FulfillmentOrders (split
+fulfillment across locations). `aggregateFulfillmentMode()` therefore
+classifies over **all** of them, deterministically, rather than trusting
+the first edge:
+
+1. The connection was truncated (`pageInfo.hasNextPage`) → `UNKNOWN`,
+   whatever the visible FulfillmentOrders say — an unseen one could
+   disagree.
+2. No FulfillmentOrders at all → `UNKNOWN`.
+3. All FulfillmentOrders agree on one mode → that mode. Agreement is judged
+   on the mapped `FulfillmentMode`, not the raw Shopify value, so an Order
+   split across `SHIPPING` and `LOCAL` agrees on `DELIVERY` and stays
+   `DELIVERY`.
+4. Any disagreement → `UNKNOWN`. A FulfillmentOrder with no
+   `deliveryMethod` maps to `UNKNOWN` and so disagrees with any classified
+   sibling — the intended conservative outcome.
+
+Rule 4 is the one that matters for the future decision engine: a
+part-shipped/part-collected Order must never read as a plain `DELIVERY` and
+so must never receive an automatic delivery-date request. `first: 50` is far
+beyond any realistic Stones4U Order, and rule 1 means exceeding it fails
+safe rather than silently classifying on a partial view.
+
+### Access failure / missing scope (no unsafe fallback)
+
+If the fulfillment-order scope is absent, Shopify answers the query with a
+GraphQL `errors` array. `shopifyGraphQL()` throws `ShopifyApiError` whenever
+`errors` is non-empty (`src/integrations/shopify/client.ts`), before any
+`data` is inspected — so `getOrderForHandoff()` fails outright rather than
+returning a result with a guessed `fulfillmentMode`. Failing the whole read
+is the existing service contract for every Shopify read failure in this
+module, and is conservative by construction: no handoff is created and
+nothing is sent. `fulfillmentMode` is **never** inferred from
+`shippingAddress`, `shippingLines`, shipping-title substrings, `tags`, or
+`sourceName` — the only authority is
+`Order → fulfillmentOrders → deliveryMethod → methodType`.
+
+### Decision-engine implications (build instruction §9 — conceptual only, not reachable)
+
+The following rule is documented here as the intended shape of a future
+extension to `evaluateDeliveryRequestDecision()` — **it is not implemented
+as reachable code this round**, and `hasTrustworthyDeliveryOrderClassification()`
+remains hard-coded `false`:
+
+1. Cancelled → no request (existing rule, unchanged).
+2. `requested_delivery_date` already known → no request (existing rule,
+   unchanged).
+3. `fulfillmentMode === "UNKNOWN"` → `INSUFFICIENT_CLASSIFICATION`.
+4. `fulfillmentMode` is `CUSTOMER_PICKUP`, `PICKUP_POINT`, `RETAIL`, or
+   `NONE` → a reliable negative (`NOT_DELIVERY` — no reason to introduce a
+   new outcome value for this until the rule is actually wired in).
+5. `fulfillmentMode === "DELIVERY"` and `policy === "UNKNOWN"` →
+   `INSUFFICIENT_CLASSIFICATION` (existing rule already does this,
+   unchanged).
+6. `fulfillmentMode === "DELIVERY"` and `policy === "REGULAR_CONSUMER"` and
+   unpaid → `WAITING_FOR_PAYMENT` (existing rule, unchanged); paid → future
+   `READY_FOR_DELIVERY_REQUEST` once `hasTrustworthyDeliveryOrderClassification()`
+   is allowed to consult `fulfillmentMode` — a real, positive signal that
+   did not exist before this phase, but deliberately not turned on yet
+   (build instruction §16's "keep `READY` unreachable" boundary, reaffirmed
+   this round).
+7. `fulfillmentMode === "DELIVERY"` and `policy === "B2B_ON_ACCOUNT"` →
+   separate B2B trigger/policy (unchanged, still undesigned).
+
+### Tests
+
+`tests/fulfillment-mode.test.ts` — pure mapping tests for all six Shopify
+`DeliveryMethodType` values plus missing (`null`/`undefined`) and an
+unrecognized future value, all mapping to `UNKNOWN`. Includes the explicit
+regression test required by build instruction §11: **`LOCAL` → `DELIVERY`**,
+proving Phase 6G's proposed `LOCAL` → `CUSTOMER_PICKUP` mapping is not
+present, and that `PICKUP_POINT` stays distinct from `CUSTOMER_PICKUP`. The
+same file covers the aggregation rules: `DELIVERY + DELIVERY`,
+`SHIPPING + LOCAL` (still `DELIVERY`), `PICK_UP + PICK_UP`,
+`DELIVERY + PICK_UP` → `UNKNOWN`, conflicting non-delivery modes →
+`UNKNOWN`, a classified sibling alongside one with no `deliveryMethod` →
+`UNKNOWN`, empty → `UNKNOWN`, and both truncated-connection cases →
+`UNKNOWN`.
+
+`tests/delivery-handoff-shopify.test.ts` proves the field is correctly wired
+end-to-end through `getOrderForHandoff()`: a missing-`fulfillmentOrders`
+case → `UNKNOWN`, a `LOCAL` case → `DELIVERY`, a split
+`SHIPPING + PICK_UP` Order → `UNKNOWN`, and a truncated connection →
+`UNKNOWN`. Its existing GraphQL-shaped mock fixtures were updated to include
+the new `fulfillmentOrders` field so they do not throw on the added query
+field.
+
+### Quote / payment / invoice independence (business rule, documented only)
+
+Recorded here so a later phase does not conflate three separate flows. None
+of this is implemented in Phase 6H.
+
+- A quote may already carry a `requested_delivery_date`. That value is
+  authoritative wherever it came from (see "Requested-delivery-date
+  provenance" above).
+- When the customer pays, **Shopify's own invoice/factuur communication
+  continues normally and is entirely unchanged**. Control Center neither
+  sends, suppresses, replaces, nor participates in it.
+- Control Center's delivery-date communication is **additional and
+  independent**. Payment is a trigger for Control Center to *re-evaluate*,
+  nothing more:
+  - `requested_delivery_date` already known → no extra delivery-date
+    request. Stones4U never asks a question it already has the answer to.
+  - absent, and the Order is an eligible `DELIVERY` → only then may a
+    separate "Wanneer mogen we langskomen?" message be sent, in some later
+    phase, once `READY_FOR_DELIVERY_REQUEST` is genuinely reachable.
+
+No invoice behavior, no email behavior, and no send-side logic of any kind
+was implemented this round.
+
+### No email/handoff automation (build instruction §10)
+
+Confirmed: no outbox, no provider integration, no `DeliveryDateHandoff`
+automation, no `requested_delivery_date` write, no production mutation, no
+OfferteApp interaction this round. Signal verification and typed foundation
+only.
+
 ## Next phase boundary (revised this round — read before planning 6G)
 
 Explicitly **not** built in Phase 6C through 6F: notification outbox, any
@@ -1032,3 +1295,13 @@ brief's own boundary is explicitly out of scope until then.
    fulfillment status, on an OfferteApp-signaled invoice event, or both —
    and how the B2B exception's own trigger (if any) should be surfaced to
    staff in the meantime.
+8. **New this phase (Phase 6H)**: whether to grant **production** the
+   single scope `read_merchant_managed_fulfillment_orders`, enabling the
+   read-only production verification described in "Recommended next
+   controlled step" above. This is the one scope decision actually on the
+   table. `PICK_UP`/`LOCAL`/`PICKUP_POINT`/`RETAIL` could not be
+   live-triggered on staging within currently-granted scopes
+   (`deliveryProfiles` access was denied), but no additional scope is being
+   requested to manufacture them — real production Orders are the better
+   and safer evidence, and any further scope request should follow a proven
+   access gap rather than precede one.

@@ -340,6 +340,7 @@ describe("getOrderForHandoff — Phase 6B Order read client", () => {
             customer: null,
             shippingAddress: null,
             customAttributes: [],
+            fulfillmentOrders: { pageInfo: { hasNextPage: false }, edges: [] },
           },
         },
       }),
@@ -371,6 +372,7 @@ describe("getOrderForHandoff — Phase 6B Order read client", () => {
             customer: null,
             shippingAddress: null,
             customAttributes: [],
+            fulfillmentOrders: { pageInfo: { hasNextPage: false }, edges: [] },
           },
         },
       }),
@@ -390,6 +392,7 @@ describe("getOrderForHandoff — Phase 6B Order read client", () => {
       hasRequestedDeliveryDateAlready: false,
       requestedDeliveryDate: null,
       fullyPaid: false,
+      fulfillmentMode: "UNKNOWN",
     });
   });
 
@@ -408,6 +411,14 @@ describe("getOrderForHandoff — Phase 6B Order read client", () => {
             customer: { id: "gid://shopify/Customer/9" },
             shippingAddress: { city: "Tilburg" },
             customAttributes: [{ key: "requested_delivery_date", value: "2026-09-01" }],
+            // LOCAL is a genuine Shopify DeliveryMethodType (local delivery)
+            // — it must map to DELIVERY, not CUSTOMER_PICKUP. This is the
+            // explicit regression test for the Phase 6G mapping error
+            // (build instruction §11 for Phase 6H).
+            fulfillmentOrders: {
+              pageInfo: { hasNextPage: false },
+              edges: [{ node: { deliveryMethod: { methodType: "LOCAL" } } }],
+            },
           },
         },
       }),
@@ -427,7 +438,73 @@ describe("getOrderForHandoff — Phase 6B Order read client", () => {
       hasRequestedDeliveryDateAlready: true,
       requestedDeliveryDate: "2026-09-01",
       fullyPaid: true,
+      fulfillmentMode: "DELIVERY",
     });
+  });
+
+  it("a split Order whose FulfillmentOrders disagree (shipped + collected) reads as UNKNOWN, never as DELIVERY", async () => {
+    setShopifyEnv();
+    const fetchMock = vi.fn();
+    fetchMock.mockResolvedValueOnce(tokenResponse()).mockResolvedValueOnce(
+      jsonResponse({
+        data: {
+          order: {
+            id: "gid://shopify/Order/3",
+            name: "#5679",
+            cancelledAt: null,
+            displayFulfillmentStatus: "UNFULFILLED",
+            fullyPaid: true,
+            customer: null,
+            shippingAddress: { city: "Tilburg" },
+            customAttributes: [],
+            fulfillmentOrders: {
+              pageInfo: { hasNextPage: false },
+              edges: [
+                { node: { deliveryMethod: { methodType: "SHIPPING" } } },
+                { node: { deliveryMethod: { methodType: "PICK_UP" } } },
+              ],
+            },
+          },
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { getOrderForHandoff } = await import("@/integrations/shopify/order-for-handoff");
+    const result = await getOrderForHandoff("gid://shopify/Order/3");
+
+    expect(result?.fulfillmentMode).toBe("UNKNOWN");
+  });
+
+  it("a truncated fulfillmentOrders connection reads as UNKNOWN even when every visible FulfillmentOrder agrees", async () => {
+    setShopifyEnv();
+    const fetchMock = vi.fn();
+    fetchMock.mockResolvedValueOnce(tokenResponse()).mockResolvedValueOnce(
+      jsonResponse({
+        data: {
+          order: {
+            id: "gid://shopify/Order/4",
+            name: "#5680",
+            cancelledAt: null,
+            displayFulfillmentStatus: "UNFULFILLED",
+            fullyPaid: true,
+            customer: null,
+            shippingAddress: { city: "Tilburg" },
+            customAttributes: [],
+            fulfillmentOrders: {
+              pageInfo: { hasNextPage: true },
+              edges: [{ node: { deliveryMethod: { methodType: "SHIPPING" } } }],
+            },
+          },
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { getOrderForHandoff } = await import("@/integrations/shopify/order-for-handoff");
+    const result = await getOrderForHandoff("gid://shopify/Order/4");
+
+    expect(result?.fulfillmentMode).toBe("UNKNOWN");
   });
 
   it("returns null for an unknown/nonexistent Order, never throws", async () => {
