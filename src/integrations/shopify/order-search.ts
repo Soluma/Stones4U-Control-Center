@@ -173,3 +173,91 @@ export async function searchDraftOrdersForHandoff(term: string, limit = 8): Prom
     customerName: node.customer?.displayName ?? null,
   }));
 }
+
+// Phase 6E — real-Order equivalent of searchDraftOrdersForHandoff() above,
+// for the staff "create a delivery date link for an Order" flow
+// (docs/ORDER-DELIVERY-HANDOFF-FOUNDATION.md §"Staff Order handoff
+// management"). Deliberately does not fetch/return customer.displayName —
+// unlike the Draft search above, this result set is minimal-by-design
+// (build instruction §4: "Do NOT return/render... unnecessary PII"); the
+// customer GID is fetched only so the create step can do server-side
+// CustomerProfile matching, never rendered. Also fetches just enough to
+// show honest staff context up front (cancelled state, whether a delivery
+// date preference already exists) without a second round-trip.
+const SEARCH_ORDERS_FOR_HANDOFF_QUERY = /* GraphQL */ `
+  query SearchOrdersForHandoff($query: String!, $first: Int!) {
+    orders(first: $first, query: $query, sortKey: CREATED_AT, reverse: true) {
+      edges {
+        node {
+          id
+          name
+          createdAt
+          cancelledAt
+          displayFulfillmentStatus
+          customer { id }
+          shippingAddress { city }
+          customAttributes { key value }
+        }
+      }
+    }
+  }
+`;
+
+type RawOrderForHandoffSearchNode = {
+  id: string;
+  name: string;
+  createdAt: string;
+  cancelledAt: string | null;
+  displayFulfillmentStatus: string;
+  customer: { id: string } | null;
+  shippingAddress: { city: string | null } | null;
+  customAttributes: { key: string; value: string }[];
+};
+type RawOrdersForHandoffSearchResponse = { orders: { edges: { node: RawOrderForHandoffSearchNode }[] } };
+
+export type OrderForHandoffSearchResult = {
+  gid: string;
+  name: string;
+  createdAt: string;
+  isCancelled: boolean;
+  fulfillmentStatus: string;
+  customerGid: string | null;
+  hasShippingAddress: boolean;
+  // The actual ISO value when Shopify already has one, `null` otherwise —
+  // not merely a boolean, so staff can be shown *which* date is already
+  // known (build instruction §2/§12/§13). Deliberately carries no
+  // assumption about where this value came from (quote, Draft, staff,
+  // customer portal) — see createOrderDeliveryHandoffForStaff()'s doc
+  // comment in delivery-handoff.service.ts for the full reasoning.
+  requestedDeliveryDate: string | null;
+};
+
+/** Read-only. Matches on Order name only (`name:*term*` — Shopify honors a
+ * scoped `name:` wildcard on the `orders` connection, confirmed live and
+ * already relied on by searchShopifyOrders() above; unlike `draftOrders`,
+ * which silently ignores that same scoped filter). Never mutates anything
+ * — this is purely the search step; the actual handoff creation always
+ * re-reads the specific selected Order again via getOrderForHandoff()
+ * immediately before creating (build instruction §6), so a result from
+ * this search is never trusted as still-current by the time staff acts on
+ * it. */
+export async function searchOrdersForHandoff(term: string, limit = 8): Promise<OrderForHandoffSearchResult[]> {
+  const sanitizedTerm = term.replace(/["\\]/g, "");
+  const query = `name:*${sanitizedTerm}*`;
+
+  const data = await shopifyGraphQL<RawOrdersForHandoffSearchResponse>(SEARCH_ORDERS_FOR_HANDOFF_QUERY, {
+    query,
+    first: limit,
+  });
+
+  return data.orders.edges.map(({ node }) => ({
+    gid: node.id,
+    name: node.name,
+    createdAt: node.createdAt,
+    isCancelled: !!node.cancelledAt,
+    fulfillmentStatus: node.displayFulfillmentStatus,
+    customerGid: node.customer?.id ?? null,
+    hasShippingAddress: !!node.shippingAddress,
+    requestedDeliveryDate: node.customAttributes.find((a) => a.key === "requested_delivery_date")?.value ?? null,
+  }));
+}

@@ -3,6 +3,7 @@ import { prisma } from "@/platform/db/prisma";
 import {
   createDeliveryDateHandoff,
   createOrGetOrderDeliveryHandoff,
+  createOrderDeliveryHandoffForStaff,
   getHandoffByRawToken,
   listAllDeliveryDateHandoffs,
   listDeliveryDateHandoffsForCustomer,
@@ -12,7 +13,7 @@ import {
   submitRequestedDeliveryDate,
   submitRequestedDeliveryDateForOrder,
 } from "@/modules/delivery/delivery-handoff.service";
-import { DeliveryHandoffError } from "@/modules/delivery/errors";
+import { DeliveryHandoffError, ExistingRequestedDeliveryDateError } from "@/modules/delivery/errors";
 import { OrderCancelledError } from "@/integrations/shopify/errors";
 import { generatePublicToken, hashPublicToken } from "@/modules/delivery/token";
 import {
@@ -31,6 +32,16 @@ vi.mock("@/integrations/shopify/draft-order-mirror", () => ({
 const mockOrderMirror = vi.fn();
 vi.mock("@/integrations/shopify/order-mirror", () => ({
   mirrorRequestedDeliveryDateToOrder: (...args: unknown[]) => mockOrderMirror(...args),
+}));
+
+// Phase 6E — mocked the same way as the mirror functions above: this keeps
+// createOrderDeliveryHandoffForStaff()'s own tests focused on its
+// orchestration logic (re-read -> cancelled check -> resolve customer ->
+// create), not re-testing the Shopify GraphQL client itself (already
+// covered in tests/delivery-handoff-shopify.test.ts).
+const mockGetOrderForHandoff = vi.fn();
+vi.mock("@/integrations/shopify/order-for-handoff", () => ({
+  getOrderForHandoff: (...args: unknown[]) => mockGetOrderForHandoff(...args),
 }));
 
 const TOMORROW = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
@@ -54,6 +65,7 @@ describe("delivery-handoff.service", () => {
     mockMirror.mockResolvedValue({ invoiceUrl: "https://test-shop.myshopify.com/12345/invoices/abc" });
     mockOrderMirror.mockReset();
     mockOrderMirror.mockResolvedValue({ orderGid: "gid://shopify/Order/1" });
+    mockGetOrderForHandoff.mockReset();
   });
 
   afterAll(async () => {
@@ -691,6 +703,344 @@ describe("delivery-handoff.service", () => {
       expect(error).toBeInstanceOf(DeliveryHandoffError);
       expect((error as InstanceType<typeof DeliveryHandoffError>).retryable).toBe(false);
       expect(mockOrderMirror).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("Staff Order handoff creation — server-side re-read (createOrderDeliveryHandoffForStaff)", () => {
+    it("creates a handoff via a fresh server-side re-read — publicReference comes from that re-read, never from the caller (the function accepts only orderGid + createdById)", async () => {
+      const orderGid = `gid://shopify/Order/${crypto.randomUUID()}`;
+      mockGetOrderForHandoff.mockResolvedValueOnce({
+        gid: orderGid,
+        name: "#9001",
+        isCancelled: false,
+        fulfillmentStatus: "UNFULFILLED",
+        customerGid: null,
+        hasShippingAddress: true,
+        hasRequestedDeliveryDateAlready: false,
+      });
+
+      const { handoff, rawToken } = await createOrderDeliveryHandoffForStaff({ orderGid, createdById: userId });
+      createdHandoffIds.push(handoff.id);
+
+      expect(rawToken).not.toBeNull();
+      expect(handoff.commerceObjectType).toBe("SHOPIFY_ORDER");
+      expect(handoff.shopifyOrderGid).toBe(orderGid);
+      expect(handoff.publicReference).toBe("#9001");
+      expect(handoff.customerProfileId).toBeNull();
+      expect(mockGetOrderForHandoff).toHaveBeenCalledWith(orderGid);
+    });
+
+    it("resolves customerProfileId server-side from the re-read's customer GID — never fabricates a CustomerProfile", async () => {
+      const orderGid = `gid://shopify/Order/${crypto.randomUUID()}`;
+      const profile = await createTestCustomerProfile();
+      mockGetOrderForHandoff.mockResolvedValueOnce({
+        gid: orderGid,
+        name: "#9002",
+        isCancelled: false,
+        fulfillmentStatus: "UNFULFILLED",
+        customerGid: profile.shopifyCustomerGid,
+        hasShippingAddress: true,
+        hasRequestedDeliveryDateAlready: false,
+      });
+
+      // Not pushed to createdHandoffIds — cleanupCustomerProfile below
+      // already removes it (same convention as the rest of this file).
+      const { handoff } = await createOrderDeliveryHandoffForStaff({ orderGid, createdById: userId });
+
+      expect(handoff.customerProfileId).toBe(profile.id);
+      await cleanupCustomerProfile(profile.id);
+    });
+
+    it("never links to an unknown Shopify Customer GID — customerProfileId stays null rather than inventing linkage", async () => {
+      const orderGid = `gid://shopify/Order/${crypto.randomUUID()}`;
+      mockGetOrderForHandoff.mockResolvedValueOnce({
+        gid: orderGid,
+        name: "#9003",
+        isCancelled: false,
+        fulfillmentStatus: "UNFULFILLED",
+        customerGid: `gid://shopify/Customer/${crypto.randomUUID()}`,
+        hasShippingAddress: true,
+        hasRequestedDeliveryDateAlready: false,
+      });
+
+      const { handoff } = await createOrderDeliveryHandoffForStaff({ orderGid, createdById: userId });
+      createdHandoffIds.push(handoff.id);
+      expect(handoff.customerProfileId).toBeNull();
+    });
+
+    it("blocks creation for a cancelled Order with a staff-friendly, non-retryable message (build instruction §7) — no handoff row is created", async () => {
+      const orderGid = `gid://shopify/Order/${crypto.randomUUID()}`;
+      mockGetOrderForHandoff.mockResolvedValueOnce({
+        gid: orderGid,
+        name: "#9004",
+        isCancelled: true,
+        fulfillmentStatus: "UNFULFILLED",
+        customerGid: null,
+        hasShippingAddress: true,
+        hasRequestedDeliveryDateAlready: false,
+      });
+
+      const error = await createOrderDeliveryHandoffForStaff({ orderGid, createdById: userId }).catch((e) => e);
+      expect(error).toBeInstanceOf(DeliveryHandoffError);
+      expect((error as InstanceType<typeof DeliveryHandoffError>).message).toBe(
+        "Voor een geannuleerde bestelling kan geen nieuwe leverdatumlink worden aangemaakt.",
+      );
+      expect((error as InstanceType<typeof DeliveryHandoffError>).retryable).toBe(false);
+
+      const count = await prisma.deliveryDateHandoff.count({ where: { externalId: orderGid } });
+      expect(count).toBe(0);
+    });
+
+    it("a historical handoff for an Order that later becomes cancelled remains untouched and readable — the cancelled check runs before any lookup/create, so an existing row is never reached, let alone modified", async () => {
+      const orderGid = `gid://shopify/Order/${crypto.randomUUID()}`;
+      mockGetOrderForHandoff.mockResolvedValueOnce({
+        gid: orderGid,
+        name: "#9005",
+        isCancelled: false,
+        fulfillmentStatus: "UNFULFILLED",
+        customerGid: null,
+        hasShippingAddress: true,
+        hasRequestedDeliveryDateAlready: false,
+      });
+      const { handoff: original } = await createOrderDeliveryHandoffForStaff({ orderGid, createdById: userId });
+      createdHandoffIds.push(original.id);
+
+      mockGetOrderForHandoff.mockResolvedValueOnce({
+        gid: orderGid,
+        name: "#9005",
+        isCancelled: true,
+        fulfillmentStatus: "UNFULFILLED",
+        customerGid: null,
+        hasShippingAddress: true,
+        hasRequestedDeliveryDateAlready: false,
+      });
+      await expect(createOrderDeliveryHandoffForStaff({ orderGid, createdById: userId })).rejects.toThrow(DeliveryHandoffError);
+
+      const stillThere = await prisma.deliveryDateHandoff.findUniqueOrThrow({ where: { id: original.id } });
+      expect(stillThere.id).toBe(original.id);
+      expect(stillThere.publicReference).toBe("#9005");
+    });
+
+    it("returns a clear, non-retryable error when the Order no longer exists on re-read", async () => {
+      mockGetOrderForHandoff.mockResolvedValueOnce(null);
+      const error = await createOrderDeliveryHandoffForStaff({
+        orderGid: `gid://shopify/Order/${crypto.randomUUID()}`,
+        createdById: userId,
+      }).catch((e) => e);
+      expect(error).toBeInstanceOf(DeliveryHandoffError);
+      expect((error as InstanceType<typeof DeliveryHandoffError>).retryable).toBe(false);
+    });
+
+    it("is idempotent — a second call for the same Order returns the existing row, no new raw token (build instruction §9)", async () => {
+      const orderGid = `gid://shopify/Order/${crypto.randomUUID()}`;
+      const orderSnapshot = {
+        gid: orderGid,
+        name: "#9006",
+        isCancelled: false,
+        fulfillmentStatus: "UNFULFILLED",
+        customerGid: null,
+        hasShippingAddress: true,
+        hasRequestedDeliveryDateAlready: false,
+      };
+      mockGetOrderForHandoff.mockResolvedValueOnce(orderSnapshot);
+      const first = await createOrderDeliveryHandoffForStaff({ orderGid, createdById: userId });
+      createdHandoffIds.push(first.handoff.id);
+
+      mockGetOrderForHandoff.mockResolvedValueOnce(orderSnapshot);
+      const second = await createOrderDeliveryHandoffForStaff({ orderGid, createdById: userId });
+
+      expect(second.handoff.id).toBe(first.handoff.id);
+      expect(second.rawToken).toBeNull();
+
+      const count = await prisma.deliveryDateHandoff.count({ where: { externalId: orderGid } });
+      expect(count).toBe(1);
+    });
+  });
+
+  describe("Staff Order handoff creation — existing requested_delivery_date confirmation (new business rule, this round)", () => {
+    // Fons clarified this round: requested_delivery_date can already exist
+    // on an Order before any Control Center handoff ever did — from an
+    // earlier quote, the Draft stage, or staff, not only the customer
+    // portal. Discovering it on re-read must never be silently treated as
+    // "safe to overwrite" nor as proof of customer-portal origin.
+
+    it("an unconfirmed first attempt for an Order with an existing requested_delivery_date and no local handoff creates nothing and throws a typed confirmation-required error carrying only the date", async () => {
+      const orderGid = `gid://shopify/Order/${crypto.randomUUID()}`;
+      mockGetOrderForHandoff.mockResolvedValueOnce({
+        gid: orderGid,
+        name: "#9101",
+        isCancelled: false,
+        fulfillmentStatus: "UNFULFILLED",
+        customerGid: null,
+        hasShippingAddress: true,
+        hasRequestedDeliveryDateAlready: true,
+        requestedDeliveryDate: "2026-09-24",
+      });
+
+      const error = await createOrderDeliveryHandoffForStaff({ orderGid, createdById: userId }).catch((e) => e);
+      expect(error).toBeInstanceOf(ExistingRequestedDeliveryDateError);
+      expect((error as ExistingRequestedDeliveryDateError).requestedDeliveryDate).toBe("2026-09-24");
+      // The error carries the date and nothing else sensitive — no Order
+      // GID, no customer data, only the plain date value, its fixed
+      // `name`, and the inherited fixed message.
+      expect(Object.keys(error as object).sort()).toEqual(["name", "requestedDeliveryDate"]);
+
+      const count = await prisma.deliveryDateHandoff.count({ where: { externalId: orderGid } });
+      expect(count).toBe(0);
+    });
+
+    it("explicit confirmExistingRequestedDeliveryDate lets creation proceed for an active Order, and the confirmed attempt still re-reads Shopify server-side", async () => {
+      const orderGid = `gid://shopify/Order/${crypto.randomUUID()}`;
+      const orderSnapshot = {
+        gid: orderGid,
+        name: "#9102",
+        isCancelled: false,
+        fulfillmentStatus: "UNFULFILLED",
+        customerGid: null,
+        hasShippingAddress: true,
+        hasRequestedDeliveryDateAlready: true,
+        requestedDeliveryDate: "2026-09-24",
+      };
+      mockGetOrderForHandoff.mockResolvedValueOnce(orderSnapshot); // unconfirmed attempt
+      await createOrderDeliveryHandoffForStaff({ orderGid, createdById: userId }).catch(() => undefined);
+
+      mockGetOrderForHandoff.mockResolvedValueOnce(orderSnapshot); // confirmed attempt
+      const { handoff } = await createOrderDeliveryHandoffForStaff({
+        orderGid,
+        createdById: userId,
+        confirmExistingRequestedDeliveryDate: true,
+      });
+      createdHandoffIds.push(handoff.id);
+
+      expect(handoff.shopifyOrderGid).toBe(orderGid);
+      expect(handoff.publicReference).toBe("#9102");
+      // Confirmation authorizes creation — it does not skip the
+      // server-side re-read (build instruction §4): getOrderForHandoff was
+      // called twice, once per attempt, never trusting a cached/earlier read.
+      expect(mockGetOrderForHandoff).toHaveBeenCalledTimes(2);
+
+      const count = await prisma.deliveryDateHandoff.count({ where: { externalId: orderGid } });
+      expect(count).toBe(1);
+    });
+
+    it("cancellation wins even over an explicit confirmation — build instruction §6", async () => {
+      const orderGid = `gid://shopify/Order/${crypto.randomUUID()}`;
+      mockGetOrderForHandoff.mockResolvedValueOnce({
+        gid: orderGid,
+        name: "#9103",
+        isCancelled: true,
+        fulfillmentStatus: "UNFULFILLED",
+        customerGid: null,
+        hasShippingAddress: true,
+        hasRequestedDeliveryDateAlready: true,
+        requestedDeliveryDate: "2026-09-24",
+      });
+
+      const error = await createOrderDeliveryHandoffForStaff({
+        orderGid,
+        createdById: userId,
+        confirmExistingRequestedDeliveryDate: true,
+      }).catch((e) => e);
+
+      expect(error).toBeInstanceOf(DeliveryHandoffError);
+      expect((error as InstanceType<typeof DeliveryHandoffError>).message).toBe(
+        "Voor een geannuleerde bestelling kan geen nieuwe leverdatumlink worden aangemaakt.",
+      );
+      const count = await prisma.deliveryDateHandoff.count({ where: { externalId: orderGid } });
+      expect(count).toBe(0);
+    });
+
+    it("an existing local handoff bypasses the confirmation requirement entirely, even though Shopify already shows a requested date — normal idempotent behavior, no confirmation needed (build instruction §7)", async () => {
+      const orderGid = `gid://shopify/Order/${crypto.randomUUID()}`;
+      // First create: no existing date yet, no confirmation needed.
+      mockGetOrderForHandoff.mockResolvedValueOnce({
+        gid: orderGid,
+        name: "#9104",
+        isCancelled: false,
+        fulfillmentStatus: "UNFULFILLED",
+        customerGid: null,
+        hasShippingAddress: true,
+        hasRequestedDeliveryDateAlready: false,
+        requestedDeliveryDate: null,
+      });
+      const first = await createOrderDeliveryHandoffForStaff({ orderGid, createdById: userId });
+      createdHandoffIds.push(first.handoff.id);
+
+      // Second create attempt, unconfirmed: Shopify now shows a date (e.g.
+      // the customer submitted one through their link in the meantime) —
+      // but a local handoff already exists, so this must NOT require
+      // confirmation; it is the ordinary idempotent "already exists" path.
+      mockGetOrderForHandoff.mockResolvedValueOnce({
+        gid: orderGid,
+        name: "#9104",
+        isCancelled: false,
+        fulfillmentStatus: "UNFULFILLED",
+        customerGid: null,
+        hasShippingAddress: true,
+        hasRequestedDeliveryDateAlready: true,
+        requestedDeliveryDate: "2026-09-24",
+      });
+      const second = await createOrderDeliveryHandoffForStaff({ orderGid, createdById: userId });
+
+      expect(second.handoff.id).toBe(first.handoff.id);
+      expect(second.rawToken).toBeNull();
+      const count = await prisma.deliveryDateHandoff.count({ where: { externalId: orderGid } });
+      expect(count).toBe(1);
+    });
+
+    it("never fabricates an Activity merely from discovering an existing Shopify requested_delivery_date — no code path here creates one at all", async () => {
+      const orderGid = `gid://shopify/Order/${crypto.randomUUID()}`;
+      const profile = await createTestCustomerProfile();
+      mockGetOrderForHandoff.mockResolvedValueOnce({
+        gid: orderGid,
+        name: "#9105",
+        isCancelled: false,
+        fulfillmentStatus: "UNFULFILLED",
+        customerGid: profile.shopifyCustomerGid,
+        hasShippingAddress: true,
+        hasRequestedDeliveryDateAlready: true,
+        requestedDeliveryDate: "2026-09-24",
+      });
+
+      // Not pushed to createdHandoffIds — cleanupCustomerProfile below
+      // already removes it.
+      const { handoff } = await createOrderDeliveryHandoffForStaff({
+        orderGid,
+        createdById: userId,
+        confirmExistingRequestedDeliveryDate: true,
+      });
+
+      const activityCount = await prisma.activity.count({ where: { relatedDeliveryDateHandoffId: handoff.id } });
+      expect(activityCount).toBe(0);
+      await cleanupCustomerProfile(profile.id);
+    });
+  });
+
+  describe("regeneratePublicToken — works for either handoff type", () => {
+    it("logs both GID fields in the audit trail (only the relevant one is ever non-null) so the trail is meaningful for an Order row too", async () => {
+      const orderGid = `gid://shopify/Order/${crypto.randomUUID()}`;
+      mockGetOrderForHandoff.mockResolvedValueOnce({
+        gid: orderGid,
+        name: "#9007",
+        isCancelled: false,
+        fulfillmentStatus: "UNFULFILLED",
+        customerGid: null,
+        hasShippingAddress: true,
+        hasRequestedDeliveryDateAlready: false,
+      });
+      const { handoff } = await createOrderDeliveryHandoffForStaff({ orderGid, createdById: userId });
+      createdHandoffIds.push(handoff.id);
+
+      const before = await prisma.deliveryDateHandoff.findUniqueOrThrow({ where: { id: handoff.id } });
+      const { rawToken: newToken } = await regeneratePublicToken(handoff.id, userId);
+      const after = await prisma.deliveryDateHandoff.findUniqueOrThrow({ where: { id: handoff.id } });
+
+      expect(newToken).toBeTruthy();
+      expect(after.publicTokenHash).not.toBe(before.publicTokenHash);
+      expect(after.shopifyOrderGid).toBe(orderGid);
+      // Everything else about the row is untouched by regeneration.
+      expect(after.requestedDeliveryDate).toBe(before.requestedDeliveryDate);
+      expect(after.status).toBe(before.status);
     });
   });
 });

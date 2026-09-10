@@ -2,10 +2,11 @@ import "server-only";
 import { prisma } from "@/platform/db/prisma";
 import { logAudit } from "@/platform/audit/audit";
 import { generatePublicToken, hashPublicToken } from "./token";
-import { DeliveryHandoffError } from "./errors";
+import { DeliveryHandoffError, ExistingRequestedDeliveryDateError } from "./errors";
 import { mirrorRequestedDeliveryDateToShopify } from "@/integrations/shopify/draft-order-mirror";
 import { mirrorRequestedDeliveryDateToOrder } from "@/integrations/shopify/order-mirror";
 import { OrderCancelledError } from "@/integrations/shopify/errors";
+import { getOrderForHandoff } from "@/integrations/shopify/order-for-handoff";
 import type { DeliveryDateHandoff, PaymentProvider } from "@/generated/prisma";
 
 // Quote Delivery Date Handoff — native Control Center implementation
@@ -193,6 +194,90 @@ export async function createOrGetOrderDeliveryHandoff(input: {
   return { handoff, rawToken };
 }
 
+/**
+ * Phase 6E — the staff-facing entry point for creating an Order handoff
+ * from the /delivery-handoffs management UI. Deliberately the only path
+ * that may call createOrGetOrderDeliveryHandoff() from a staff action: a
+ * search result the staff member is acting on can be stale by the time
+ * they click "create" (another tab, another staff member, time passing —
+ * build instruction §6, "the known stale-search problem"), so this always
+ * re-reads the specific Order fresh via getOrderForHandoff() first and
+ * derives every trusted field from *that* read — publicReference,
+ * cancellation state, and the customer GID used for matching — never from
+ * whatever the client's search result happened to show. The caller may
+ * supply nothing but which Order was selected (by GID) and, when needed,
+ * a narrow confirmation flag; it has no way to supply a publicReference, a
+ * customerProfileId, or a commerceObjectType.
+ *
+ * Refuses to create a new handoff for a cancelled Order (build instruction
+ * §7) with a staff-friendly, non-retryable DeliveryHandoffError — a
+ * historical handoff for that Order, if one already exists, is untouched
+ * and stays readable (this function only ever reaches the cancelled check
+ * before creating; an existing row is never deleted or hidden by it). This
+ * check runs first and wins even over an explicit confirmation, per the
+ * newly clarified business rule below (build instruction §6).
+ *
+ * **Existing requested_delivery_date is not exclusively portal-generated**
+ * (clarified by Fons, this round): a Shopify Order can already carry
+ * `requested_delivery_date` before any Control Center handoff ever
+ * existed — entered during an earlier quote, on the Draft Order, by staff
+ * manually, or through some other approved process. Discovering that
+ * value on re-read must NEVER be read as "the customer already used the
+ * portal" — it only proves "Stones4U already knows a requested delivery
+ * date," nothing about where it came from. So: if no *local* handoff
+ * exists yet for this Order and Shopify already has a date, this function
+ * refuses to silently create a second, competing request — it throws
+ * `ExistingRequestedDeliveryDateError` (carrying the actual date value)
+ * unless the caller explicitly passes
+ * `confirmExistingRequestedDeliveryDate: true`. That flag authorizes
+ * exactly one thing — "staff knowingly wants a new handoff despite a
+ * known date" — and nothing else; it never substitutes for the mandatory
+ * fresh Shopify re-read above, and has no bearing on Order identity,
+ * publicReference, customerProfileId, or commerceObjectType, all of which
+ * remain server-derived exactly as before.
+ *
+ * This confirmation requirement applies ONLY to a *first* handoff for the
+ * Order — an existing local handoff always takes the normal idempotent
+ * path below regardless of what Shopify currently shows (build
+ * instruction §7): a customer who already used their link, then staff
+ * revisiting the management page, must never be asked to "confirm"
+ * anything just because the date they already submitted is, unsurprisingly,
+ * still on the Order.
+ */
+export async function createOrderDeliveryHandoffForStaff(input: {
+  orderGid: string;
+  createdById: string;
+  confirmExistingRequestedDeliveryDate?: boolean;
+}): Promise<{ handoff: DeliveryDateHandoff; rawToken: string | null }> {
+  const order = await getOrderForHandoff(input.orderGid);
+  if (!order) {
+    throw new DeliveryHandoffError("Deze bestelling is niet gevonden in Shopify.", { retryable: false });
+  }
+  if (order.isCancelled) {
+    throw new DeliveryHandoffError(
+      "Voor een geannuleerde bestelling kan geen nieuwe leverdatumlink worden aangemaakt.",
+      { retryable: false },
+    );
+  }
+
+  const existingLocalHandoff = await prisma.deliveryDateHandoff.findUnique({
+    where: { sourceSystem_externalId: { sourceSystem: "SHOPIFY", externalId: order.gid } },
+  });
+
+  if (!existingLocalHandoff && order.requestedDeliveryDate && !input.confirmExistingRequestedDeliveryDate) {
+    throw new ExistingRequestedDeliveryDateError(order.requestedDeliveryDate);
+  }
+
+  const customerProfileId = await resolveCustomerProfileIdForShopifyGid(order.customerGid);
+
+  return createOrGetOrderDeliveryHandoff({
+    shopifyOrderGid: order.gid,
+    publicReference: order.name,
+    customerProfileId,
+    createdById: input.createdById,
+  });
+}
+
 /** Read-only, for Customer 360's backoffice display — only rows that
  * resolved to this customer (never a live Shopify/quote call, matches
  * QuotesTable/DraftOrdersTable convention of reading only what's already
@@ -257,7 +342,12 @@ export async function regeneratePublicToken(handoffId: string, actorId: string):
     action: "delivery_handoff.token_regenerated",
     entityType: "DeliveryDateHandoff",
     entityId: handoff.id,
-    metadata: { shopifyDraftOrderGid: handoff.shopifyDraftOrderGid },
+    // Phase 6E — this function already worked for any handoff row
+    // (Draft or Order alike; it only ever touches publicTokenHash), but
+    // the audit trail previously logged only the Draft GID field, always
+    // null for an Order row. Logging both makes the trail meaningful for
+    // either type without changing any actual regeneration behavior.
+    metadata: { shopifyDraftOrderGid: handoff.shopifyDraftOrderGid, shopifyOrderGid: handoff.shopifyOrderGid },
   });
 
   return { handoff, rawToken };

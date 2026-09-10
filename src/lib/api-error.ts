@@ -4,6 +4,7 @@ import { Prisma } from "@/generated/prisma";
 import { UnauthenticatedError, ForbiddenError } from "@/platform/auth/guards";
 import { OpportunityValidationError } from "@/modules/opportunities/opportunity.service";
 import { CustomerContactValidationError } from "@/modules/crm/customer-contact.service";
+import { DeliveryHandoffError } from "@/modules/delivery/errors";
 
 /** Central error → HTTP response mapping for API routes, so guard/validation
  * errors never leak a raw stack trace and every route behaves consistently.
@@ -27,6 +28,14 @@ export function toErrorResponse(error: unknown): NextResponse {
   }
   if (error instanceof CustomerContactValidationError) {
     return NextResponse.json({ error: error.message }, { status: 400 });
+  }
+  // Phase 6E — the same clean, non-retryable/retryable error the public
+  // /delivery/[token] flow already throws (e.g. cancelled Order, invalid
+  // date) is now also thrown from the staff-facing Order handoff creation
+  // path; centralizing it here means any future staff route that touches
+  // delivery-handoff logic gets the same safe mapping automatically.
+  if (error instanceof DeliveryHandoffError) {
+    return NextResponse.json({ error: error.message, retryable: error.retryable }, { status: 400 });
   }
   if (error instanceof Prisma.PrismaClientKnownRequestError) {
     if (error.code === "P2025") {

@@ -387,6 +387,7 @@ describe("getOrderForHandoff — Phase 6B Order read client", () => {
       customerGid: null,
       hasShippingAddress: false,
       hasRequestedDeliveryDateAlready: false,
+      requestedDeliveryDate: null,
     });
   });
 
@@ -421,6 +422,7 @@ describe("getOrderForHandoff — Phase 6B Order read client", () => {
       customerGid: "gid://shopify/Customer/9",
       hasShippingAddress: true,
       hasRequestedDeliveryDateAlready: true,
+      requestedDeliveryDate: "2026-09-01",
     });
   });
 

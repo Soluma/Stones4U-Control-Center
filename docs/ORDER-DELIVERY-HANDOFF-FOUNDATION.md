@@ -592,16 +592,175 @@ real deployed endpoints:
 - **Production**: zero mutations, zero deploys. **OfferteApp**: not
   touched.
 
-## Next phase boundary (Phase 6E and onward)
+## Staff Order handoff management (Phase 6E)
 
-Explicitly **not** built in Phase 6C or 6D: notification outbox, any
-provider integration, any transactional mail, a staff UI for creating
-Order-based handoffs (today only reachable via the unreachable webhook
-eligibility path or ad-hoc test tooling), a positive eligibility rule,
-production webhook registration. Per the Phase 6A discovery artifact's
-phased plan: 6E notification outbox; 6F manual staff fallback; 6G full
+`/delivery-handoffs` now has an "Orders" / "Draft Orders" tab (Orders
+default), letting staff search real Shopify Orders — not only Draft
+Orders — and create a delivery-date link for one. This is the safe manual
+fallback ahead of any automatic eligibility/notification path.
+
+`searchOrdersForHandoff()` (`src/integrations/shopify/order-search.ts`) is
+a minimal, separate search query — never returns customer name, email,
+phone, or full address, only the customer GID (server-side matching only)
+and enough context to show staff a sensible result (cancelled state,
+fulfillment status, and — see below — the actual `requested_delivery_date`
+value when one already exists).
+
+`createOrderDeliveryHandoffForStaff()`
+(`src/modules/delivery/delivery-handoff.service.ts`) is the only path
+that may call the proven `createOrGetOrderDeliveryHandoff()` from a staff
+action. It accepts only the selected Order's GID (plus the narrow
+confirmation flag described below) and always re-reads that specific
+Order fresh via `getOrderForHandoff()` immediately before creating — a
+search result can be stale by the time staff acts on it (another tab,
+another staff member, time passing), so `publicReference`, cancellation
+state, and the customer GID used for matching are all derived from *that*
+re-read, never from the client or a cached search result. A cancelled
+Order is refused with a staff-friendly, non-retryable error; an already
+existing local handoff is always the ordinary idempotent path (same row,
+no new token on a repeat call).
+
+### Requested-delivery-date provenance (clarified business rule, this round)
+
+**`requested_delivery_date` is not exclusively portal-generated.** Fons
+clarified this round: Stones4U staff may already agree a delivery date
+with a customer *before* payment and *before* a real Shopify Order even
+exists — during quote/offer preparation, on the Draft Order. The intended
+future flow:
+
+```
+Offerte / Draft Order
+        ↓
+requested_delivery_date may already be entered
+        ↓
+Draft becomes a real Shopify Order (existing, proven propagation)
+        ↓
+requested_delivery_date survives onto the Order
+        ↓
+customer pays
+        ↓
+Control Center checks: is requested_delivery_date already known?
+        ↓
+   YES → do not send another "Wanneer mogen we langskomen?" request
+   NO  → if otherwise eligible and the payment condition is met,
+         send the customer a delivery-date request
+```
+
+Possible future origins of a `requested_delivery_date` value include
+`QUOTE`, `CUSTOMER_PORTAL`, `STAFF_MANUAL`, `B2B`/`ON_ACCOUNT`, and
+`UNKNOWN_LEGACY` (any pre-existing value with no recorded source). **None
+of this is implemented in Phase 6E** — no OfferteApp integration, no quote
+UI field, no provenance column. What 6E *does* do is make sure nothing
+built so far — nor anything built later on this foundation — bakes in the
+wrong assumption.
+
+**What changed in the staff Order-creation path because of this**:
+discovering an existing `requested_delivery_date` on a fresh Shopify
+re-read, with no local handoff yet for that Order, is no longer silently
+ignored (nor silently overwritten). `createOrderDeliveryHandoffForStaff()`
+now throws a typed `ExistingRequestedDeliveryDateError` (carrying only the
+date value) unless the caller explicitly passes
+`confirmExistingRequestedDeliveryDate: true`. The staff API route maps
+this to `409 {code: "EXISTING_REQUESTED_DELIVERY_DATE",
+requestedDeliveryDate}`; the UI shows a confirmation dialog ("Gewenste
+leverdatum al bekend" — "Voor deze bestelling is al een gewenste
+leverdatum van *[datum]* geregistreerd. Wilt u de klant opnieuw vragen een
+gewenste leverdatum door te geven?" — Annuleren / Toch nieuwe link maken).
+The wording deliberately says "geregistreerd"/"bekend", never "door de
+klant doorgegeven" — provenance is not known, and must never be
+presented as known.
+
+This confirmation requirement applies **only** to a first handoff for the
+Order. An existing local handoff always takes the normal idempotent path
+regardless of what Shopify currently shows — a customer who already used
+their link, with staff later revisiting management, must never be asked
+to "confirm" anything just because the date they already submitted is,
+unsurprisingly, still on the Order. **Cancellation still wins over an
+explicit confirmation** — a cancelled Order can never get a new handoff,
+confirmed or not.
+
+**Data model**: no migration was needed. `getOrderForHandoff()` gained an
+additive `requestedDeliveryDate: string | null` field (alongside the
+existing, unchanged `hasRequestedDeliveryDateAlready: boolean`, which
+`eligibility.ts` and the webhook route still depend on exactly as before —
+neither was touched). The *value* lives on `requestedDeliveryDate`;
+*where it came from* is deliberately not tracked yet, and is never
+inferred from whether a local `DeliveryDateHandoff` exists (a Shopify date
+with no local handoff is common and expected under the future quote flow,
+not an anomaly). When real provenance tracking is needed, the clean,
+non-destructive shape is a new nullable enum column (`QUOTE` /
+`CUSTOMER_PORTAL` / `STAFF_MANUAL` / `B2B` / `UNKNOWN_LEGACY`) tracked
+*separately* from the date value itself — never encoded into the date
+string, never fabricated for historical rows (which must default to
+`UNKNOWN_LEGACY`, not guessed).
+
+**Activity/audit**: discovering an existing Shopify date is not the same
+event as a customer submitting one through the portal, and no code path
+in the staff creation flow creates a `DELIVERY_DATE_REQUESTED` Activity —
+that Activity type is, and remains, created only by the actual public
+submit functions (`submitRequestedDeliveryDate` /
+`submitRequestedDeliveryDateForOrder`), unchanged this round. Future
+provenance/audit work should be able to distinguish "entered during quote",
+"staff manually entered", "customer submitted via portal", and "date
+changed later" — none of that exists yet, and this round does not
+fabricate any of it to fill the gap.
+
+**Eligibility engine reinterpretation (no code change)**: `eligibility.ts`
+itself is untouched this round (build instruction §18), but its
+`ALREADY_HAS_REQUESTED_DELIVERY_DATE` reason must now be read as a general
+business exclusion — "Stones4U already knows a requested delivery date,
+regardless of source" — not a portal-specific dedupe check. This is the
+rule that will eventually suppress an automatic delivery-date request:
+
+```
+Order created → customer pays → Control Center evaluates
+        ↓
+FIRST CHECK: does the Order already have requested_delivery_date?
+   YES → stop, no automatic request, no email
+   NO  → continue: regular customer? delivery Order? not cancelled?
+         payment condition satisfied? → create handoff, queue
+         notification (not built yet)
+```
+
+`ORDERS_CREATE` itself must never be read as "send the customer an
+email" — payment is an additional condition for the normal
+consumer/quote flow, not implied by order creation alone. **B2B/on-account
+customers are the explicit exception**: for those, payment may never be
+the trigger at all (goods on account, concept orders, later bundled
+invoicing) — Order, payment, invoice, and delivery must remain four
+independent concepts, never conflated. The one rule that stays constant
+across both: if a requested delivery date is already known, do not ask
+again unnecessarily. None of the payment-trigger or B2B logic is built in
+Phase 6E — this section is architecture documentation only.
+
+### Test hygiene note (Phase 6E live staff E2E)
+
+During the Phase 6E live staff E2E, two synthetic-credential values were
+briefly printed to tool output instead of only ever being redirected to a
+file: the throwaway test staff account's session cookie (via a `curl -i`
+call), and the raw public token embedded in a handoff-creation response.
+Both were caught immediately, both belonged only to synthetic staging test
+rows, and both were fully invalidated as part of the same round's cleanup
+(the session by deleting its user, the token by deleting the handoff row)
+— no production credential was ever involved. Process fix, no new tooling
+needed: any future live test whose response can embed a token, session
+cookie, or Authorization value must capture that response to a local file
+(`curl -o`) rather than print it, and only ever print values derived from
+it (status codes, booleans, non-secret fields).
+
+## Next phase boundary (Phase 6F and onward)
+
+Explicitly **not** built in Phase 6C, 6D, or 6E: notification outbox, any
+provider integration, any transactional mail, the quote-stage
+`requested_delivery_date` field (OfferteApp, untouched), any
+requested-delivery-date provenance/source tracking, the payment-trigger
+automation, B2B trigger logic, a positive eligibility rule, production
+webhook registration. Per the Phase 6A discovery artifact's phased plan:
+6E manual staff fallback (this round); 6F notification outbox; 6G full
 staging E2E including the customer-facing form; 6H production readiness;
-6I production canary.
+6I production canary — the exact 6E/6F pairing was swapped from the
+original plan once the manual-fallback work turned out to depend on this
+round's business-rule clarification first.
 
 ## Open decisions for Fons (unchanged from Phase 6A, still unresolved)
 
@@ -618,3 +777,13 @@ staging E2E including the customer-facing form; 6H production readiness;
 5. **New this phase**: whether/when to register the `ORDERS_CREATE`
    webhook on **production** — deliberately not done in Phase 6C (staging
    only, per this phase's hard boundary).
+6. **New this phase**: the exact provenance enum/tracking design
+   (`QUOTE`/`CUSTOMER_PORTAL`/`STAFF_MANUAL`/`B2B`/`UNKNOWN_LEGACY`) once
+   the quote-stage entry point actually exists — including whether
+   `UNKNOWN_LEGACY` should ever be backfilled onto pre-existing Shopify
+   dates with no local record, or left permanently unattributed.
+7. **New this phase**: whether the payment-trigger automation (§"Staff
+   Order handoff management" above) should fire on Shopify's own paid/
+   fulfillment status, on an OfferteApp-signaled invoice event, or both —
+   and how the B2B exception's own trigger (if any) should be surfaced to
+   staff in the meantime.

@@ -11,6 +11,7 @@ function baseOrder(overrides: Partial<OrderForHandoffResult> = {}): OrderForHand
     customerGid: null,
     hasShippingAddress: true,
     hasRequestedDeliveryDateAlready: false,
+    requestedDeliveryDate: null,
     ...overrides,
   };
 }

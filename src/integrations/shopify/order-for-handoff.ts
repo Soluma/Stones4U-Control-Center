@@ -58,6 +58,18 @@ export type OrderForHandoffResult = {
   customerGid: string | null;
   hasShippingAddress: boolean;
   hasRequestedDeliveryDateAlready: boolean;
+  // Phase 6E — the actual ISO date value when present, additive alongside
+  // the existing boolean above (never removed/renamed — eligibility.ts and
+  // the webhook route already depend on hasRequestedDeliveryDateAlready
+  // exactly as it is, and 6E must not touch that committed, working code
+  // — see build instruction §18). Needed for the staff "existing date"
+  // confirmation flow, which must show staff *which* date Shopify already
+  // has, not just that one exists. Deliberately carries no assumption
+  // about *where* this value came from (quote, Draft, staff, customer
+  // portal) — see delivery-handoff.service.ts's own doc comment on
+  // createOrderDeliveryHandoffForStaff() for the full provenance-neutral
+  // reasoning.
+  requestedDeliveryDate: string | null;
 };
 
 /** Read-only. Never called during the public /delivery/[token] flow — only
@@ -66,6 +78,8 @@ export async function getOrderForHandoff(orderGid: string): Promise<OrderForHand
   const data = await shopifyGraphQL<RawOrderForHandoff>(ORDER_FOR_HANDOFF_QUERY, { id: orderGid });
   if (!data.order) return null;
 
+  const requestedDeliveryDateAttribute = data.order.customAttributes.find((a) => a.key === "requested_delivery_date");
+
   return {
     gid: data.order.id,
     name: data.order.name,
@@ -73,6 +87,7 @@ export async function getOrderForHandoff(orderGid: string): Promise<OrderForHand
     fulfillmentStatus: data.order.displayFulfillmentStatus,
     customerGid: data.order.customer?.id ?? null,
     hasShippingAddress: !!data.order.shippingAddress,
-    hasRequestedDeliveryDateAlready: data.order.customAttributes.some((a) => a.key === "requested_delivery_date"),
+    hasRequestedDeliveryDateAlready: requestedDeliveryDateAttribute !== undefined,
+    requestedDeliveryDate: requestedDeliveryDateAttribute?.value ?? null,
   };
 }
