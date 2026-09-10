@@ -1,4 +1,5 @@
 import { notFound } from "next/navigation";
+import { getEarliestRequestedDeliveryDate } from "@/modules/delivery/delivery-lead-time";
 import { getHandoffByRawToken } from "@/modules/delivery/delivery-handoff.service";
 import { DeliveryDateForm } from "./DeliveryDateForm";
 import { OrderDeliveryDateForm } from "./OrderDeliveryDateForm";
@@ -43,6 +44,10 @@ export default async function DeliveryDatePage({ params }: PageProps) {
             token={token}
             currentValue={handoff.requestedDeliveryDate ? handoff.requestedDeliveryDate.toISOString().slice(0, 10) : ""}
             publicReference={handoff.publicReference}
+            earliestDeliveryDate={getEarliestRequestedDeliveryDate({
+              orderCreatedAt: handoff.createdAt,
+              now: new Date(),
+            })}
           />
         </div>
       </div>

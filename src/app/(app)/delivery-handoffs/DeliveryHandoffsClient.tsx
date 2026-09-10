@@ -14,6 +14,7 @@ import { SkeletonList } from "@/components/ui/Skeleton";
 import { formatDate, formatDateLong, formatDateTime } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import { FulfillmentModeDialog } from "./FulfillmentModeDialog";
+import { formatLargeTruckAccess } from "@/modules/delivery/delivery-details";
 
 // Phase 6E — this staff page now creates handoffs for two different kinds
 // of Shopify commerce object (see docs/ORDER-DELIVERY-HANDOFF-FOUNDATION.md
@@ -59,6 +60,10 @@ type Handoff = {
   shopifyOrderGid: string | null;
   publicReference: string | null;
   requestedDeliveryDate: string | null;
+  // Phase 6P — Control Center-only logistics details from the customer.
+  // Never mirrored to Shopify.
+  deliveryComment: string | null;
+  largeTruckAccessConfirmed: boolean | null;
   status: "PENDING" | "MIRRORED" | "ERROR";
   createdAt: string;
   updatedAt: string;
@@ -445,7 +450,19 @@ export function DeliveryHandoffsClient({ canCreate }: { canCreate: boolean }) {
                     {handoff.customerProfile?.displayName ?? handoff.customerProfile?.companyName ?? "—"}
                   </TableCell>
                   <TableCell className="text-ink-secondary">
-                    {handoff.requestedDeliveryDate ? handoff.requestedDeliveryDate.slice(0, 10) : "Nog niet gekozen"}
+                    <span className="block">
+                      {handoff.requestedDeliveryDate ? handoff.requestedDeliveryDate.slice(0, 10) : "Nog niet gekozen"}
+                    </span>
+                    {/* Phase 6P — `false` must never read as "inaccessible";
+                        formatLargeTruckAccess() owns that distinction. */}
+                    <span className="mt-1 block text-xs text-ink-tertiary">
+                      {formatLargeTruckAccess(handoff.largeTruckAccessConfirmed)}
+                    </span>
+                    <span className="mt-1 block whitespace-pre-line text-xs text-ink-tertiary">
+                      {handoff.deliveryComment
+                        ? `Opmerking voor levering: ${handoff.deliveryComment}`
+                        : "Opmerking voor levering: geen opmerking"}
+                    </span>
                   </TableCell>
                   <TableCell>
                     <Badge tone={STATUS_TONE[handoff.status]}>{STATUS_LABEL[handoff.status]}</Badge>

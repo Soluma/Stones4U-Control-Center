@@ -1,6 +1,8 @@
 import "server-only";
 import { prisma } from "@/platform/db/prisma";
 import { logAudit } from "@/platform/audit/audit";
+import { validateRequestedDeliveryDate } from "./delivery-lead-time";
+import { resolveDeliveryCommentPatch, resolveLargeTruckAccessPatch } from "./delivery-details";
 import { generatePublicToken, hashPublicToken } from "./token";
 import { DeliveryHandoffError, ExistingRequestedDeliveryDateError } from "./errors";
 import { mirrorRequestedDeliveryDateToShopify } from "@/integrations/shopify/draft-order-mirror";
@@ -16,7 +18,6 @@ import type { DeliveryDateHandoff, PaymentProvider } from "@/generated/prisma";
 // dependency), never a copy of it — same pattern as
 // OpportunityExternalLink/ExternalContactMatch.
 
-const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
 // Generous — real Shopify order names are short ("#1234", "#WEB1234"), this
 // only guards against something unexpectedly long ever reaching the
 // column, not against legitimate order-naming schemes.
@@ -43,40 +44,16 @@ function toDateOnlyUTC(year: number, month: number, day: number): Date {
   return new Date(Date.UTC(year, month - 1, day));
 }
 
-function todayUTC(): Date {
-  const now = new Date();
-  return toDateOnlyUTC(now.getUTCFullYear(), now.getUTCMonth() + 1, now.getUTCDate());
-}
-
 function toIsoDateOnly(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
 
-/**
- * Server-side date validation — a valid calendar date, not in the past.
- * Deliberately no weekend/holiday/lead-time/capacity/routing rules (Phase A
- * scope boundary, docs/QUOTE-DELIVERY-DATE-PORTAL-BUILD.md).
- */
-export function parseRequestedDeliveryDate(raw: string | null | undefined): Date {
-  if (!raw || raw.trim() === "") {
-    throw new DeliveryHandoffError("Kies een gewenste leverdatum.");
-  }
-  const trimmed = raw.trim();
-  if (!DATE_ONLY_RE.test(trimmed)) {
-    throw new DeliveryHandoffError("Ongeldige datum.");
-  }
-  const parts = trimmed.split("-").map(Number);
-  const parsed = toDateOnlyUTC(parts[0] ?? 0, parts[1] ?? 0, parts[2] ?? 0);
-  // Reject e.g. 2026-02-30 — Date's constructor silently rolls over an
-  // out-of-range day/month into the next one instead of erroring, so the
-  // round-trip below is the actual validity check.
-  if (toIsoDateOnly(parsed) !== trimmed) {
-    throw new DeliveryHandoffError("Ongeldige datum.");
-  }
-  if (parsed.getTime() < todayUTC().getTime()) {
-    throw new DeliveryHandoffError("Kies een datum die niet in het verleden ligt.");
-  }
-  return parsed;
+/** Turns an already-validated "YYYY-MM-DD" into the midnight-UTC value this
+ * column has always stored (@db.Date). Validation happens in
+ * delivery-lead-time.ts; this only converts. */
+function parseStoredDeliveryDate(iso: string): Date {
+  const [year, month, day] = iso.split("-").map(Number);
+  return toDateOnlyUTC(year ?? 0, month ?? 0, day ?? 0);
 }
 
 /**
@@ -374,7 +351,22 @@ type SubmitResult = { redirectUrl: string };
  * retryable DeliveryHandoffError instead of returning a target.
  */
 export async function submitRequestedDeliveryDate(handoff: DeliveryDateHandoff, rawDateInput: string | null | undefined): Promise<SubmitResult> {
-  const requestedDate = parseRequestedDeliveryDate(rawDateInput);
+  // Phase 6P (build instruction §14) — the weekend/lead-time policy is a
+  // Stones4U business rule, not an Order-flow feature, so the Draft flow
+  // validates newly submitted dates against exactly the same policy. Only
+  // the *date rule* is shared: the Order-only comment and truck-access
+  // fields are deliberately NOT introduced here, so historical Draft links
+  // keep working with an unchanged request shape and an unchanged
+  // persist -> mirror -> payment-redirect contract.
+  const draftValidation = validateRequestedDeliveryDate({
+    raw: rawDateInput,
+    orderCreatedAt: handoff.createdAt,
+    now: new Date(),
+  });
+  if (!draftValidation.ok) {
+    throw new DeliveryHandoffError(draftValidation.message);
+  }
+  const requestedDate = parseStoredDeliveryDate(draftValidation.date);
   const dateIso = toIsoDateOnly(requestedDate);
 
   const dateChanged =
@@ -449,7 +441,10 @@ export async function submitRequestedDeliveryDate(handoff: DeliveryDateHandoff, 
   return resolvePaymentTarget(persisted, mirrorResult.invoiceUrl);
 }
 
-type OrderSubmitResult = { requestedDeliveryDate: string };
+type OrderSubmitResult = {
+  requestedDeliveryDate: string;
+  largeTruckAccessConfirmed: boolean | null;
+};
 
 /**
  * Phase 6B — Order-equivalent of submitRequestedDeliveryDate(). A separate
@@ -474,17 +469,50 @@ type OrderSubmitResult = { requestedDeliveryDate: string };
  */
 export async function submitRequestedDeliveryDateForOrder(
   handoff: DeliveryDateHandoff,
-  rawDateInput: string | null | undefined,
+  input: {
+    rawDateInput: string | null | undefined;
+    deliveryComment?: string | null;
+    largeTruckAccessConfirmed?: unknown;
+  },
 ): Promise<OrderSubmitResult> {
-  const requestedDate = parseRequestedDeliveryDate(rawDateInput);
-  const dateIso = toIsoDateOnly(requestedDate);
+  // Phase 6P — the business-day policy is applied here, server-side, for
+  // every submission. The browser's `min`/weekend hints are UX only.
+  const validation = validateRequestedDeliveryDate({
+    raw: input.rawDateInput,
+    // The handoff's own creation is a conservative stand-in for the Order
+    // date: it is always at or after the Order was created and always at or
+    // before now, so the policy's max(orderDate, today) still resolves to
+    // today exactly as it would with the Shopify date — without adding a
+    // Shopify read to the customer's submit path.
+    orderCreatedAt: handoff.createdAt,
+    now: new Date(),
+  });
+  if (!validation.ok) {
+    throw new DeliveryHandoffError(validation.message);
+  }
+  const dateIso = validation.date;
+  const requestedDate = parseStoredDeliveryDate(dateIso);
+
+  // Phase 6Q — an omitted field preserves what is stored; only a field the
+  // caller actually sent is written. A request carrying just the date (an
+  // older tab, a backwards-compatible caller) therefore updates just the
+  // date, and never silently erases the customer's logistics answers.
+  const commentPatch = resolveDeliveryCommentPatch(input.deliveryComment);
+  if (!commentPatch.ok) {
+    throw new DeliveryHandoffError(commentPatch.message);
+  }
+  const truckPatch = resolveLargeTruckAccessPatch(input.largeTruckAccessConfirmed);
 
   const dateChanged =
     !handoff.requestedDeliveryDate || toIsoDateOnly(new Date(handoff.requestedDeliveryDate)) !== dateIso;
 
   const persisted = await prisma.deliveryDateHandoff.update({
     where: { id: handoff.id },
-    data: { requestedDeliveryDate: requestedDate },
+    data: {
+      requestedDeliveryDate: requestedDate,
+      ...(commentPatch.patch.action === "SET" ? { deliveryComment: commentPatch.patch.value } : {}),
+      ...(truckPatch.action === "SET" ? { largeTruckAccessConfirmed: truckPatch.value } : {}),
+    },
   });
 
   if (dateChanged && persisted.customerProfileId) {
@@ -507,7 +535,17 @@ export async function submitRequestedDeliveryDateForOrder(
     action: "delivery_handoff.date_requested",
     entityType: "DeliveryDateHandoff",
     entityId: persisted.id,
-    metadata: { dateChanged },
+    // Booleans only. The customer's free-text remark is deliberately never
+    // copied into audit metadata (build instruction §7/§24).
+    metadata: {
+      dateChanged,
+      // Booleans only. The customer's free-text remark is deliberately never
+      // copied into audit metadata (build instruction §7/§24). These describe
+      // the row's state after the write, not what the request happened to
+      // send.
+      hasDeliveryComment: persisted.deliveryComment !== null,
+      largeTruckAccessConfirmed: persisted.largeTruckAccessConfirmed,
+    },
   });
 
   // Mirror to Shopify — a missing shopifyOrderGid on a commerceObjectType
@@ -555,7 +593,7 @@ export async function submitRequestedDeliveryDateForOrder(
     data: { status: "MIRRORED", lastMirrorAt: new Date(), mirrorErrorCode: null },
   });
 
-  return { requestedDeliveryDate: dateIso };
+  return { requestedDeliveryDate: dateIso, largeTruckAccessConfirmed: persisted.largeTruckAccessConfirmed };
 }
 
 /**

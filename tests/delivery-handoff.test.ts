@@ -7,13 +7,13 @@ import {
   getHandoffByRawToken,
   listAllDeliveryDateHandoffs,
   listDeliveryDateHandoffsForCustomer,
-  parseRequestedDeliveryDate,
   regeneratePublicToken,
   resolveCustomerProfileIdForShopifyGid,
   submitRequestedDeliveryDate,
   submitRequestedDeliveryDateForOrder,
 } from "@/modules/delivery/delivery-handoff.service";
 import { DeliveryHandoffError, ExistingRequestedDeliveryDateError } from "@/modules/delivery/errors";
+import { getEarliestRequestedDeliveryDate, addDeliveryBusinessDays } from "@/modules/delivery/delivery-lead-time";
 import { OrderCancelledError } from "@/integrations/shopify/errors";
 import { generatePublicToken, hashPublicToken } from "@/modules/delivery/token";
 import {
@@ -44,9 +44,11 @@ vi.mock("@/integrations/shopify/order-for-handoff", () => ({
   getOrderForHandoff: (...args: unknown[]) => mockGetOrderForHandoff(...args),
 }));
 
-const TOMORROW = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-const YESTERDAY = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-const TODAY = new Date().toISOString().slice(0, 10);
+// Phase 6P — dates must satisfy the business-day policy (weekends excluded,
+// two complete business days of lead time), so they are derived from the
+// policy itself rather than hard-coded or computed with hour arithmetic.
+const VALID_DATE = getEarliestRequestedDeliveryDate({ orderCreatedAt: new Date(), now: new Date() });
+const LATER_VALID_DATE = addDeliveryBusinessDays(VALID_DATE, 5);
 
 describe("delivery-handoff.service", () => {
   let userId: string;
@@ -142,29 +144,16 @@ describe("delivery-handoff.service", () => {
     });
   });
 
-  describe("date validation", () => {
-    it("accepts today", () => expect(() => parseRequestedDeliveryDate(TODAY)).not.toThrow());
-    it("accepts a future date", () => expect(() => parseRequestedDeliveryDate(TOMORROW)).not.toThrow());
-    it("rejects a past date", () => expect(() => parseRequestedDeliveryDate(YESTERDAY)).toThrow(DeliveryHandoffError));
-    it("rejects malformed input", () => expect(() => parseRequestedDeliveryDate("not-a-date")).toThrow(DeliveryHandoffError));
-    it("rejects an out-of-range calendar date", () => expect(() => parseRequestedDeliveryDate("2026-02-30")).toThrow(DeliveryHandoffError));
-    it("rejects empty/undefined/null input", () => {
-      expect(() => parseRequestedDeliveryDate("")).toThrow(DeliveryHandoffError);
-      expect(() => parseRequestedDeliveryDate(undefined)).toThrow(DeliveryHandoffError);
-      expect(() => parseRequestedDeliveryDate(null)).toThrow(DeliveryHandoffError);
-    });
-  });
-
   describe("POST ordering — persist before mirror, mirror before redirect", () => {
     it("persists requestedDeliveryDate locally even when the Shopify mirror fails, and never returns a redirect target", async () => {
       mockMirror.mockRejectedValueOnce(new Error("ACCESS_DENIED"));
       const { handoff } = await createDeliveryDateHandoff({ shopifyDraftOrderGid: `gid://shopify/DraftOrder/${crypto.randomUUID()}`, createdById: userId });
       createdHandoffIds.push(handoff.id);
 
-      await expect(submitRequestedDeliveryDate(handoff, TOMORROW)).rejects.toThrow(DeliveryHandoffError);
+      await expect(submitRequestedDeliveryDate(handoff, VALID_DATE)).rejects.toThrow(DeliveryHandoffError);
 
       const reloaded = await prisma.deliveryDateHandoff.findUniqueOrThrow({ where: { id: handoff.id } });
-      expect(reloaded.requestedDeliveryDate?.toISOString().slice(0, 10)).toBe(TOMORROW);
+      expect(reloaded.requestedDeliveryDate?.toISOString().slice(0, 10)).toBe(VALID_DATE);
       expect(reloaded.status).toBe("ERROR");
       expect(reloaded.mirrorErrorCode).toBeTruthy();
     });
@@ -173,7 +162,7 @@ describe("delivery-handoff.service", () => {
       const { handoff } = await createDeliveryDateHandoff({ shopifyDraftOrderGid: `gid://shopify/DraftOrder/${crypto.randomUUID()}`, createdById: userId });
       createdHandoffIds.push(handoff.id);
 
-      const result = await submitRequestedDeliveryDate(handoff, TOMORROW);
+      const result = await submitRequestedDeliveryDate(handoff, VALID_DATE);
 
       expect(result.redirectUrl).toBe("https://test-shop.myshopify.com/12345/invoices/abc");
       const reloaded = await prisma.deliveryDateHandoff.findUniqueOrThrow({ where: { id: handoff.id } });
@@ -204,7 +193,7 @@ describe("delivery-handoff.service", () => {
       createdHandoffIds.push(handoff.id);
       mockMirror.mockResolvedValueOnce({ invoiceUrl: "https://test-shop.myshopify.com/999/invoices/xyz" });
 
-      const result = await submitRequestedDeliveryDate(handoff, TOMORROW);
+      const result = await submitRequestedDeliveryDate(handoff, VALID_DATE);
       expect(result.redirectUrl).toBe("https://test-shop.myshopify.com/999/invoices/xyz");
     });
   });
@@ -222,9 +211,9 @@ describe("delivery-handoff.service", () => {
       // in scope of that helper); pushing it too would just make the
       // shared afterAll's cleanup attempt a harmless but noisy no-op.
 
-      await submitRequestedDeliveryDate(handoff, TOMORROW);
+      await submitRequestedDeliveryDate(handoff, VALID_DATE);
       const afterFirst = await prisma.deliveryDateHandoff.findUniqueOrThrow({ where: { id: handoff.id } });
-      await submitRequestedDeliveryDate(afterFirst, TOMORROW);
+      await submitRequestedDeliveryDate(afterFirst, VALID_DATE);
 
       const activityCount = await prisma.activity.count({
         where: { relatedDeliveryDateHandoffId: handoff.id, type: "DELIVERY_DATE_REQUESTED" },
@@ -245,9 +234,9 @@ describe("delivery-handoff.service", () => {
         createdById: userId,
       });
       // Not pushed to createdHandoffIds — see the identical note above.
-      const laterDate = new Date(Date.now() + 10 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      const laterDate = LATER_VALID_DATE;
 
-      await submitRequestedDeliveryDate(handoff, TOMORROW);
+      await submitRequestedDeliveryDate(handoff, VALID_DATE);
       const afterFirst = await prisma.deliveryDateHandoff.findUniqueOrThrow({ where: { id: handoff.id } });
       await submitRequestedDeliveryDate(afterFirst, laterDate);
 
@@ -270,7 +259,7 @@ describe("delivery-handoff.service", () => {
       });
       createdHandoffIds.push(handoff.id);
 
-      await submitRequestedDeliveryDate(handoff, TOMORROW);
+      await submitRequestedDeliveryDate(handoff, VALID_DATE);
 
       const activityCount = await prisma.activity.count({ where: { relatedDeliveryDateHandoffId: handoff.id } });
       expect(activityCount).toBe(0);
@@ -292,7 +281,7 @@ describe("delivery-handoff.service", () => {
 
       let caught: unknown;
       try {
-        await submitRequestedDeliveryDate(handoff, TOMORROW);
+        await submitRequestedDeliveryDate(handoff, VALID_DATE);
       } catch (error) {
         caught = error;
       }
@@ -317,7 +306,7 @@ describe("delivery-handoff.service", () => {
         data: { paymentProvider: "UNKNOWN" },
       });
 
-      await expect(submitRequestedDeliveryDate(handoff, TOMORROW)).rejects.toThrow(DeliveryHandoffError);
+      await expect(submitRequestedDeliveryDate(handoff, VALID_DATE)).rejects.toThrow(DeliveryHandoffError);
     });
   });
 
@@ -415,14 +404,14 @@ describe("delivery-handoff.service", () => {
         createdById: userId,
       });
       createdHandoffIds.push(handoff.id);
-      await submitRequestedDeliveryDate(handoff, TOMORROW);
+      await submitRequestedDeliveryDate(handoff, VALID_DATE);
 
       const { handoff: regenerated, rawToken: newToken } = await regeneratePublicToken(handoff.id, userId);
 
       expect(newToken).not.toBe(originalToken);
       expect(regenerated.id).toBe(handoff.id);
       // Same row — requestedDeliveryDate/status survive the regeneration.
-      expect(regenerated.requestedDeliveryDate?.toISOString().slice(0, 10)).toBe(TOMORROW);
+      expect(regenerated.requestedDeliveryDate?.toISOString().slice(0, 10)).toBe(VALID_DATE);
       expect(regenerated.status).toBe("MIRRORED");
 
       await expect(getHandoffByRawToken(originalToken!)).resolves.toBeNull();
@@ -594,16 +583,101 @@ describe("delivery-handoff.service", () => {
       });
       createdHandoffIds.push(handoff.id);
 
-      const result = await submitRequestedDeliveryDateForOrder(handoff, TOMORROW);
+      const result = await submitRequestedDeliveryDateForOrder(handoff, { rawDateInput: VALID_DATE });
 
-      expect(result).toEqual({ requestedDeliveryDate: TOMORROW });
+      expect(result).toEqual({ requestedDeliveryDate: VALID_DATE, largeTruckAccessConfirmed: null });
       expect("redirectUrl" in result).toBe(false);
-      expect(mockOrderMirror).toHaveBeenCalledWith(handoff.shopifyOrderGid, TOMORROW);
+      expect(mockOrderMirror).toHaveBeenCalledWith(handoff.shopifyOrderGid, VALID_DATE);
       expect(mockMirror).not.toHaveBeenCalled();
 
       const reloaded = await prisma.deliveryDateHandoff.findUniqueOrThrow({ where: { id: handoff.id } });
       expect(reloaded.status).toBe("MIRRORED");
       expect(reloaded.lastMirrorAt).not.toBeNull();
+    });
+
+    // Phase 6Q — a request that omits the logistics fields (a browser tab
+    // opened before the deploy, a backwards-compatible caller) must update
+    // only the date. Silently wiping a customer's access instructions on
+    // their next resubmit would be unrecoverable data loss.
+    describe("backwards compatibility — omitted fields preserve stored logistics data", () => {
+      async function handoffWithDetails(details: {
+        deliveryComment?: string | null;
+        largeTruckAccessConfirmed?: unknown;
+      }) {
+        const { handoff } = await createOrGetOrderDeliveryHandoff({
+          shopifyOrderGid: `gid://shopify/Order/${crypto.randomUUID()}`,
+          createdById: userId,
+        });
+        createdHandoffIds.push(handoff.id);
+        await submitRequestedDeliveryDateForOrder(handoff, { rawDateInput: VALID_DATE, ...details });
+        return prisma.deliveryDateHandoff.findUniqueOrThrow({ where: { id: handoff.id } });
+      }
+
+      async function resubmitDateOnly(row: { id: string }) {
+        const live = await prisma.deliveryDateHandoff.findUniqueOrThrow({ where: { id: row.id } });
+        // Exactly the legacy request shape: the date and nothing else.
+        await submitRequestedDeliveryDateForOrder(live, { rawDateInput: LATER_VALID_DATE });
+        return prisma.deliveryDateHandoff.findUniqueOrThrow({ where: { id: row.id } });
+      }
+
+      it("a date-only resubmission keeps an existing comment", async () => {
+        const before = await handoffWithDetails({ deliveryComment: "Poort aan de zijkant." });
+        expect(before.deliveryComment).toBe("Poort aan de zijkant.");
+
+        const after = await resubmitDateOnly(before);
+        expect(after.deliveryComment).toBe("Poort aan de zijkant.");
+        expect(after.requestedDeliveryDate?.toISOString().slice(0, 10)).toBe(LATER_VALID_DATE);
+      });
+
+      it("a date-only resubmission keeps truck access true", async () => {
+        const before = await handoffWithDetails({ largeTruckAccessConfirmed: true });
+        expect(before.largeTruckAccessConfirmed).toBe(true);
+        expect((await resubmitDateOnly(before)).largeTruckAccessConfirmed).toBe(true);
+      });
+
+      it("a date-only resubmission keeps truck access false — it is not re-read as 'unanswered'", async () => {
+        const before = await handoffWithDetails({ largeTruckAccessConfirmed: false });
+        expect(before.largeTruckAccessConfirmed).toBe(false);
+        expect((await resubmitDateOnly(before)).largeTruckAccessConfirmed).toBe(false);
+      });
+
+      it("a date-only resubmission keeps a historical null — it never fabricates false", async () => {
+        const before = await handoffWithDetails({});
+        expect(before.largeTruckAccessConfirmed).toBeNull();
+        expect(before.deliveryComment).toBeNull();
+
+        const after = await resubmitDateOnly(before);
+        expect(after.largeTruckAccessConfirmed).toBeNull();
+        expect(after.deliveryComment).toBeNull();
+      });
+
+      it("an explicit empty comment does clear it — 'said empty' differs from 'said nothing'", async () => {
+        const before = await handoffWithDetails({ deliveryComment: "Bel bij aankomst." });
+        const live = await prisma.deliveryDateHandoff.findUniqueOrThrow({ where: { id: before.id } });
+        await submitRequestedDeliveryDateForOrder(live, { rawDateInput: LATER_VALID_DATE, deliveryComment: "" });
+
+        const after = await prisma.deliveryDateHandoff.findUniqueOrThrow({ where: { id: before.id } });
+        expect(after.deliveryComment).toBeNull();
+      });
+
+      it("an explicit false overwrites a stored true", async () => {
+        const before = await handoffWithDetails({ largeTruckAccessConfirmed: true });
+        const live = await prisma.deliveryDateHandoff.findUniqueOrThrow({ where: { id: before.id } });
+        await submitRequestedDeliveryDateForOrder(live, {
+          rawDateInput: LATER_VALID_DATE,
+          largeTruckAccessConfirmed: false,
+        });
+
+        const after = await prisma.deliveryDateHandoff.findUniqueOrThrow({ where: { id: before.id } });
+        expect(after.largeTruckAccessConfirmed).toBe(false);
+      });
+
+      it("the returned result reports the persisted state, not merely what the request sent", async () => {
+        const before = await handoffWithDetails({ largeTruckAccessConfirmed: true });
+        const live = await prisma.deliveryDateHandoff.findUniqueOrThrow({ where: { id: before.id } });
+        const result = await submitRequestedDeliveryDateForOrder(live, { rawDateInput: LATER_VALID_DATE });
+        expect(result.largeTruckAccessConfirmed).toBe(true);
+      });
     });
 
     it("persists requestedDeliveryDate locally even when the Order mirror fails, and stays retryable", async () => {
@@ -614,12 +688,12 @@ describe("delivery-handoff.service", () => {
       });
       createdHandoffIds.push(handoff.id);
 
-      const error = await submitRequestedDeliveryDateForOrder(handoff, TOMORROW).catch((e) => e);
+      const error = await submitRequestedDeliveryDateForOrder(handoff, { rawDateInput: VALID_DATE }).catch((e) => e);
       expect(error).toBeInstanceOf(DeliveryHandoffError);
       expect((error as InstanceType<typeof DeliveryHandoffError>).retryable).toBe(true);
 
       const reloaded = await prisma.deliveryDateHandoff.findUniqueOrThrow({ where: { id: handoff.id } });
-      expect(reloaded.requestedDeliveryDate?.toISOString().slice(0, 10)).toBe(TOMORROW);
+      expect(reloaded.requestedDeliveryDate?.toISOString().slice(0, 10)).toBe(VALID_DATE);
       expect(reloaded.status).toBe("ERROR");
       expect(reloaded.mirrorErrorCode).toBeTruthy();
     });
@@ -631,7 +705,7 @@ describe("delivery-handoff.service", () => {
       });
       createdHandoffIds.push(handoff.id);
 
-      await expect(submitRequestedDeliveryDateForOrder(handoff, "not-a-date")).rejects.toThrow(DeliveryHandoffError);
+      await expect(submitRequestedDeliveryDateForOrder(handoff, { rawDateInput: "not-a-date" })).rejects.toThrow(DeliveryHandoffError);
       expect(mockOrderMirror).not.toHaveBeenCalled();
     });
 
@@ -643,7 +717,7 @@ describe("delivery-handoff.service", () => {
       });
       createdHandoffIds.push(handoff.id);
 
-      const error = await submitRequestedDeliveryDateForOrder(handoff, TOMORROW).catch((e) => e);
+      const error = await submitRequestedDeliveryDateForOrder(handoff, { rawDateInput: VALID_DATE }).catch((e) => e);
       expect(error).toBeInstanceOf(DeliveryHandoffError);
       expect((error as InstanceType<typeof DeliveryHandoffError>).retryable).toBe(false);
       expect((error as Error).message).not.toMatch(/probeer het opnieuw/i);
@@ -653,7 +727,7 @@ describe("delivery-handoff.service", () => {
       // Locally chosen date remains persisted per existing proven service
       // semantics (build instruction §10) — cancellation is a mirror
       // failure, not an input-validation failure.
-      expect(reloaded.requestedDeliveryDate?.toISOString().slice(0, 10)).toBe(TOMORROW);
+      expect(reloaded.requestedDeliveryDate?.toISOString().slice(0, 10)).toBe(VALID_DATE);
       expect(reloaded.status).toBe("ERROR");
     });
 
@@ -666,18 +740,18 @@ describe("delivery-handoff.service", () => {
       });
       // Not pushed to createdHandoffIds — cleanupCustomerProfile below already removes it.
 
-      await submitRequestedDeliveryDateForOrder(handoff, TOMORROW);
+      await submitRequestedDeliveryDateForOrder(handoff, { rawDateInput: VALID_DATE });
       const afterFirst = await prisma.deliveryDateHandoff.findUniqueOrThrow({ where: { id: handoff.id } });
-      await submitRequestedDeliveryDateForOrder(afterFirst, TOMORROW);
+      await submitRequestedDeliveryDateForOrder(afterFirst, { rawDateInput: VALID_DATE });
 
       let activityCount = await prisma.activity.count({
         where: { relatedDeliveryDateHandoffId: handoff.id, type: "DELIVERY_DATE_REQUESTED" },
       });
       expect(activityCount).toBe(1);
 
-      const laterDate = new Date(Date.now() + 10 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      const laterDate = LATER_VALID_DATE;
       const afterSecond = await prisma.deliveryDateHandoff.findUniqueOrThrow({ where: { id: handoff.id } });
-      await submitRequestedDeliveryDateForOrder(afterSecond, laterDate);
+      await submitRequestedDeliveryDateForOrder(afterSecond, { rawDateInput: laterDate });
 
       activityCount = await prisma.activity.count({
         where: { relatedDeliveryDateHandoffId: handoff.id, type: "DELIVERY_DATE_REQUESTED" },
@@ -699,7 +773,7 @@ describe("delivery-handoff.service", () => {
       // must be corrupted to exercise this guard.
       const corrupted = await prisma.deliveryDateHandoff.update({ where: { id: handoff.id }, data: { shopifyOrderGid: null } });
 
-      const error = await submitRequestedDeliveryDateForOrder(corrupted, TOMORROW).catch((e) => e);
+      const error = await submitRequestedDeliveryDateForOrder(corrupted, { rawDateInput: VALID_DATE }).catch((e) => e);
       expect(error).toBeInstanceOf(DeliveryHandoffError);
       expect((error as InstanceType<typeof DeliveryHandoffError>).retryable).toBe(false);
       expect(mockOrderMirror).not.toHaveBeenCalled();

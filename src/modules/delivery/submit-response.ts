@@ -6,4 +6,11 @@
 // field like `redirectUrl`.
 export type DeliveryDateSubmitResponse =
   | { outcome: "REDIRECT"; redirectUrl: string }
-  | { outcome: "COMPLETED"; requestedDeliveryDate: string };
+  | {
+      outcome: "COMPLETED";
+      requestedDeliveryDate: string;
+      // Phase 6P — echoed back so the success screen can state the
+      // accessibility answer. The free-text remark is deliberately NOT
+      // echoed (build instruction §12).
+      largeTruckAccessConfirmed: boolean | null;
+    };

@@ -924,6 +924,17 @@ model DeliveryDateHandoff {
   // conflict.
   requestedDeliveryDate DateTime? @db.Date
 
+  // Phase 6P — optional customer remark about the delivery (max 500 chars,
+  // enforced server-side in delivery-details.ts). Plain text only: never
+  // parsed as HTML/markdown, never mirrored to Shopify, and deliberately not
+  // copied into AuditEvent metadata. Null for every historical row.
+  deliveryComment String?
+  // Phase 6P — did the customer confirm the location is reachable by a large
+  // truck? `true` = confirmed, `false` = NOT confirmed (which is not a claim
+  // of inaccessibility), `null` = never asked. Logistics information only:
+  // it never blocks a submission and is not mirrored to Shopify.
+  largeTruckAccessConfirmed Boolean?
+
   paymentProvider PaymentProvider          @default(UNKNOWN)
   status          DeliveryDateHandoffStatus @default(PENDING)
 

@@ -32,11 +32,18 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     return NextResponse.json({ error: "Niet gevonden." }, { status: 404 });
   }
 
-  let body: { requestedDeliveryDate?: string } = {};
+  // Phase 6P — two optional Order-flow fields join the date. Still no
+  // commerceObjectType/GID/shop/redirect field is ever read from the body:
+  // the persisted handoff remains the sole dispatch authority.
+  let body: {
+    requestedDeliveryDate?: string;
+    deliveryComment?: string | null;
+    largeTruckAccessConfirmed?: unknown;
+  } = {};
   try {
     body = await request.json();
   } catch {
-    // fall through — parseRequestedDeliveryDate() rejects the resulting undefined input cleanly
+    // fall through — validateRequestedDeliveryDate() rejects the resulting undefined input cleanly
   }
 
   try {
@@ -47,10 +54,15 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     }
 
     if (handoff.commerceObjectType === "SHOPIFY_ORDER") {
-      const result = await submitRequestedDeliveryDateForOrder(handoff, body.requestedDeliveryDate);
+      const result = await submitRequestedDeliveryDateForOrder(handoff, {
+        rawDateInput: body.requestedDeliveryDate,
+        deliveryComment: body.deliveryComment,
+        largeTruckAccessConfirmed: body.largeTruckAccessConfirmed,
+      });
       const response: DeliveryDateSubmitResponse = {
         outcome: "COMPLETED",
         requestedDeliveryDate: result.requestedDeliveryDate,
+        largeTruckAccessConfirmed: result.largeTruckAccessConfirmed,
       };
       return NextResponse.json(response);
     }

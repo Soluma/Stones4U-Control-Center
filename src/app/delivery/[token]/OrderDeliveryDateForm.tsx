@@ -17,23 +17,34 @@ import type { DeliveryDateSubmitResponse } from "@/modules/delivery/submit-respo
 // from payment status (docs/ORDER-DELIVERY-HANDOFF-FOUNDATION.md §"B2B
 // boundary").
 
-function todayIsoDate(): string {
-  return new Date().toISOString().slice(0, 10);
-}
+const DELIVERY_COMMENT_MAX_LENGTH = 500;
+
+const LEAD_TIME_HINT =
+  "Wij leveren van maandag t/m vrijdag. Tussen het doorgeven van uw voorkeur en de levering moeten minimaal twee volledige werkdagen zitten. Zaterdag en zondag tellen niet mee.";
 
 export function OrderDeliveryDateForm({
   token,
   currentValue,
   publicReference,
+  earliestDeliveryDate,
 }: {
   token: string;
   currentValue: string;
   publicReference: string | null;
+  // Phase 6P — computed server-side in Europe/Amsterdam. Used as the picker's
+  // `min`, which is a convenience only: the server re-validates every
+  // submission against the same policy regardless of what the browser allows.
+  earliestDeliveryDate: string;
 }) {
   const [date, setDate] = useState(currentValue);
+  const [deliveryComment, setDeliveryComment] = useState("");
+  const [largeTruckAccessConfirmed, setLargeTruckAccessConfirmed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [succeeded, setSucceeded] = useState<{ requestedDeliveryDate: string } | null>(null);
+  const [succeeded, setSucceeded] = useState<{
+    requestedDeliveryDate: string;
+    largeTruckAccessConfirmed: boolean | null;
+  } | null>(null);
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -43,7 +54,11 @@ export function OrderDeliveryDateForm({
     const response = await fetch(`/api/delivery/${encodeURIComponent(token)}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ requestedDeliveryDate: date }),
+      body: JSON.stringify({
+        requestedDeliveryDate: date,
+        deliveryComment,
+        largeTruckAccessConfirmed,
+      }),
     });
 
     const body = await response.json().catch(() => ({}));
@@ -65,7 +80,10 @@ export function OrderDeliveryDateForm({
       return;
     }
 
-    setSucceeded({ requestedDeliveryDate: result.requestedDeliveryDate });
+    setSucceeded({
+      requestedDeliveryDate: result.requestedDeliveryDate,
+      largeTruckAccessConfirmed: result.largeTruckAccessConfirmed,
+    });
     setLoading(false);
   }
 
@@ -78,6 +96,13 @@ export function OrderDeliveryDateForm({
         <div className="cc-card mt-6 p-6 sm:p-8">
           <p className="text-xs font-medium uppercase tracking-wide text-ink-tertiary">Gewenste leverdatum</p>
           <p className="mt-1 text-lg font-semibold text-ink-primary">{formatDateLong(succeeded.requestedDeliveryDate)}</p>
+
+          <p className="mt-4 text-xs font-medium uppercase tracking-wide text-ink-tertiary">
+            Bereikbaarheid grote vrachtwagen
+          </p>
+          <p className="mt-1 text-sm text-ink-secondary">
+            {succeeded.largeTruckAccessConfirmed ? "Bevestigd" : "Niet bevestigd"}
+          </p>
         </div>
 
         <div className="mt-6 space-y-2 text-xs leading-relaxed text-ink-tertiary">
@@ -109,12 +134,45 @@ export function OrderDeliveryDateForm({
             id="requestedDeliveryDate"
             type="date"
             required
-            min={todayIsoDate()}
+            min={earliestDeliveryDate}
             value={date}
             onChange={(e) => setDate(e.target.value)}
             hint="De gekozen datum is een voorkeursdatum. De definitieve leverdatum wordt door Stones4U bevestigd."
             error={error ?? undefined}
           />
+
+          <p className="text-xs leading-relaxed text-ink-tertiary">{LEAD_TIME_HINT}</p>
+
+          <label className="flex items-start gap-3 text-sm text-ink-secondary">
+            <input
+              type="checkbox"
+              className="mt-0.5 h-4 w-4 shrink-0 rounded border-border text-accent-600"
+              checked={largeTruckAccessConfirmed}
+              onChange={(e) => setLargeTruckAccessConfirmed(e.target.checked)}
+            />
+            <span>
+              Ja, de afleverlocatie is bereikbaar met een grote vrachtwagen.
+              <span className="mt-1 block text-xs leading-relaxed text-ink-tertiary">
+                Denk aan voldoende ruimte om de locatie te bereiken, te manoeuvreren en te lossen.
+              </span>
+            </span>
+          </label>
+
+          <div className="space-y-1">
+            <label htmlFor="deliveryComment" className="block text-sm font-medium text-ink-secondary">
+              Opmerking voor de levering (optioneel)
+            </label>
+            <textarea
+              id="deliveryComment"
+              rows={3}
+              maxLength={DELIVERY_COMMENT_MAX_LENGTH}
+              value={deliveryComment}
+              onChange={(e) => setDeliveryComment(e.target.value)}
+              placeholder="Bijvoorbeeld: graag bellen bij aankomst, poort aan de zijkant of beperkte draairuimte."
+              className="w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-ink-primary placeholder:text-ink-tertiary focus:border-accent-500 focus:outline-none focus:ring-1 focus:ring-accent-500"
+            />
+          </div>
+
           <Button type="submit" variant="primary" className="w-full" loading={loading}>
             Gewenste leverdatum doorgeven
           </Button>

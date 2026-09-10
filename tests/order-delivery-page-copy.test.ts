@@ -110,11 +110,18 @@ describe("public Order delivery page — safe publicReference rendering (build i
 });
 
 describe("public Order delivery page — the client cannot supply anything the server must resolve itself (build instruction §18)", () => {
-  it("the POST body sent by the client carries only the chosen date", () => {
+  it("the POST body carries only what the customer themselves supplies — the date and, since Phase 6P, their remark and truck-access answer", () => {
     const bodyLiteralMatch = formSource.match(/body:\s*JSON\.stringify\(\{([^}]*)\}\)/);
     expect(bodyLiteralMatch).not.toBeNull();
-    const bodyLiteral = bodyLiteralMatch![1]!;
-    expect(bodyLiteral.trim()).toBe("requestedDeliveryDate: date");
+    const fields = bodyLiteralMatch![1]!
+      .split(",")
+      .map((f) => f.trim())
+      .filter(Boolean);
+    // An exact set, so a future field cannot be added to the request without
+    // this guarantee being re-examined deliberately.
+    expect(new Set(fields)).toEqual(
+      new Set(["requestedDeliveryDate: date", "deliveryComment", "largeTruckAccessConfirmed"]),
+    );
   });
 
   it("never constructs or sends an orderGid, draftOrderGid, commerceObjectType, shop domain, redirect URL, or payment target from the client", () => {
