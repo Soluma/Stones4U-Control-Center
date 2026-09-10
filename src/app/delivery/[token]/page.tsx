@@ -91,12 +91,6 @@ export default async function DeliveryDatePage({ params }: PageProps) {
           <DeliveryDateForm
             token={token}
             currentValue={handoff.requestedDeliveryDate ? handoff.requestedDeliveryDate.toISOString().slice(0, 10) : ""}
-            currentDeliveryComment={handoff.deliveryComment}
-            currentLargeTruckAccessConfirmed={handoff.largeTruckAccessConfirmed}
-            earliestDeliveryDate={getEarliestRequestedDeliveryDate({
-              orderCreatedAt: handoff.createdAt,
-              now: new Date(),
-            })}
           />
         </div>
 

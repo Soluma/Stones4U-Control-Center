@@ -10,14 +10,6 @@ const orderForm = readFileSync(
   fileURLToPath(new URL("../src/app/delivery/[token]/OrderDeliveryDateForm.tsx", import.meta.url)),
   "utf-8",
 );
-const draftForm = readFileSync(
-  fileURLToPath(new URL("../src/app/delivery/[token]/DeliveryDateForm.tsx", import.meta.url)),
-  "utf-8",
-);
-const sharedFields = readFileSync(
-  fileURLToPath(new URL("../src/app/delivery/[token]/DeliveryLogisticsFields.tsx", import.meta.url)),
-  "utf-8",
-);
 const page = readFileSync(
   fileURLToPath(new URL("../src/app/delivery/[token]/page.tsx", import.meta.url)),
   "utf-8",
@@ -33,9 +25,9 @@ const service = readFileSync(
 
 describe("customer form — lead-time copy", () => {
   it("explains the Monday-to-Friday window and that weekends do not count", () => {
-    expect(sharedFields).toContain("Wij leveren van maandag t/m vrijdag");
-    expect(sharedFields).toContain("twee volledige werkdagen");
-    expect(sharedFields).toContain("Zaterdag en zondag tellen niet mee");
+    expect(orderForm).toContain("Wij leveren van maandag t/m vrijdag");
+    expect(orderForm).toContain("twee volledige werkdagen");
+    expect(orderForm).toContain("Zaterdag en zondag tellen niet mee");
   });
 
   it("still frames the date as a preference, never a confirmed delivery date", () => {
@@ -44,8 +36,8 @@ describe("customer form — lead-time copy", () => {
   });
 
   it("uses the server-computed earliest date as the picker minimum, not a client-side today", () => {
-    expect(sharedFields).toContain("min={earliestDeliveryDate}");
-    for (const f of [sharedFields, orderForm, draftForm]) expect(f).not.toContain("todayIsoDate");
+    expect(orderForm).toContain("min={earliestDeliveryDate}");
+    expect(orderForm).not.toContain("todayIsoDate");
   });
 
   it("the earliest date is computed on the server page, in the delivery policy module", () => {
@@ -87,21 +79,21 @@ describe("customer form — prefill from persisted state", () => {
   });
 
   it("renders the persisted comment as plain text — the textarea value, never HTML", () => {
-    expect(sharedFields).toContain("value={deliveryComment}");
-    expect(sharedFields).not.toContain("dangerouslySetInnerHTML");
+    expect(orderForm).toContain("value={deliveryComment}");
+    expect(orderForm).not.toContain("dangerouslySetInnerHTML");
   });
 });
 
 describe("customer form — truck access", () => {
   it("asks the accessibility question with the agreed wording and helper text", () => {
-    expect(sharedFields).toContain("Ja, de afleverlocatie is bereikbaar met een grote vrachtwagen.");
-    expect(sharedFields).toContain("Denk aan voldoende ruimte om de locatie te bereiken, te manoeuvreren en te lossen.");
+    expect(orderForm).toContain("Ja, de afleverlocatie is bereikbaar met een grote vrachtwagen.");
+    expect(orderForm).toContain("Denk aan voldoende ruimte om de locatie te bereiken, te manoeuvreren en te lossen.");
   });
 
   it("is a checkbox, and never blocks submitting when left unchecked", () => {
-    expect(sharedFields).toContain('type="checkbox"');
-    // No submit button anywhere is disabled by the accessibility answer.
-    for (const f of [orderForm, draftForm]) expect(f).not.toMatch(/disabled=\{[^}]*largeTruckAccessConfirmed/);
+    expect(orderForm).toContain('type="checkbox"');
+    // The submit button carries no disabled-by-accessibility condition.
+    expect(orderForm).not.toMatch(/disabled=\{[^}]*largeTruckAccessConfirmed/);
   });
 
   it("the success screen reports confirmed / not confirmed, never 'inaccessible'", () => {
@@ -113,12 +105,12 @@ describe("customer form — truck access", () => {
 
 describe("customer form — delivery comment", () => {
   it("is optional, labelled and placeholdered as agreed", () => {
-    expect(sharedFields).toContain("Opmerking voor de levering (optioneel)");
-    expect(sharedFields).toContain("graag bellen bij aankomst");
+    expect(orderForm).toContain("Opmerking voor de levering (optioneel)");
+    expect(orderForm).toContain("graag bellen bij aankomst");
   });
 
   it("caps the length in the textarea as a UX hint", () => {
-    expect(sharedFields).toContain("maxLength={DELIVERY_COMMENT_MAX_LENGTH}");
+    expect(orderForm).toContain("maxLength={DELIVERY_COMMENT_MAX_LENGTH}");
   });
 
   it("does not echo the free-text remark back on the success screen", () => {
@@ -184,72 +176,5 @@ describe("server-side safety", () => {
     expect(metafields).toContain("metafieldsSet");
     // The GraphQL it sends contains no orderUpdate/customAttributes operation.
     expect(metafields).not.toMatch(/mutation[\s\S]*orderUpdate/);
-  });
-});
-
-// Phase 6T — the Draft flow asked only for a date, with a client-side `today`
-// minimum that offered dates the server already rejected. Both flows now share
-// one field component, which is what stops them drifting apart again.
-describe("Draft flow — unified with the Order flow", () => {
-  it("both forms render the same shared field component", () => {
-    expect(draftForm).toContain("DeliveryLogisticsFields");
-    expect(orderForm).toContain("DeliveryLogisticsFields");
-  });
-
-  it("the shared component owns the date rules, truck question and remark exactly once", () => {
-    expect(sharedFields).toContain("Wij leveren van maandag t/m vrijdag");
-    expect(sharedFields).toContain("Ja, de afleverlocatie is bereikbaar met een grote vrachtwagen.");
-    expect(sharedFields).toContain("Opmerking voor de levering (optioneel)");
-    expect(sharedFields).toContain("min={earliestDeliveryDate}");
-    expect(sharedFields).toContain("maxLength={DELIVERY_COMMENT_MAX_LENGTH}");
-    // Neither form re-declares the copy or the rules itself.
-    for (const form of [draftForm, orderForm]) {
-      expect(form).not.toContain("Wij leveren van maandag t/m vrijdag");
-      expect(form).not.toContain("Ja, de afleverlocatie is bereikbaar");
-    }
-  });
-
-  it("the Draft form no longer uses a client-side today as the picker minimum", () => {
-    expect(draftForm).not.toContain("todayIsoDate");
-    expect(draftForm).toContain("earliestDeliveryDate");
-  });
-
-  it("the Draft form sends the logistics answers alongside the date", () => {
-    const body = draftForm.match(/body:\s*JSON\.stringify\(\{([^}]*)\}\)/)![1]!;
-    const fields = body.split(",").map((f) => f.trim()).filter(Boolean);
-    expect(new Set(fields)).toEqual(
-      new Set(["requestedDeliveryDate: date", "deliveryComment", "largeTruckAccessConfirmed"]),
-    );
-  });
-
-  it("the Draft form prefills all three from the persisted handoff", () => {
-    expect(draftForm).toContain("useState(currentValue)");
-    expect(draftForm).toContain('useState(currentDeliveryComment ?? "")');
-    expect(draftForm).toContain("currentLargeTruckAccessConfirmed === true");
-    expect(page).toContain("currentDeliveryComment={handoff.deliveryComment}");
-  });
-
-  it("the Draft form never uses browser storage", () => {
-    for (const forbidden of ["localStorage", "sessionStorage", "document.cookie"]) {
-      expect(draftForm).not.toContain(forbidden);
-    }
-  });
-
-  it("the Draft payment redirect is untouched — still the server-supplied redirectUrl", () => {
-    expect(draftForm).toContain("window.location.href = body.redirectUrl");
-    expect(draftForm).toContain("Leverdatum opslaan en verder naar factuur");
-  });
-
-  it("the Draft flow does not write Shopify metafields — they do not survive draftOrderComplete", () => {
-    // Asserted on behaviour, not on prose: the Draft path must not call the
-    // metafield mirror at all, while the Order path must.
-    const draftFn = service.slice(
-      service.indexOf("export async function submitRequestedDeliveryDate("),
-      service.indexOf("export async function submitRequestedDeliveryDateForOrder("),
-    );
-    expect(draftFn.length).toBeGreaterThan(500);
-    expect(draftFn).not.toContain("mirrorOrderLogisticsMetafields");
-    const orderFn = service.slice(service.indexOf("export async function submitRequestedDeliveryDateForOrder("));
-    expect(orderFn).toContain("mirrorOrderLogisticsMetafields");
   });
 });

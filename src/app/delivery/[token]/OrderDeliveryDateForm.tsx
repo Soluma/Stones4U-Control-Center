@@ -1,8 +1,8 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
+import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
-import { DeliveryLogisticsFields } from "./DeliveryLogisticsFields";
 import { formatDateLong } from "@/lib/format";
 import type { DeliveryDateSubmitResponse } from "@/modules/delivery/submit-response";
 
@@ -16,6 +16,11 @@ import type { DeliveryDateSubmitResponse } from "@/modules/delivery/submit-respo
 // file, in either state — an Order-based handoff is deliberately decoupled
 // from payment status (docs/ORDER-DELIVERY-HANDOFF-FOUNDATION.md §"B2B
 // boundary").
+
+const DELIVERY_COMMENT_MAX_LENGTH = 500;
+
+const LEAD_TIME_HINT =
+  "Wij leveren van maandag t/m vrijdag. Tussen het doorgeven van uw voorkeur en de levering moeten minimaal twee volledige werkdagen zitten. Zaterdag en zondag tellen niet mee.";
 
 export function OrderDeliveryDateForm({
   token,
@@ -135,17 +140,50 @@ export function OrderDeliveryDateForm({
 
       <div className="cc-card p-6 sm:p-8">
         <form onSubmit={handleSubmit} className="space-y-4">
-          <DeliveryLogisticsFields
-            date={date}
-            onDateChange={setDate}
-            earliestDeliveryDate={earliestDeliveryDate}
-            largeTruckAccessConfirmed={largeTruckAccessConfirmed}
-            onLargeTruckAccessChange={setLargeTruckAccessConfirmed}
-            deliveryComment={deliveryComment}
-            onDeliveryCommentChange={setDeliveryComment}
+          <Input
+            label="Gewenste leverdatum"
+            id="requestedDeliveryDate"
+            type="date"
+            required
+            min={earliestDeliveryDate}
+            value={date}
+            onChange={(e) => setDate(e.target.value)}
+            hint="De gekozen datum is een voorkeursdatum. De definitieve leverdatum wordt door Stones4U bevestigd."
             error={error ?? undefined}
-            disabled={loading}
           />
+
+          <p className="text-xs leading-relaxed text-ink-tertiary">{LEAD_TIME_HINT}</p>
+
+          <label className="flex items-start gap-3 text-sm text-ink-secondary">
+            <input
+              type="checkbox"
+              className="mt-0.5 h-4 w-4 shrink-0 rounded border-border text-accent-600"
+              checked={largeTruckAccessConfirmed}
+              onChange={(e) => setLargeTruckAccessConfirmed(e.target.checked)}
+            />
+            <span>
+              Ja, de afleverlocatie is bereikbaar met een grote vrachtwagen.
+              <span className="mt-1 block text-xs leading-relaxed text-ink-tertiary">
+                Denk aan voldoende ruimte om de locatie te bereiken, te manoeuvreren en te lossen.
+              </span>
+            </span>
+          </label>
+
+          <div className="space-y-1">
+            <label htmlFor="deliveryComment" className="block text-sm font-medium text-ink-secondary">
+              Opmerking voor de levering (optioneel)
+            </label>
+            <textarea
+              id="deliveryComment"
+              rows={3}
+              maxLength={DELIVERY_COMMENT_MAX_LENGTH}
+              value={deliveryComment}
+              onChange={(e) => setDeliveryComment(e.target.value)}
+              placeholder="Bijvoorbeeld: graag bellen bij aankomst, poort aan de zijkant of beperkte draairuimte."
+              className="w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-ink-primary placeholder:text-ink-tertiary focus:border-accent-500 focus:outline-none focus:ring-1 focus:ring-accent-500"
+            />
+          </div>
+
           <Button type="submit" variant="primary" className="w-full" loading={loading}>
             Gewenste leverdatum doorgeven
           </Button>

@@ -351,19 +351,16 @@ type SubmitResult = { redirectUrl: string };
  * mirror failure leaves the locally persisted date untouched and throws a
  * retryable DeliveryHandoffError instead of returning a target.
  */
-export async function submitRequestedDeliveryDate(
-  handoff: DeliveryDateHandoff,
-  input: {
-    rawDateInput: string | null | undefined;
-    deliveryComment?: string | null;
-    largeTruckAccessConfirmed?: unknown;
-  },
-): Promise<SubmitResult> {
-  // The weekend/lead-time policy is a Stones4U business rule, not an
-  // Order-flow feature, so the Draft flow validates dates against exactly the
-  // same canonical policy.
+export async function submitRequestedDeliveryDate(handoff: DeliveryDateHandoff, rawDateInput: string | null | undefined): Promise<SubmitResult> {
+  // Phase 6P (build instruction §14) — the weekend/lead-time policy is a
+  // Stones4U business rule, not an Order-flow feature, so the Draft flow
+  // validates newly submitted dates against exactly the same policy. Only
+  // the *date rule* is shared: the Order-only comment and truck-access
+  // fields are deliberately NOT introduced here, so historical Draft links
+  // keep working with an unchanged request shape and an unchanged
+  // persist -> mirror -> payment-redirect contract.
   const draftValidation = validateRequestedDeliveryDate({
-    raw: input.rawDateInput,
+    raw: rawDateInput,
     orderCreatedAt: handoff.createdAt,
     now: new Date(),
   });
@@ -373,32 +370,12 @@ export async function submitRequestedDeliveryDate(
   const requestedDate = parseStoredDeliveryDate(draftValidation.date);
   const dateIso = toIsoDateOnly(requestedDate);
 
-  // Phase 6T — the Draft flow now collects the same logistics answers as the
-  // Order flow, with the same preserve-vs-set patch semantics: a request that
-  // omits a field leaves the stored value alone.
-  //
-  // These are persisted LOCALLY ONLY. They are deliberately not written as
-  // Draft metafields: a live probe proved DraftOrder metafields do not survive
-  // draftOrderComplete (the resulting Order came back with none), so mirroring
-  // them onto the Draft would create data that silently disappears the moment
-  // the Draft becomes an Order. `requested_delivery_date` stays a Draft
-  // customAttribute precisely because that DOES propagate.
-  const commentPatch = resolveDeliveryCommentPatch(input.deliveryComment);
-  if (!commentPatch.ok) {
-    throw new DeliveryHandoffError(commentPatch.message);
-  }
-  const truckPatch = resolveLargeTruckAccessPatch(input.largeTruckAccessConfirmed);
-
   const dateChanged =
     !handoff.requestedDeliveryDate || toIsoDateOnly(new Date(handoff.requestedDeliveryDate)) !== dateIso;
 
   const persisted = await prisma.deliveryDateHandoff.update({
     where: { id: handoff.id },
-    data: {
-      requestedDeliveryDate: requestedDate,
-      ...(commentPatch.patch.action === "SET" ? { deliveryComment: commentPatch.patch.value } : {}),
-      ...(truckPatch.action === "SET" ? { largeTruckAccessConfirmed: truckPatch.value } : {}),
-    },
+    data: { requestedDeliveryDate: requestedDate },
   });
 
   if (dateChanged && persisted.customerProfileId) {

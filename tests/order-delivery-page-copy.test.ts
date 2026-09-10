@@ -20,12 +20,6 @@ function normalizeWhitespace(text: string): string {
 }
 
 const formSourceFlat = normalizeWhitespace(formSource);
-// Phase 6T — the date field itself now lives in the shared component used by
-// both the Draft and Order flows, so these guarantees are asserted there.
-const sharedFieldsSource = normalizeWhitespace(
-  readFileSync(fileURLToPath(new URL("../src/app/delivery/[token]/DeliveryLogisticsFields.tsx", import.meta.url)), "utf-8"),
-);
-
 
 describe("public Order delivery page — dedicated post-order copy (build instruction §5)", () => {
   it("shows the required context, heading, and intro copy", () => {
@@ -36,8 +30,8 @@ describe("public Order delivery page — dedicated post-order copy (build instru
   });
 
   it("shows the required field label, helper (preference, not a promise), and primary CTA", () => {
-    expect(sharedFieldsSource).toContain('label="Gewenste leverdatum"');
-    expect(sharedFieldsSource).toContain(
+    expect(formSourceFlat).toContain('label="Gewenste leverdatum"');
+    expect(formSourceFlat).toContain(
       "De gekozen datum is een voorkeursdatum. De definitieve leverdatum wordt door Stones4U bevestigd.",
     );
     expect(formSourceFlat).toContain("Gewenste leverdatum doorgeven");
@@ -167,10 +161,7 @@ describe("public Order delivery page — existing date prefill (build instructio
   });
 
   it("the form actually renders the prefilled value into the date input", () => {
-    // The form still owns the state seeded from the persisted value; the
-    // shared field component binds it to the input.
     expect(formSourceFlat).toContain("useState(currentValue)");
-    expect(formSourceFlat).toContain("date={date}");
-    expect(sharedFieldsSource).toContain("value={date}");
+    expect(formSourceFlat).toContain("value={date}");
   });
 });
