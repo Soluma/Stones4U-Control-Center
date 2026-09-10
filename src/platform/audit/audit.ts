@@ -62,7 +62,13 @@ export type AuditAction =
   | "delivery_handoff.date_requested"
   | "delivery_handoff.mirror_failed"
   // Phase 5A — docs/QUOTE-DELIVERY-DATE-MANUAL-ACTIVATION.md
-  | "delivery_handoff.token_regenerated";
+  | "delivery_handoff.token_regenerated"
+  // Phase 6L — staff classification of an Order's Stones4U fulfillment mode.
+  // Deliberately NOT a customer Activity: these are staff/system decisions
+  // about how goods are provided, never a customer delivery-date submission.
+  | "order_fulfillment_mode.set"
+  | "order_fulfillment_mode.cleared"
+  | "order_fulfillment_mode.repaired";
 
 export type AuditEntityType =
   | "User"
@@ -84,7 +90,10 @@ export type AuditEntityType =
   // Phase 4c
   | "CustomerContact"
   // Phase 7
-  | "DeliveryDateHandoff";
+  | "DeliveryDateHandoff"
+  // Phase 6L — the Shopify Order itself is the audited entity; entityId is
+  // the Order GID. No local row exists for it, and none is created.
+  | "ShopifyOrder";
 
 type LogAuditInput = {
   userId: string | null;

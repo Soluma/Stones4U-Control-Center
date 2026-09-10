@@ -25,6 +25,41 @@ export class DeliveryHandoffError extends Error {
 // hand it back for the confirmation prompt. See that function's own doc
 // comment for the full provenance-neutral reasoning: an existing date
 // found on an Order does NOT mean it came from the customer portal.
+// Phase 6L — thrown when staff try to change or clear an Order's explicit
+// fulfillment mode that already has one, without having confirmed it. Like
+// ExistingRequestedDeliveryDateError this is staff-facing only, maps to its
+// own 409, and carries server-read state for the confirmation prompt — the
+// client never supplies (and is never trusted for) the current value.
+//
+// A first classification never raises this: there is nothing to overwrite.
+export class FulfillmentModeConfirmationRequiredError extends Error {
+  /** Canonical current value, or null when one exists but is unusable
+   * (invalid or duplicated) — `currentState` says which. */
+  readonly currentMode: string | null;
+  readonly currentState: "VALID" | "INVALID" | "DUPLICATE";
+  /** The canonical value staff asked for, or null for a clear. */
+  readonly requestedMode: string | null;
+  /** Opaque description of the state staff are being shown, echoed back on
+   * the confirmed retry so the server can prove the transition it applies is
+   * the one that was actually presented. Never trusted as a source of truth
+   * — only compared against a fresh read. */
+  readonly currentStateToken: string;
+
+  constructor(input: {
+    currentMode: string | null;
+    currentState: "VALID" | "INVALID" | "DUPLICATE";
+    requestedMode: string | null;
+    currentStateToken: string;
+  }) {
+    super("Deze bestelling heeft al een handmatige keuze — bevestig de wijziging.");
+    this.name = "FulfillmentModeConfirmationRequiredError";
+    this.currentMode = input.currentMode;
+    this.currentState = input.currentState;
+    this.requestedMode = input.requestedMode;
+    this.currentStateToken = input.currentStateToken;
+  }
+}
+
 export class ExistingRequestedDeliveryDateError extends Error {
   readonly requestedDeliveryDate: string;
 

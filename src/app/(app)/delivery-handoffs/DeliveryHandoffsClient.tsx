@@ -13,6 +13,7 @@ import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell } fro
 import { SkeletonList } from "@/components/ui/Skeleton";
 import { formatDate, formatDateLong, formatDateTime } from "@/lib/format";
 import { cn } from "@/lib/cn";
+import { FulfillmentModeDialog } from "./FulfillmentModeDialog";
 
 // Phase 6E — this staff page now creates handoffs for two different kinds
 // of Shopify commerce object (see docs/ORDER-DELIVERY-HANDOFF-FOUNDATION.md
@@ -146,6 +147,8 @@ export function DeliveryHandoffsClient({ canCreate }: { canCreate: boolean }) {
 
   const [linkDialog, setLinkDialog] = useState<{ url: string | null; alreadyExisted: boolean } | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<{ result: OrderSearchResult; requestedDeliveryDate: string } | null>(null);
+  // Phase 6L — which Order is open in the fulfillment-classification dialog.
+  const [fulfillmentOrder, setFulfillmentOrder] = useState<{ gid: string; name: string } | null>(null);
 
   const loadHandoffs = useCallback(async () => {
     setLoadingHandoffs(true);
@@ -314,7 +317,7 @@ export function DeliveryHandoffsClient({ canCreate }: { canCreate: boolean }) {
                 <TableHeaderCell>Status</TableHeaderCell>
                 <TableHeaderCell>Leverdatumvoorkeur</TableHeaderCell>
                 <TableHeaderCell>Handoff</TableHeaderCell>
-                <TableHeaderCell className="w-48">
+                <TableHeaderCell className="w-64">
                   <span className="sr-only">Acties</span>
                 </TableHeaderCell>
               </TableHead>
@@ -339,18 +342,27 @@ export function DeliveryHandoffsClient({ canCreate }: { canCreate: boolean }) {
                       {result.hasExistingHandoff ? "Aanwezig" : "Niet aanwezig"}
                     </TableCell>
                     <TableCell>
-                      {result.isCancelled ? (
-                        <span className="text-xs text-ink-tertiary">Geannuleerd — geen nieuwe link</span>
-                      ) : (
+                      <div className="flex flex-wrap gap-2">
                         <Button
                           size="sm"
-                          variant="secondary"
-                          loading={creatingGid === result.gid}
-                          onClick={() => handleCreateOrder(result)}
+                          variant="ghost"
+                          onClick={() => setFulfillmentOrder({ gid: result.gid, name: result.name })}
                         >
-                          Leverdatumlink aanmaken
+                          Afhandeling
                         </Button>
-                      )}
+                        {result.isCancelled ? (
+                          <span className="text-xs text-ink-tertiary">Geannuleerd — geen nieuwe link</span>
+                        ) : (
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            loading={creatingGid === result.gid}
+                            onClick={() => handleCreateOrder(result)}
+                          >
+                            Leverdatumlink aanmaken
+                          </Button>
+                        )}
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))}
@@ -457,6 +469,14 @@ export function DeliveryHandoffsClient({ canCreate }: { canCreate: boolean }) {
           </Table>
         )}
       </div>
+
+      <FulfillmentModeDialog
+        open={fulfillmentOrder !== null}
+        orderGid={fulfillmentOrder?.gid ?? null}
+        orderName={fulfillmentOrder?.name ?? null}
+        canWrite={canCreate}
+        onClose={() => setFulfillmentOrder(null)}
+      />
 
       <Dialog
         open={linkDialog !== null}

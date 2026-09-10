@@ -1369,6 +1369,46 @@ remains completely independent and unchanged** — Control Center's
 fulfillment/delivery-date communication is additional only, and nothing in
 this contract touches invoice behavior.
 
+### Staff writer (Phase 6L)
+
+The contract's first writer. Staff classify an Order from the existing
+`/delivery-handoffs` Order workflow (an "Afhandeling" action on the Order
+row), not from a separate technical page.
+
+The dialog shows **Shopify-signaal** (Layer 1), **Stones4U-keuze** (explicit)
+and **Effectieve classificatie** (Layer 2) in Dutch business language —
+`Bezorgen`, `Afhalen`, `Afhaalpunt`, `Winkelverkoop`, `Geen fysieke levering`,
+`Niet bepaald` — with the raw Shopify value shown only as a small diagnostic
+line. Canonical values are what gets stored; they are never the primary UX.
+
+**Write path** (`fulfillment-mode.service.ts` → `order-fulfillment-mode-mirror.ts`):
+`assertShopifyWriteAllowed()` → canonical server re-read → cancelled-Order
+refusal → read-merge-write → post-write verification of the mutation's own
+returned attributes. Nothing about current state is accepted from the client
+— not the previous value, the native signal, the resolved mode, or the actor.
+Only canonical values are ever written; the read-side trim/upper-case
+tolerance deliberately does not apply to writes.
+
+- **Idempotent**: re-selecting the current value, or clearing when nothing is
+  set, succeeds with no mutation and no audit entry.
+- **Confirmation**: changing or clearing an existing choice requires explicit
+  staff confirmation showing current vs. new; a first classification does not.
+- **Duplicate repair**: duplicates are only ever collapsed as part of a
+  deliberate, confirmed write, never as a side effect of viewing an Order,
+  and are audited as `order_fulfillment_mode.repaired`.
+- **Preservation**: `requested_delivery_date` and every unrelated attribute
+  survive byte-for-byte; the write fails loudly if they do not.
+- **Audit**: `order_fulfillment_mode.set` / `.cleared` / `.repaired` on
+  `AuditEvent` (entityType `ShopifyOrder`, entityId the Order GID) with actor,
+  previous state/value, new value, and the native/resolved modes for later
+  agreement measurement. No schema migration was needed, and no customer
+  Activity is created — a classification is a staff decision, not a customer
+  delivery-date submission.
+
+Clearing is conservative rather than destructive: an Order whose explicit
+`CUSTOMER_PICKUP` is removed while Shopify says `SHIPPING` returns to
+`UNKNOWN`, which blocks automation rather than enabling it.
+
 ### Still out of scope after 6K
 
 No writer exists yet — no staff editor, no Order/Draft write endpoint, no
