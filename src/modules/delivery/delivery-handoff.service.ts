@@ -3,6 +3,7 @@ import { prisma } from "@/platform/db/prisma";
 import { logAudit } from "@/platform/audit/audit";
 import { validateRequestedDeliveryDate } from "./delivery-lead-time";
 import { resolveDeliveryCommentPatch, resolveLargeTruckAccessPatch } from "./delivery-details";
+import { mirrorOrderLogisticsMetafields } from "@/integrations/shopify/order-logistics-metafields";
 import { generatePublicToken, hashPublicToken } from "./token";
 import { DeliveryHandoffError, ExistingRequestedDeliveryDateError } from "./errors";
 import { mirrorRequestedDeliveryDateToShopify } from "@/integrations/shopify/draft-order-mirror";
@@ -586,6 +587,38 @@ export async function submitRequestedDeliveryDateForOrder(
     throw new DeliveryHandoffError("Kon uw leverdatum nog niet doorgeven aan het bestelsysteem. Probeer het opnieuw.", {
       retryable: true,
     });
+  }
+
+  // Phase 6R — the logistics answers mirror to dedicated Order metafields,
+  // after the date attribute and before success is reported. A field the
+  // customer did not state is PRESERVE and is not written at all, so a
+  // date-only submission cannot blank a metafield another system relies on.
+  //
+  // A failure here must not be reported as a clean success: the row is marked
+  // ERROR exactly as a failed date mirror is, and the customer is asked to
+  // retry. The locally persisted answers are untouched, so the retry is safe.
+  try {
+    await mirrorOrderLogisticsMetafields(persisted.shopifyOrderGid, {
+      deliveryComment: commentPatch.patch,
+      largeTruckAccessConfirmed: truckPatch,
+    });
+  } catch (error) {
+    const errorCode = error instanceof Error ? error.name : "UNKNOWN_ERROR";
+    await prisma.deliveryDateHandoff.update({
+      where: { id: persisted.id },
+      data: { status: "ERROR", mirrorErrorCode: errorCode },
+    });
+    await logAudit({
+      userId: null,
+      action: "delivery_handoff.mirror_failed",
+      entityType: "DeliveryDateHandoff",
+      entityId: persisted.id,
+      metadata: { errorCode, stage: "LOGISTICS_METAFIELDS" },
+    });
+    throw new DeliveryHandoffError(
+      "Kon uw leveringsgegevens nog niet volledig doorgeven aan het bestelsysteem. Probeer het opnieuw.",
+      { retryable: true },
+    );
   }
 
   await prisma.deliveryDateHandoff.update({

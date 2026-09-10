@@ -26,19 +26,30 @@ export function OrderDeliveryDateForm({
   token,
   currentValue,
   publicReference,
+  currentDeliveryComment,
+  currentLargeTruckAccessConfirmed,
   earliestDeliveryDate,
 }: {
   token: string;
   currentValue: string;
   publicReference: string | null;
+  /** Phase 6R — what the customer last told us, so reopening the link shows
+   * their own answers back rather than an empty form they could unknowingly
+   * submit over. Plain text, rendered as-is. */
+  currentDeliveryComment: string | null;
+  /** `true` shows a ticked box. `false` and `null` both show an unticked box —
+   * they are indistinguishable to the customer, and stay distinct in storage
+   * only until this form is next submitted, at which point an unticked box
+   * becomes a deliberate `false` because the question was actually asked. */
+  currentLargeTruckAccessConfirmed: boolean | null;
   // Phase 6P — computed server-side in Europe/Amsterdam. Used as the picker's
   // `min`, which is a convenience only: the server re-validates every
   // submission against the same policy regardless of what the browser allows.
   earliestDeliveryDate: string;
 }) {
   const [date, setDate] = useState(currentValue);
-  const [deliveryComment, setDeliveryComment] = useState("");
-  const [largeTruckAccessConfirmed, setLargeTruckAccessConfirmed] = useState(false);
+  const [deliveryComment, setDeliveryComment] = useState(currentDeliveryComment ?? "");
+  const [largeTruckAccessConfirmed, setLargeTruckAccessConfirmed] = useState(currentLargeTruckAccessConfirmed === true);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [succeeded, setSucceeded] = useState<{

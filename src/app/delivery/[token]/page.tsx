@@ -44,6 +44,12 @@ export default async function DeliveryDatePage({ params }: PageProps) {
             token={token}
             currentValue={handoff.requestedDeliveryDate ? handoff.requestedDeliveryDate.toISOString().slice(0, 10) : ""}
             publicReference={handoff.publicReference}
+            // Phase 6R — the form is initialised from the persisted handoff,
+            // which stays the single source of truth for what the customer
+            // last told us. Nothing is read from the browser, and Shopify is
+            // never consulted on GET (see §12: viewing must never reconcile).
+            currentDeliveryComment={handoff.deliveryComment}
+            currentLargeTruckAccessConfirmed={handoff.largeTruckAccessConfirmed}
             earliestDeliveryDate={getEarliestRequestedDeliveryDate({
               orderCreatedAt: handoff.createdAt,
               now: new Date(),

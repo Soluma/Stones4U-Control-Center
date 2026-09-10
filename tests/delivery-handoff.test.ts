@@ -34,6 +34,14 @@ vi.mock("@/integrations/shopify/order-mirror", () => ({
   mirrorRequestedDeliveryDateToOrder: (...args: unknown[]) => mockOrderMirror(...args),
 }));
 
+// Phase 6R — the logistics metafield mirror is the same kind of Shopify
+// network boundary as the two above, and is covered on its own in
+// tests/order-logistics-metafields.test.ts.
+const mockLogisticsMetafields = vi.fn();
+vi.mock("@/integrations/shopify/order-logistics-metafields", () => ({
+  mirrorOrderLogisticsMetafields: (...args: unknown[]) => mockLogisticsMetafields(...args),
+}));
+
 // Phase 6E — mocked the same way as the mirror functions above: this keeps
 // createOrderDeliveryHandoffForStaff()'s own tests focused on its
 // orchestration logic (re-read -> cancelled check -> resolve customer ->
@@ -67,6 +75,8 @@ describe("delivery-handoff.service", () => {
     mockMirror.mockResolvedValue({ invoiceUrl: "https://test-shop.myshopify.com/12345/invoices/abc" });
     mockOrderMirror.mockReset();
     mockOrderMirror.mockResolvedValue({ orderGid: "gid://shopify/Order/1" });
+    mockLogisticsMetafields.mockReset();
+    mockLogisticsMetafields.mockResolvedValue({ orderGid: "gid://shopify/Order/1", written: [], deleted: [], noop: true });
     mockGetOrderForHandoff.mockReset();
   });
 
@@ -677,6 +687,248 @@ describe("delivery-handoff.service", () => {
         const live = await prisma.deliveryDateHandoff.findUniqueOrThrow({ where: { id: before.id } });
         const result = await submitRequestedDeliveryDateForOrder(live, { rawDateInput: LATER_VALID_DATE });
         expect(result.largeTruckAccessConfirmed).toBe(true);
+      });
+    });
+
+    // Phase 6R — what a customer sees when they reopen their link. The page
+    // renders straight from the persisted handoff, so these assertions cover
+    // the exact values the form is initialised with.
+    describe("reopening the handoff shows the customer their own last answers", () => {
+      async function submitAndReopen(input: {
+        rawDateInput: string;
+        deliveryComment?: string | null;
+        largeTruckAccessConfirmed?: unknown;
+      }) {
+        const { handoff, rawToken } = await createOrderDeliveryHandoffForStaff({
+          orderGid: `gid://shopify/Order/${crypto.randomUUID()}`,
+          createdById: userId,
+        });
+        createdHandoffIds.push(handoff.id);
+        const live = await getHandoffByRawToken(rawToken!);
+        await submitRequestedDeliveryDateForOrder(live!, input);
+        // A fresh GET, exactly as reopening the link performs.
+        return (await getHandoffByRawToken(rawToken!))!;
+      }
+
+      beforeEach(() => {
+        // Echo back the Order actually asked for, so each test gets its own
+        // handoff rather than colliding on a single externalId.
+        mockGetOrderForHandoff.mockImplementation(async (orderGid: string) => ({
+          gid: orderGid,
+          name: "#1000",
+          isCancelled: false,
+          fulfillmentStatus: "UNFULFILLED",
+          customerGid: null,
+          hasShippingAddress: true,
+          hasRequestedDeliveryDateAlready: false,
+          requestedDeliveryDate: null,
+          fullyPaid: true,
+        }));
+      });
+
+      it("a stored comment comes back verbatim, ready to seed the textarea", async () => {
+        const reopened = await submitAndReopen({ rawDateInput: VALID_DATE, deliveryComment: "Bel bij aankomst" });
+        expect(reopened.deliveryComment).toBe("Bel bij aankomst");
+      });
+
+      it("a multiline comment keeps its line breaks", async () => {
+        const comment = "Poort aan de zijkant.\nBel bij aankomst.";
+        const reopened = await submitAndReopen({ rawDateInput: VALID_DATE, deliveryComment: comment });
+        expect(reopened.deliveryComment).toBe(comment);
+      });
+
+      it("no comment stays null, so the textarea renders empty", async () => {
+        const reopened = await submitAndReopen({ rawDateInput: VALID_DATE });
+        expect(reopened.deliveryComment).toBeNull();
+      });
+
+      it("truck true comes back as true (ticked box)", async () => {
+        const reopened = await submitAndReopen({ rawDateInput: VALID_DATE, largeTruckAccessConfirmed: true });
+        expect(reopened.largeTruckAccessConfirmed).toBe(true);
+      });
+
+      it("truck false comes back as false — unticked, but still distinct from never-asked", async () => {
+        const reopened = await submitAndReopen({ rawDateInput: VALID_DATE, largeTruckAccessConfirmed: false });
+        expect(reopened.largeTruckAccessConfirmed).toBe(false);
+      });
+
+      it("a never-asked handoff comes back as null — also unticked, and still distinct from false", async () => {
+        const reopened = await submitAndReopen({ rawDateInput: VALID_DATE });
+        expect(reopened.largeTruckAccessConfirmed).toBeNull();
+      });
+
+      it("the date comes back for the picker", async () => {
+        const reopened = await submitAndReopen({ rawDateInput: VALID_DATE });
+        expect(reopened.requestedDeliveryDate?.toISOString().slice(0, 10)).toBe(VALID_DATE);
+      });
+
+      it("reopening reflects the latest submission, not the first", async () => {
+        const { handoff, rawToken } = await createOrderDeliveryHandoffForStaff({
+          orderGid: `gid://shopify/Order/${crypto.randomUUID()}`,
+          createdById: userId,
+        });
+        createdHandoffIds.push(handoff.id);
+
+        await submitRequestedDeliveryDateForOrder((await getHandoffByRawToken(rawToken!))!, {
+          rawDateInput: VALID_DATE,
+          deliveryComment: "Eerste opmerking",
+          largeTruckAccessConfirmed: true,
+        });
+        await submitRequestedDeliveryDateForOrder((await getHandoffByRawToken(rawToken!))!, {
+          rawDateInput: LATER_VALID_DATE,
+          deliveryComment: "Tweede opmerking",
+          largeTruckAccessConfirmed: false,
+        });
+
+        const reopened = (await getHandoffByRawToken(rawToken!))!;
+        expect(reopened.deliveryComment).toBe("Tweede opmerking");
+        expect(reopened.largeTruckAccessConfirmed).toBe(false);
+        expect(reopened.requestedDeliveryDate?.toISOString().slice(0, 10)).toBe(LATER_VALID_DATE);
+      });
+
+      it("reopening creates no Activity — viewing is not a submission", async () => {
+        const { handoff, rawToken } = await createOrderDeliveryHandoffForStaff({
+          orderGid: `gid://shopify/Order/${crypto.randomUUID()}`,
+          createdById: userId,
+        });
+        createdHandoffIds.push(handoff.id);
+        await submitRequestedDeliveryDateForOrder((await getHandoffByRawToken(rawToken!))!, {
+          rawDateInput: VALID_DATE,
+        });
+
+        const before = await prisma.activity.count();
+        await getHandoffByRawToken(rawToken!);
+        await getHandoffByRawToken(rawToken!);
+        expect(await prisma.activity.count()).toBe(before);
+      });
+
+      // The regression this phase exists to close: the customer reopens, the
+      // form shows their answers, they change only the date, and both the
+      // remark and the truck answer survive.
+      it("changing only the date, with the prefilled values resubmitted, preserves both", async () => {
+        const { handoff, rawToken } = await createOrderDeliveryHandoffForStaff({
+          orderGid: `gid://shopify/Order/${crypto.randomUUID()}`,
+          createdById: userId,
+        });
+        createdHandoffIds.push(handoff.id);
+
+        await submitRequestedDeliveryDateForOrder((await getHandoffByRawToken(rawToken!))!, {
+          rawDateInput: VALID_DATE,
+          deliveryComment: "Bel bij aankomst",
+          largeTruckAccessConfirmed: true,
+        });
+
+        const reopened = (await getHandoffByRawToken(rawToken!))!;
+        // Exactly what the prefilled form sends back when only the date changed.
+        await submitRequestedDeliveryDateForOrder(reopened, {
+          rawDateInput: LATER_VALID_DATE,
+          deliveryComment: reopened.deliveryComment,
+          largeTruckAccessConfirmed: reopened.largeTruckAccessConfirmed,
+        });
+
+        const after = (await getHandoffByRawToken(rawToken!))!;
+        expect(after.requestedDeliveryDate?.toISOString().slice(0, 10)).toBe(LATER_VALID_DATE);
+        expect(after.deliveryComment).toBe("Bel bij aankomst");
+        expect(after.largeTruckAccessConfirmed).toBe(true);
+        // Shopify sees the unchanged values re-asserted, never a blank.
+        expect(mockLogisticsMetafields).toHaveBeenLastCalledWith(after.shopifyOrderGid, {
+          deliveryComment: { action: "SET", value: "Bel bij aankomst" },
+          largeTruckAccessConfirmed: { action: "SET", value: true },
+        });
+      });
+    });
+
+    // Phase 6R — the logistics answers also mirror to Order metafields.
+    describe("logistics metafield mirroring", () => {
+      async function freshOrderHandoff() {
+        const { handoff } = await createOrGetOrderDeliveryHandoff({
+          shopifyOrderGid: `gid://shopify/Order/${crypto.randomUUID()}`,
+          createdById: userId,
+        });
+        createdHandoffIds.push(handoff.id);
+        return handoff;
+      }
+
+      it("passes the customer's answers through as SET patches, alongside the unchanged date attribute", async () => {
+        const handoff = await freshOrderHandoff();
+        await submitRequestedDeliveryDateForOrder(handoff, {
+          rawDateInput: VALID_DATE,
+          deliveryComment: "Poort aan de zijkant.",
+          largeTruckAccessConfirmed: true,
+        });
+
+        expect(mockLogisticsMetafields).toHaveBeenCalledTimes(1);
+        expect(mockLogisticsMetafields).toHaveBeenCalledWith(handoff.shopifyOrderGid, {
+          deliveryComment: { action: "SET", value: "Poort aan de zijkant." },
+          largeTruckAccessConfirmed: { action: "SET", value: true },
+        });
+        // The date still goes through the existing customAttribute path.
+        expect(mockOrderMirror).toHaveBeenCalledWith(handoff.shopifyOrderGid, VALID_DATE);
+      });
+
+      it("passes a deliberate clear through as SET null, so Shopify's metafield is removed too", async () => {
+        const handoff = await freshOrderHandoff();
+        await submitRequestedDeliveryDateForOrder(handoff, { rawDateInput: VALID_DATE, deliveryComment: "" });
+
+        expect(mockLogisticsMetafields.mock.calls[0]![1]).toMatchObject({
+          deliveryComment: { action: "SET", value: null },
+        });
+      });
+
+      it("passes PRESERVE for omitted fields, so a date-only submission cannot blank a metafield", async () => {
+        const handoff = await freshOrderHandoff();
+        await submitRequestedDeliveryDateForOrder(handoff, { rawDateInput: VALID_DATE });
+
+        expect(mockLogisticsMetafields).toHaveBeenCalledWith(handoff.shopifyOrderGid, {
+          deliveryComment: { action: "PRESERVE" },
+          largeTruckAccessConfirmed: { action: "PRESERVE" },
+        });
+      });
+
+      it("passes explicit false through rather than dropping it", async () => {
+        const handoff = await freshOrderHandoff();
+        await submitRequestedDeliveryDateForOrder(handoff, {
+          rawDateInput: VALID_DATE,
+          largeTruckAccessConfirmed: false,
+        });
+
+        expect(mockLogisticsMetafields.mock.calls[0]![1]).toMatchObject({
+          largeTruckAccessConfirmed: { action: "SET", value: false },
+        });
+      });
+
+      it("a metafield failure is never reported as success — status ERROR, retryable, local answers kept", async () => {
+        mockLogisticsMetafields.mockRejectedValueOnce(new Error("METAFIELD_CONFLICT"));
+        const handoff = await freshOrderHandoff();
+
+        const error = await submitRequestedDeliveryDateForOrder(handoff, {
+          rawDateInput: VALID_DATE,
+          deliveryComment: "Bel bij aankomst.",
+          largeTruckAccessConfirmed: true,
+        }).catch((e) => e);
+
+        expect(error).toBeInstanceOf(DeliveryHandoffError);
+        expect(error.retryable).toBe(true);
+
+        const reloaded = await prisma.deliveryDateHandoff.findUniqueOrThrow({ where: { id: handoff.id } });
+        expect(reloaded.status).toBe("ERROR");
+        expect(reloaded.mirrorErrorCode).toBeTruthy();
+        // The customer's answers are still persisted, so the retry is safe.
+        expect(reloaded.deliveryComment).toBe("Bel bij aankomst.");
+        expect(reloaded.largeTruckAccessConfirmed).toBe(true);
+        expect(reloaded.requestedDeliveryDate?.toISOString().slice(0, 10)).toBe(VALID_DATE);
+      });
+
+      it("the date attribute is mirrored before the metafields, and a metafield failure does not undo it", async () => {
+        mockLogisticsMetafields.mockRejectedValueOnce(new Error("METAFIELD_CONFLICT"));
+        const handoff = await freshOrderHandoff();
+
+        await submitRequestedDeliveryDateForOrder(handoff, {
+          rawDateInput: VALID_DATE,
+          largeTruckAccessConfirmed: true,
+        }).catch(() => undefined);
+
+        expect(mockOrderMirror).toHaveBeenCalledWith(handoff.shopifyOrderGid, VALID_DATE);
       });
     });
 

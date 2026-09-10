@@ -46,6 +46,44 @@ describe("customer form — lead-time copy", () => {
   });
 });
 
+// Phase 6R — the form must show the customer their own last answers back.
+// Before this, reopening a link presented an empty comment box and an
+// unticked checkbox, so an otherwise innocent resubmission silently wiped
+// both. There is no render pipeline in this repo, so the guarantee is
+// asserted at the two places that actually produce it.
+describe("customer form — prefill from persisted state", () => {
+  it("seeds the comment box from the persisted value, with null becoming an empty box", () => {
+    expect(orderForm).toContain('useState(currentDeliveryComment ?? "")');
+  });
+
+  it("ticks the checkbox only for a persisted true — false and null both render unticked", () => {
+    expect(orderForm).toContain("useState(currentLargeTruckAccessConfirmed === true)");
+  });
+
+  it("still seeds the date from the persisted value", () => {
+    expect(orderForm).toContain("useState(currentValue)");
+  });
+
+  it("the page supplies those values from the persisted handoff, not from Shopify or the browser", () => {
+    expect(page).toContain("currentDeliveryComment={handoff.deliveryComment}");
+    expect(page).toContain("currentLargeTruckAccessConfirmed={handoff.largeTruckAccessConfirmed}");
+    // Viewing must never reconcile against Shopify (build instruction §12).
+    expect(page).not.toContain("readOrderLogisticsMetafields");
+  });
+
+  it("never uses browser storage to carry customer answers", () => {
+    for (const forbidden of ["localStorage", "sessionStorage", "document.cookie"]) {
+      expect(orderForm).not.toContain(forbidden);
+      expect(page).not.toContain(forbidden);
+    }
+  });
+
+  it("renders the persisted comment as plain text — the textarea value, never HTML", () => {
+    expect(orderForm).toContain("value={deliveryComment}");
+    expect(orderForm).not.toContain("dangerouslySetInnerHTML");
+  });
+});
+
 describe("customer form — truck access", () => {
   it("asks the accessibility question with the agreed wording and helper text", () => {
     expect(orderForm).toContain("Ja, de afleverlocatie is bereikbaar met een grote vrachtwagen.");
@@ -114,7 +152,11 @@ describe("server-side safety", () => {
     expect(service).not.toMatch(/metadata:\s*\{[^}]*deliveryComment:/);
   });
 
-  it("the remark and truck answer are never mirrored to Shopify", () => {
+  // Phase 6R — the remark and truck answer DO reach Shopify now, but through
+  // the dedicated metafield writer, never through the customAttribute mirror.
+  // The two paths stay separate so a failure or change in one cannot disturb
+  // the other.
+  it("the customAttribute mirror still carries only requested_delivery_date", () => {
     const mirror = readFileSync(
       fileURLToPath(new URL("../src/integrations/shopify/order-mirror.ts", import.meta.url)),
       "utf-8",
@@ -122,5 +164,17 @@ describe("server-side safety", () => {
     expect(mirror).not.toContain("deliveryComment");
     expect(mirror).not.toContain("largeTruckAccessConfirmed");
     expect(mirror).toContain("requested_delivery_date");
+  });
+
+  it("the logistics metafield writer is a separate path that never touches the date attribute", () => {
+    const metafields = readFileSync(
+      fileURLToPath(new URL("../src/integrations/shopify/order-logistics-metafields.ts", import.meta.url)),
+      "utf-8",
+    );
+    expect(metafields).toContain("delivery_comment");
+    expect(metafields).toContain("large_truck_access_confirmed");
+    expect(metafields).toContain("metafieldsSet");
+    // The GraphQL it sends contains no orderUpdate/customAttributes operation.
+    expect(metafields).not.toMatch(/mutation[\s\S]*orderUpdate/);
   });
 });
