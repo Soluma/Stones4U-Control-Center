@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { evaluateDeliveryDateEligibility } from "@/modules/delivery/eligibility";
 import type { OrderForHandoffResult } from "@/integrations/shopify/order-for-handoff";
+import { unclassifiedCustomer } from "@/integrations/shopify/customer-classification";
 
 function baseOrder(overrides: Partial<OrderForHandoffResult> = {}): OrderForHandoffResult {
   return {
@@ -16,13 +17,7 @@ function baseOrder(overrides: Partial<OrderForHandoffResult> = {}): OrderForHand
     nativeFulfillmentMode: "UNKNOWN",
     explicitFulfillmentMode: null,
     fulfillmentResolution: { mode: "UNKNOWN", source: "NONE", conflict: false, diagnostic: "NONE" },
-    customerClassification: {
-      paymentPolicy: "UNKNOWN",
-      customerType: "UNKNOWN",
-      source: "NO_CUSTOMER",
-      paymentPolicyStatus: "ABSENT",
-      customerTypeStatus: "ABSENT",
-    },
+    customerClassification: unclassifiedCustomer("NO_CUSTOMER"),
     ...overrides,
   };
 }

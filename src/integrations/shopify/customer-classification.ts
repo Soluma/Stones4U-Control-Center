@@ -147,16 +147,72 @@ export function readCustomerType(raw: string | null | undefined): Classification
   return parse(raw, CUSTOMER_TYPE_VALUES);
 }
 
-/** Collapses a read to its usable value, failing closed to UNKNOWN for
- * ABSENT and INVALID alike. Callers that need to tell those apart (for
- * operational reporting: "nobody has classified this customer" vs "somebody
- * typed something we cannot trust") should keep the full read. */
-export function paymentPolicyOrUnknown(read: ClassificationRead<PaymentPolicy>): PaymentPolicy {
-  return read.status === "VALID" ? read.value : "UNKNOWN";
+// ─────────────────────────────────────────────────────────────────────
+// PHASE 6AD — THESE METAFIELDS ARE EXCEPTION FIELDS
+//
+// Fons' business rule: the ordinary Stones4U customer is a private individual
+// who pays up front. The metafields exist to record the EXCEPTIONS, not to
+// classify everybody. Requiring all ~5,600 production customers to be tagged
+// before anything could work would have been a data-entry project standing in
+// for a business rule.
+//
+// So an ABSENT value is now an intentional statement of the default, not an
+// absence of information:
+//
+//   payment_policy absent -> PREPAID
+//   customer_type  absent -> CONSUMER
+//
+// THE CRITICAL DISTINCTION, and the reason this is more than a two-line
+// change: "nobody needed to say anything" and "we could not find out" look
+// identical once both produce a value, and they must never be confused.
+// Defaults apply ONLY to a successful read of a real customer that simply has
+// no value stored. They are NOT applied when:
+//
+//   * the stored value is INVALID  — somebody said something we cannot trust;
+//     an explicit bad value is not the same as no value (build instruction §4)
+//   * the read FAILED/timed out/was unauthorized — we do not know whether a
+//     value exists, so assuming the default would be inventing a fact (§5)
+//   * the Order has NO CUSTOMER at all — a guest/unlinked Order is not "a
+//     normal customer with empty metafields" (§6)
+//
+// All three of those remain UNKNOWN, exactly as before.
+// ─────────────────────────────────────────────────────────────────────
+
+/** The ordinary Stones4U customer, assumed when nothing is stored. */
+export const DEFAULT_PAYMENT_POLICY: PaymentPolicy = "PREPAID";
+export const DEFAULT_CUSTOMER_TYPE: CustomerType = "CONSUMER";
+
+/**
+ * Where a resolved value came from. Kept per-field so a default can never be
+ * mistaken for a statement, and a fail-closed UNKNOWN can never be mistaken
+ * for a default (build instruction §1 — diagnostic information must survive
+ * the introduction of defaults).
+ */
+export type ClassificationValueSource = "EXPLICIT" | "DEFAULT" | "FAIL_CLOSED";
+
+/**
+ * What the read itself observed, independent of what value was resolved.
+ * A superset of the four states build instruction §1 requires; `NO_CUSTOMER`
+ * is separated from `UNREADABLE` because "there was nobody to ask" and
+ * "asking failed" call for different operational responses.
+ */
+export type ClassificationReadState = "VALID" | "ABSENT" | "INVALID" | "UNREADABLE" | "NO_CUSTOMER";
+
+/** Applies the exception-field rule to one read. */
+export function resolvePaymentPolicy(
+  read: ClassificationRead<PaymentPolicy>,
+): { value: PaymentPolicy; source: ClassificationValueSource } {
+  if (read.status === "VALID") return { value: read.value, source: "EXPLICIT" };
+  if (read.status === "ABSENT") return { value: DEFAULT_PAYMENT_POLICY, source: "DEFAULT" };
+  return { value: "UNKNOWN", source: "FAIL_CLOSED" };
 }
 
-export function customerTypeOrUnknown(read: ClassificationRead<CustomerType>): CustomerType {
-  return read.status === "VALID" ? read.value : "UNKNOWN";
+export function resolveCustomerType(
+  read: ClassificationRead<CustomerType>,
+): { value: CustomerType; source: ClassificationValueSource } {
+  if (read.status === "VALID") return { value: read.value, source: "EXPLICIT" };
+  if (read.status === "ABSENT") return { value: DEFAULT_CUSTOMER_TYPE, source: "DEFAULT" };
+  return { value: "UNKNOWN", source: "FAIL_CLOSED" };
 }
 
 /** What the classification read did, for observability. `UNREADABLE` is the
@@ -166,22 +222,38 @@ export function customerTypeOrUnknown(read: ClassificationRead<CustomerType>): C
 export type CustomerClassificationSource = "CUSTOMER_METAFIELDS" | "NO_CUSTOMER" | "UNREADABLE";
 
 export type CustomerClassification = {
+  /** The effective value: explicit, defaulted, or UNKNOWN. */
   paymentPolicy: PaymentPolicy;
   customerType: CustomerType;
+  /** How the customer was read as a whole. */
   source: CustomerClassificationSource;
-  paymentPolicyStatus: ClassificationRead<PaymentPolicy>["status"];
-  customerTypeStatus: ClassificationRead<CustomerType>["status"];
+  /** What the read observed for each field, before defaults were applied. */
+  paymentPolicyStatus: ClassificationReadState;
+  customerTypeStatus: ClassificationReadState;
+  /** Whether each effective value was stated, defaulted, or failed closed. */
+  paymentPolicySource: ClassificationValueSource;
+  customerTypeSource: ClassificationValueSource;
 };
 
-/** The single fail-closed value used for an Order with no customer, and for a
- * failed read. Never PREPAID, never inferred from the Order (build
- * instructions §5 and §6). */
+/**
+ * The fail-closed result, for an Order with no customer and for a failed read
+ * (build instructions §5 and §6).
+ *
+ * **This deliberately does NOT get the new defaults.** It is the single place
+ * where that decision is visible, so the difference between "an ordinary
+ * customer with nothing stored" (CONSUMER + PREPAID) and "we could not
+ * establish anything" (UNKNOWN) stays a property of the type rather than a
+ * convention someone has to remember.
+ */
 export function unclassifiedCustomer(source: CustomerClassificationSource): CustomerClassification {
+  const state: ClassificationReadState = source === "NO_CUSTOMER" ? "NO_CUSTOMER" : "UNREADABLE";
   return {
     paymentPolicy: "UNKNOWN",
     customerType: "UNKNOWN",
     source,
-    paymentPolicyStatus: "ABSENT",
-    customerTypeStatus: "ABSENT",
+    paymentPolicyStatus: state,
+    customerTypeStatus: state,
+    paymentPolicySource: "FAIL_CLOSED",
+    customerTypeSource: "FAIL_CLOSED",
   };
 }

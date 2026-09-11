@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/platform/db/prisma";
 import { createTestUser, cleanupUser, cleanupDeliveryDateHandoff } from "./fixtures";
+import { unclassifiedCustomer } from "@/integrations/shopify/customer-classification";
 
 // Phase 6F — same technique as tests/delivery-handoff.test.ts's
 // createOrderDeliveryHandoffForStaff() tests: mock only the Shopify
@@ -65,13 +66,7 @@ describe("processOrderWebhookEvent", () => {
       // Phase 6W — the canonical Order read always carries a classification;
       // an Order with no customer carries the fail-closed UNKNOWN one, which
       // is what every pre-6W fixture here implicitly assumed.
-      customerClassification: {
-        paymentPolicy: "UNKNOWN",
-        customerType: "UNKNOWN",
-        source: "NO_CUSTOMER",
-        paymentPolicyStatus: "ABSENT",
-        customerTypeStatus: "ABSENT",
-      },
+      customerClassification: unclassifiedCustomer("NO_CUSTOMER"),
       ...overrides,
     };
   }

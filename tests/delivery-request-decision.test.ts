@@ -6,17 +6,43 @@ import {
 } from "@/modules/delivery/delivery-request-decision";
 import type { OrderForHandoffResult } from "@/integrations/shopify/order-for-handoff";
 import type { FulfillmentMode } from "@/integrations/shopify/fulfillment-mode";
-import type { CustomerType, PaymentPolicy } from "@/integrations/shopify/customer-classification";
+import {
+  unclassifiedCustomer,
+  type ClassificationReadState,
+  type ClassificationValueSource,
+  type CustomerType,
+  type PaymentPolicy,
+} from "@/integrations/shopify/customer-classification";
 
 const ALL_POLICIES: DeliveryCustomerPolicy[] = ["UNKNOWN", "REGULAR_CONSUMER", "B2B_ON_ACCOUNT", "MANUAL_ONLY"];
 
+/** A classification as an EXPLICITLY stated one. Phase 6AD: passing UNKNOWN
+ * here means "the stored value could not be trusted" (INVALID), not "nothing
+ * was stored" — an absent value now defaults to PREPAID/CONSUMER, so the two
+ * can no longer share a fixture. */
 function classification(paymentPolicy: PaymentPolicy, customerType: CustomerType = "UNKNOWN") {
   return {
     paymentPolicy,
     customerType,
     source: "CUSTOMER_METAFIELDS" as const,
-    paymentPolicyStatus: (paymentPolicy === "UNKNOWN" ? "ABSENT" : "VALID") as "ABSENT" | "VALID",
-    customerTypeStatus: (customerType === "UNKNOWN" ? "ABSENT" : "VALID") as "ABSENT" | "VALID",
+    paymentPolicyStatus: (paymentPolicy === "UNKNOWN" ? "INVALID" : "VALID") as ClassificationReadState,
+    customerTypeStatus: (customerType === "UNKNOWN" ? "INVALID" : "VALID") as ClassificationReadState,
+    paymentPolicySource: (paymentPolicy === "UNKNOWN" ? "FAIL_CLOSED" : "EXPLICIT") as ClassificationValueSource,
+    customerTypeSource: (customerType === "UNKNOWN" ? "FAIL_CLOSED" : "EXPLICIT") as ClassificationValueSource,
+  };
+}
+
+/** Phase 6AD — a real customer with nothing stored: the ordinary case, which
+ * now resolves to the CONSUMER + PREPAID defaults. */
+function defaultedClassification() {
+  return {
+    paymentPolicy: "PREPAID" as PaymentPolicy,
+    customerType: "CONSUMER" as CustomerType,
+    source: "CUSTOMER_METAFIELDS" as const,
+    paymentPolicyStatus: "ABSENT" as ClassificationReadState,
+    customerTypeStatus: "ABSENT" as ClassificationReadState,
+    paymentPolicySource: "DEFAULT" as ClassificationValueSource,
+    customerTypeSource: "DEFAULT" as ClassificationValueSource,
   };
 }
 
@@ -36,7 +62,7 @@ function baseOrder(overrides: Partial<OrderForHandoffResult> = {}): OrderForHand
     // Deliberately UNKNOWN by default — an Order nobody classified is the
     // historical norm, and must stay the conservative default in tests too.
     fulfillmentResolution: { mode: "UNKNOWN", source: "NONE", conflict: false, diagnostic: "NONE" },
-    customerClassification: classification("UNKNOWN"),
+    customerClassification: unclassifiedCustomer("NO_CUSTOMER"),
     ...overrides,
   };
 }
@@ -349,6 +375,66 @@ describe("evaluateDeliveryRequestDecision — build instruction §23 decision ma
   });
 });
 
+// Phase 6AD build instruction §16 I/J — the ordinary production customer,
+// who has no metafields at all, must now be able to reach READY.
+describe("evaluateDeliveryRequestDecision — the defaulted ordinary customer", () => {
+  function decideWithDefaults(order: OrderForHandoffResult) {
+    return evaluateDeliveryRequestDecision({
+      order,
+      trigger: "ORDER_PAID",
+      policy: deliveryPolicyForPaymentPolicy(order.customerClassification.paymentPolicy),
+    });
+  }
+
+  it("I. absent metafields (-> default PREPAID) + DELIVERY + paid + no date -> READY candidate", () => {
+    const order = deliveryOrder({ fullyPaid: true, customerClassification: defaultedClassification() });
+    expect(order.customerClassification.paymentPolicySource).toBe("DEFAULT");
+    expect(decideWithDefaults(order)).toEqual({
+      shouldRequest: true,
+      reason: "READY_FOR_DELIVERY_REQUEST",
+      trigger: "ORDER_PAID",
+    });
+  });
+
+  it("J. absent metafields (-> default PREPAID) + DELIVERY + unpaid -> WAITING_FOR_PAYMENT", () => {
+    const order = deliveryOrder({ fullyPaid: false, customerClassification: defaultedClassification() });
+    expect(decideWithDefaults(order).reason).toBe("WAITING_FOR_PAYMENT");
+  });
+
+  it("a defaulted customer behaves identically to one explicitly marked 'betaling vooraf'", () => {
+    const defaulted = deliveryOrder({ fullyPaid: true, customerClassification: defaultedClassification() });
+    const explicit = deliveryOrder({ fullyPaid: true, customerClassification: classification("PREPAID", "CONSUMER") });
+    expect(decideWithDefaults(defaulted)).toEqual(decideWithDefaults(explicit));
+  });
+
+  it("but a FAILED read still cannot reach READY — the default is for absence, never for ignorance", () => {
+    for (const source of ["UNREADABLE", "NO_CUSTOMER"] as const) {
+      const order = deliveryOrder({ fullyPaid: true, customerClassification: unclassifiedCustomer(source) });
+      const result = decideWithDefaults(order);
+      expect(result.shouldRequest).toBe(false);
+      expect(result.reason).toBe("INSUFFICIENT_CLASSIFICATION");
+    }
+  });
+
+  it("an INVALID stored value still cannot reach READY either", () => {
+    const order = deliveryOrder({ fullyPaid: true, customerClassification: classification("UNKNOWN", "CONSUMER") });
+    expect(decideWithDefaults(order).reason).toBe("INSUFFICIENT_CLASSIFICATION");
+  });
+
+  it("a BUSINESS customer with no payment policy still follows the PREPAID default, not ON_ACCOUNT", () => {
+    const businessDefaulted = {
+      ...defaultedClassification(),
+      customerType: "BUSINESS" as const,
+      customerTypeStatus: "VALID" as ClassificationReadState,
+      customerTypeSource: "EXPLICIT" as ClassificationValueSource,
+    };
+    const unpaid = deliveryOrder({ fullyPaid: false, customerClassification: businessDefaulted });
+    const paid = deliveryOrder({ fullyPaid: true, customerClassification: businessDefaulted });
+    expect(decideWithDefaults(unpaid).reason).toBe("WAITING_FOR_PAYMENT");
+    expect(decideWithDefaults(paid).reason).toBe("READY_FOR_DELIVERY_REQUEST");
+  });
+});
+
 describe("evaluateDeliveryRequestDecision — what a positive decision actually requires", () => {
   it("READY is reachable ONLY with a trusted DELIVERY resolution plus a known payment policy that is satisfied", () => {
     // Every single-factor degradation of the one passing case must fail.
@@ -378,13 +464,7 @@ describe("evaluateDeliveryRequestDecision — what a positive decision actually 
     const noCustomer = deliveryOrder({
       fullyPaid: true,
       customerGid: null,
-      customerClassification: {
-        paymentPolicy: "UNKNOWN",
-        customerType: "UNKNOWN",
-        source: "NO_CUSTOMER",
-        paymentPolicyStatus: "ABSENT",
-        customerTypeStatus: "ABSENT",
-      },
+      customerClassification: unclassifiedCustomer("NO_CUSTOMER"),
     });
     const result = evaluateDeliveryRequestDecision({
       order: noCustomer,
@@ -399,13 +479,7 @@ describe("evaluateDeliveryRequestDecision — what a positive decision actually 
     const unreadable = deliveryOrder({
       fullyPaid: true,
       customerGid: "gid://shopify/Customer/1",
-      customerClassification: {
-        paymentPolicy: "UNKNOWN",
-        customerType: "UNKNOWN",
-        source: "UNREADABLE",
-        paymentPolicyStatus: "ABSENT",
-        customerTypeStatus: "ABSENT",
-      },
+      customerClassification: unclassifiedCustomer("UNREADABLE"),
     });
     const result = evaluateDeliveryRequestDecision({
       order: unreadable,

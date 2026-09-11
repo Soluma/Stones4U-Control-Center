@@ -2,21 +2,27 @@ import { describe, expect, it } from "vitest";
 import {
   CUSTOMER_CLASSIFICATION_NAMESPACE,
   CUSTOMER_TYPE_METAFIELD_KEY,
+  DEFAULT_CUSTOMER_TYPE,
+  DEFAULT_PAYMENT_POLICY,
   PAYMENT_POLICY_METAFIELD_KEY,
-  customerTypeOrUnknown,
-  paymentPolicyOrUnknown,
   readCustomerType,
   readPaymentPolicy,
+  resolveCustomerType,
+  resolvePaymentPolicy,
   unclassifiedCustomer,
 } from "@/integrations/shopify/customer-classification";
 
-// Phase 6W — the Customer classification contract.
+// Phase 6W established the exact literals, verified live on both shops
+// ("betaling vooraf", not "vooraf"). Phase 6AD changed what ABSENT means:
+// these metafields are EXCEPTION fields, so an unset value is the ordinary
+// Stones4U customer rather than an unclassified one.
 //
-// The exact literals below are not invented: they were read live from the
-// development shop's metafieldDefinitions(ownerType: CUSTOMER) on 2026-09-10.
-// Note "betaling vooraf" — NOT "vooraf". Getting that wrong is precisely the
-// failure mode build instruction §1 ("DO NOT GUESS") was written to prevent,
-// so it is pinned here.
+// The whole risk of that change lives in one distinction: "nobody needed to
+// say anything" must never be confused with "we could not find out". Most of
+// this file exists to hold that line.
+
+const policy = (raw: string | null | undefined) => resolvePaymentPolicy(readPaymentPolicy(raw));
+const type = (raw: string | null | undefined) => resolveCustomerType(readCustomerType(raw));
 
 describe("customer classification — the verified Shopify contract", () => {
   it("addresses both metafields by their exact verified namespace and keys", () => {
@@ -25,86 +31,139 @@ describe("customer classification — the verified Shopify contract", () => {
     expect(CUSTOMER_TYPE_METAFIELD_KEY).toBe("customer_type");
   });
 
-  it("maps the exact configured payment_policy choices", () => {
+  it("maps the exact configured choices", () => {
     expect(readPaymentPolicy("betaling vooraf")).toEqual({ status: "VALID", value: "PREPAID" });
     expect(readPaymentPolicy("op rekening")).toEqual({ status: "VALID", value: "ON_ACCOUNT" });
-  });
-
-  it("maps the exact configured customer_type choices", () => {
     expect(readCustomerType("particulier")).toEqual({ status: "VALID", value: "CONSUMER" });
     expect(readCustomerType("zakelijk")).toEqual({ status: "VALID", value: "BUSINESS" });
   });
-});
 
-describe("customer classification — normalization is defined, not guessed", () => {
-  it("trims, collapses internal whitespace, and lower-cases — all lossless", () => {
-    expect(readPaymentPolicy("  Betaling Vooraf  ")).toEqual({ status: "VALID", value: "PREPAID" });
-    expect(readPaymentPolicy("betaling  vooraf")).toEqual({ status: "VALID", value: "PREPAID" });
-    expect(readPaymentPolicy("OP REKENING")).toEqual({ status: "VALID", value: "ON_ACCOUNT" });
-    expect(readCustomerType("Zakelijk ")).toEqual({ status: "VALID", value: "BUSINESS" });
-  });
-
-  it("trailing-space choices are handled — the same shop really does configure them (aanspreekvorm: 'Dhr. ')", () => {
-    expect(readCustomerType("particulier ")).toEqual({ status: "VALID", value: "CONSUMER" });
-  });
-
-  it("never guesses at a near-miss — no synonyms, no translation, no fuzzy matching", () => {
-    for (const raw of ["vooraf", "prepaid", "PREPAID", "vooruitbetaling", "op-rekening", "rekening"]) {
+  it("normalizes only whitespace and case — never guesses at a near-miss", () => {
+    expect(policy("  Betaling Vooraf  ").value).toBe("PREPAID");
+    expect(type("Zakelijk ").value).toBe("BUSINESS");
+    for (const raw of ["vooraf", "prepaid", "op-rekening", "factuur"]) {
       expect(readPaymentPolicy(raw).status).toBe("INVALID");
     }
-    for (const raw of ["business", "consumer", "b2b", "zakelijke klant", "particuliere klant"]) {
+    for (const raw of ["bedrijf", "business", "b2b", "zakelijke klant"]) {
       expect(readCustomerType(raw).status).toBe("INVALID");
     }
   });
-
-  it("an INVALID read records only the length of the offending value, never the value itself", () => {
-    const result = readPaymentPolicy("geheime waarde");
-    expect(result).toEqual({ status: "INVALID", rawLength: 14 });
-    expect(JSON.stringify(result)).not.toContain("geheime");
-  });
 });
 
-describe("customer classification — absence and fail-closed behaviour", () => {
-  it("null, undefined, empty and whitespace-only all read as ABSENT, not INVALID", () => {
+describe("Phase 6AD — ABSENT is an intentional business default", () => {
+  it("the defaults are the ordinary Stones4U customer", () => {
+    expect(DEFAULT_PAYMENT_POLICY).toBe("PREPAID");
+    expect(DEFAULT_CUSTOMER_TYPE).toBe("CONSUMER");
+  });
+
+  // §16 A
+  it("A. both fields absent -> CONSUMER + PREPAID, marked as defaulted", () => {
     for (const raw of [null, undefined, "", "   ", "\t\n"]) {
-      expect(readPaymentPolicy(raw).status).toBe("ABSENT");
-      expect(readCustomerType(raw).status).toBe("ABSENT");
+      expect(policy(raw)).toEqual({ value: "PREPAID", source: "DEFAULT" });
+      expect(type(raw)).toEqual({ value: "CONSUMER", source: "DEFAULT" });
     }
   });
 
-  it("ABSENT and INVALID both collapse to UNKNOWN — never to PREPAID", () => {
-    expect(paymentPolicyOrUnknown(readPaymentPolicy(null))).toBe("UNKNOWN");
-    expect(paymentPolicyOrUnknown(readPaymentPolicy("onzin"))).toBe("UNKNOWN");
-    expect(customerTypeOrUnknown(readCustomerType(null))).toBe("UNKNOWN");
-    expect(customerTypeOrUnknown(readCustomerType("onzin"))).toBe("UNKNOWN");
+  it("a defaulted value is never reported as if somebody had stated it", () => {
+    expect(policy(null).source).toBe("DEFAULT");
+    expect(policy("betaling vooraf").source).toBe("EXPLICIT");
+    // Same resolved value, different provenance — that distinction is the
+    // whole point of keeping the source field.
+    expect(policy(null).value).toBe(policy("betaling vooraf").value);
+    expect(policy(null).source).not.toBe(policy("betaling vooraf").source);
   });
 
-  it("the fail-closed result is UNKNOWN on BOTH axes and records why", () => {
-    expect(unclassifiedCustomer("NO_CUSTOMER")).toEqual({
-      paymentPolicy: "UNKNOWN",
-      customerType: "UNKNOWN",
-      source: "NO_CUSTOMER",
-      paymentPolicyStatus: "ABSENT",
-      customerTypeStatus: "ABSENT",
-    });
-    expect(unclassifiedCustomer("UNREADABLE").paymentPolicy).toBe("UNKNOWN");
+  it("the read state survives the default, so ABSENT stays visible", () => {
+    expect(readPaymentPolicy(null).status).toBe("ABSENT");
+    expect(readCustomerType(null).status).toBe("ABSENT");
   });
 });
 
-describe("customer classification — the two axes are independent (build instruction §3)", () => {
-  it("reading customer_type never produces a payment policy, and vice versa", () => {
-    // "zakelijk" is a valid customer_type and an invalid payment_policy;
-    // "op rekening" is the reverse. Neither reader leaks into the other.
-    expect(readCustomerType("zakelijk")).toEqual({ status: "VALID", value: "BUSINESS" });
-    expect(readPaymentPolicy("zakelijk").status).toBe("INVALID");
-    expect(readPaymentPolicy("op rekening")).toEqual({ status: "VALID", value: "ON_ACCOUNT" });
-    expect(readCustomerType("op rekening").status).toBe("INVALID");
+describe("Phase 6AD — explicit values always win over the default", () => {
+  // §2
+  it("an explicit value is never overridden by a fallback", () => {
+    expect(policy("op rekening")).toEqual({ value: "ON_ACCOUNT", source: "EXPLICIT" });
+    expect(policy("betaling vooraf")).toEqual({ value: "PREPAID", source: "EXPLICIT" });
+    expect(type("zakelijk")).toEqual({ value: "BUSINESS", source: "EXPLICIT" });
+    expect(type("particulier")).toEqual({ value: "CONSUMER", source: "EXPLICIT" });
   });
 
-  it("BUSINESS carries no payment implication at all — the reader returns only what was written", () => {
-    const business = readCustomerType("zakelijk");
-    expect(business).toEqual({ status: "VALID", value: "BUSINESS" });
-    // Nothing in the payment axis was established by reading the type axis.
-    expect(paymentPolicyOrUnknown(readPaymentPolicy(undefined))).toBe("UNKNOWN");
+  // §16 B/C/D — defaults apply PER FIELD.
+  it("B. BUSINESS + payment absent -> BUSINESS + PREPAID", () => {
+    expect(type("zakelijk").value).toBe("BUSINESS");
+    expect(policy(null).value).toBe("PREPAID");
+  });
+
+  it("C. customer type absent + ON_ACCOUNT -> CONSUMER + ON_ACCOUNT", () => {
+    expect(type(null).value).toBe("CONSUMER");
+    expect(policy("op rekening").value).toBe("ON_ACCOUNT");
+  });
+
+  it("D. explicit particulier + betaling vooraf -> CONSUMER + PREPAID, both EXPLICIT", () => {
+    expect(type("particulier")).toEqual({ value: "CONSUMER", source: "EXPLICIT" });
+    expect(policy("betaling vooraf")).toEqual({ value: "PREPAID", source: "EXPLICIT" });
+  });
+
+  it("the two axes stay independent — one field's default never touches the other", () => {
+    // "zakelijk" is a valid customer_type and an invalid payment_policy.
+    expect(type("zakelijk").value).toBe("BUSINESS");
+    expect(policy("zakelijk").value).toBe("UNKNOWN");
+    expect(policy("op rekening").value).toBe("ON_ACCOUNT");
+    expect(type("op rekening").value).toBe("UNKNOWN");
+  });
+});
+
+describe("Phase 6AD — INVALID and UNREADABLE must NOT default", () => {
+  // §16 E / F — an explicit bad value is not the same as no value.
+  it("E. an invalid payment value -> UNKNOWN, never the PREPAID default", () => {
+    const result = policy("factuur");
+    expect(result).toEqual({ value: "UNKNOWN", source: "FAIL_CLOSED" });
+    expect(result.value).not.toBe(DEFAULT_PAYMENT_POLICY);
+  });
+
+  it("F. an invalid customer type -> UNKNOWN, never the CONSUMER default", () => {
+    const result = type("bedrijf");
+    expect(result).toEqual({ value: "UNKNOWN", source: "FAIL_CLOSED" });
+    expect(result.value).not.toBe(DEFAULT_CUSTOMER_TYPE);
+  });
+
+  it("an INVALID read still records only the offending value's length, never the value", () => {
+    const read = readPaymentPolicy("geheime waarde");
+    expect(read).toEqual({ status: "INVALID", rawLength: 14 });
+    expect(JSON.stringify(read)).not.toContain("geheime");
+  });
+
+  // §16 G — the distinction that matters most.
+  it("G. an unreadable Shopify response -> UNKNOWN on both axes, NOT the defaults", () => {
+    const result = unclassifiedCustomer("UNREADABLE");
+    expect(result.paymentPolicy).toBe("UNKNOWN");
+    expect(result.customerType).toBe("UNKNOWN");
+    expect(result.paymentPolicySource).toBe("FAIL_CLOSED");
+    expect(result.customerTypeSource).toBe("FAIL_CLOSED");
+    expect(result.paymentPolicyStatus).toBe("UNREADABLE");
+    expect(result.customerTypeStatus).toBe("UNREADABLE");
+    expect(result.paymentPolicy).not.toBe(DEFAULT_PAYMENT_POLICY);
+    expect(result.customerType).not.toBe(DEFAULT_CUSTOMER_TYPE);
+  });
+
+  // §16 H / §6 — a guest Order is not a customer with empty metafields.
+  it("H. an Order with no customer -> UNKNOWN, NOT the defaults", () => {
+    const result = unclassifiedCustomer("NO_CUSTOMER");
+    expect(result.paymentPolicy).toBe("UNKNOWN");
+    expect(result.customerType).toBe("UNKNOWN");
+    expect(result.paymentPolicyStatus).toBe("NO_CUSTOMER");
+    expect(result.customerTypeStatus).toBe("NO_CUSTOMER");
+    expect(result.paymentPolicySource).toBe("FAIL_CLOSED");
+  });
+
+  it("'no customer' and 'a real customer with nothing stored' are structurally distinguishable", () => {
+    const guest = unclassifiedCustomer("NO_CUSTOMER");
+    const ordinary = policy(null);
+    expect(guest.paymentPolicy).toBe("UNKNOWN");
+    expect(ordinary.value).toBe("PREPAID");
+    // The failure this guards against: a read failure quietly becoming a
+    // business default, which would let an unknown customer be treated as
+    // having already paid up front.
+    expect(guest.paymentPolicy).not.toBe(ordinary.value);
   });
 });

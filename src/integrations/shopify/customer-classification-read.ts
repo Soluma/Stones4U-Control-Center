@@ -4,10 +4,10 @@ import {
   CUSTOMER_CLASSIFICATION_NAMESPACE,
   CUSTOMER_TYPE_METAFIELD_KEY,
   PAYMENT_POLICY_METAFIELD_KEY,
-  customerTypeOrUnknown,
-  paymentPolicyOrUnknown,
   readCustomerType,
   readPaymentPolicy,
+  resolveCustomerType,
+  resolvePaymentPolicy,
   unclassifiedCustomer,
   type CustomerClassification,
 } from "./customer-classification";
@@ -100,14 +100,23 @@ export async function readCustomerClassification(customerGid: string | null): Pr
   // TypeError here would break the Order read it is called alongside.
   if (!data?.customer) return unclassifiedCustomer("UNREADABLE");
 
+  // Phase 6AD — the read succeeded against a real customer, so (and ONLY so)
+  // the exception-field defaults may apply: an absent value means "ordinary
+  // customer", not "unknown". INVALID still fails closed here, because a
+  // stored value we cannot parse is a statement we cannot trust rather than
+  // an absence of one.
   const paymentPolicyRead = readPaymentPolicy(data.customer.paymentPolicy?.value);
   const customerTypeRead = readCustomerType(data.customer.customerType?.value);
+  const payment = resolvePaymentPolicy(paymentPolicyRead);
+  const type = resolveCustomerType(customerTypeRead);
 
   return {
-    paymentPolicy: paymentPolicyOrUnknown(paymentPolicyRead),
-    customerType: customerTypeOrUnknown(customerTypeRead),
+    paymentPolicy: payment.value,
+    customerType: type.value,
     source: "CUSTOMER_METAFIELDS",
     paymentPolicyStatus: paymentPolicyRead.status,
     customerTypeStatus: customerTypeRead.status,
+    paymentPolicySource: payment.source,
+    customerTypeSource: type.source,
   };
 }

@@ -397,12 +397,16 @@ describe("getOrderForHandoff — Phase 6B Order read client", () => {
       fulfillmentResolution: { mode: "UNKNOWN", source: "NONE", conflict: false, diagnostic: "NONE" },
       // Phase 6W — no customer on the Order means no classification is even
       // attempted, and the fail-closed UNKNOWN result records why.
+      // Phase 6AD — a guest Order is NOT "an ordinary customer with empty
+      // metafields": no customer means no defaults, only UNKNOWN.
       customerClassification: {
         paymentPolicy: "UNKNOWN",
         customerType: "UNKNOWN",
         source: "NO_CUSTOMER",
-        paymentPolicyStatus: "ABSENT",
-        customerTypeStatus: "ABSENT",
+        paymentPolicyStatus: "NO_CUSTOMER",
+        customerTypeStatus: "NO_CUSTOMER",
+        paymentPolicySource: "FAIL_CLOSED",
+        customerTypeSource: "FAIL_CLOSED",
       },
     });
   });
@@ -475,6 +479,8 @@ describe("getOrderForHandoff — Phase 6B Order read client", () => {
         source: "CUSTOMER_METAFIELDS",
         paymentPolicyStatus: "VALID",
         customerTypeStatus: "VALID",
+        paymentPolicySource: "EXPLICIT",
+        customerTypeSource: "EXPLICIT",
       },
     });
   });
@@ -541,10 +547,61 @@ describe("getOrderForHandoff — Phase 6B Order read client", () => {
       source: "CUSTOMER_METAFIELDS",
       paymentPolicyStatus: "VALID",
       customerTypeStatus: "VALID",
+      paymentPolicySource: "EXPLICIT",
+      customerTypeSource: "EXPLICIT",
     });
     // The explicit contract value plus a non-contradicting native SHIPPING
     // resolves to a trusted DELIVERY — the input the decision engine needs.
     expect(result?.fulfillmentResolution.mode).toBe("DELIVERY");
+  });
+
+  it("Phase 6AD — a real customer with NO classification metafields resolves to the CONSUMER + PREPAID defaults", async () => {
+    setShopifyEnv();
+    const fetchMock = vi.fn();
+    fetchMock
+      .mockResolvedValueOnce(tokenResponse())
+      .mockResolvedValueOnce(
+        jsonResponse({
+          data: {
+            order: {
+              id: "gid://shopify/Order/9",
+              name: "#9000",
+              cancelledAt: null,
+              displayFulfillmentStatus: "UNFULFILLED",
+              fullyPaid: true,
+              customer: { id: "gid://shopify/Customer/9" },
+              shippingAddress: { city: "Venlo" },
+              customAttributes: [{ key: "stones4u_fulfillment_mode", value: "DELIVERY" }],
+              fulfillmentOrders: {
+                pageInfo: { hasNextPage: false },
+                edges: [{ node: { deliveryMethod: { methodType: "SHIPPING" } } }],
+              },
+            },
+          },
+        }),
+      )
+      // The customer exists and is readable; both metafields are simply unset.
+      .mockResolvedValueOnce(
+        jsonResponse({
+          data: { customer: { id: "gid://shopify/Customer/9", paymentPolicy: null, customerType: null } },
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { getOrderForHandoff } = await import("@/integrations/shopify/order-for-handoff");
+    const result = await getOrderForHandoff("gid://shopify/Order/9");
+
+    expect(result?.customerClassification).toEqual({
+      paymentPolicy: "PREPAID",
+      customerType: "CONSUMER",
+      source: "CUSTOMER_METAFIELDS",
+      paymentPolicyStatus: "ABSENT",
+      customerTypeStatus: "ABSENT",
+      paymentPolicySource: "DEFAULT",
+      customerTypeSource: "DEFAULT",
+    });
+    // The default must never be mistaken for something a human stated.
+    expect(result?.customerClassification.paymentPolicySource).not.toBe("EXPLICIT");
   });
 
   it("a failed classification read fails closed to UNKNOWN and never breaks the Order read (build instruction §6)", async () => {
@@ -582,8 +639,10 @@ describe("getOrderForHandoff — Phase 6B Order read client", () => {
       paymentPolicy: "UNKNOWN",
       customerType: "UNKNOWN",
       source: "UNREADABLE",
-      paymentPolicyStatus: "ABSENT",
-      customerTypeStatus: "ABSENT",
+      paymentPolicyStatus: "UNREADABLE",
+      customerTypeStatus: "UNREADABLE",
+      paymentPolicySource: "FAIL_CLOSED",
+      customerTypeSource: "FAIL_CLOSED",
     });
     // Never PREPAID, never inferred from the Order being paid.
     expect(result?.fullyPaid).toBe(true);
