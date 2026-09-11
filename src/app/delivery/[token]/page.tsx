@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import { getEarliestRequestedDeliveryDate } from "@/modules/delivery/delivery-lead-time";
 import { getHandoffByRawToken } from "@/modules/delivery/delivery-handoff.service";
+import { resolveCustomerFacingModeForHandoff } from "@/modules/delivery/order-delivery-request.service";
 import { DeliveryDateForm } from "./DeliveryDateForm";
 import { OrderDeliveryDateForm } from "./OrderDeliveryDateForm";
 
@@ -37,11 +38,36 @@ export default async function DeliveryDatePage({ params }: PageProps) {
   if (!handoff) notFound();
 
   if (handoff.commerceObjectType === "SHOPIFY_ORDER") {
+    // Phase 6AI — the fulfillment mode is re-resolved LIVE from the Shopify
+    // Order, never taken from the browser and never trusted from the stored
+    // snapshot. An Order can change between the request being sent and the
+    // customer opening the link, and the page must reflect what is true now.
+    //
+    // A mode that is no longer customer-facing (NONE, RETAIL, PICKUP_POINT,
+    // UNKNOWN), or an Order that has been cancelled, yields no usable form.
+    const mode = await resolveCustomerFacingModeForHandoff(handoff);
+    if (!mode) {
+      return (
+        <div className="flex min-h-screen items-center justify-center bg-canvas px-4 py-12">
+          <div className="w-full max-w-md text-center">
+            <h1 className="text-2xl font-semibold tracking-tight text-ink-primary">
+              Dit verzoek is niet meer van toepassing
+            </h1>
+            <p className="mt-3 text-sm leading-relaxed text-ink-tertiary">
+              Voor deze bestelling hoeft geen datum meer te worden doorgegeven. Heeft u toch een vraag over uw
+              bestelling? Neem dan gerust contact met ons op.
+            </p>
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div className="flex min-h-screen items-center justify-center bg-canvas px-4 py-12">
         <div className="w-full max-w-md">
           <OrderDeliveryDateForm
             token={token}
+            mode={mode}
             currentValue={handoff.requestedDeliveryDate ? handoff.requestedDeliveryDate.toISOString().slice(0, 10) : ""}
             publicReference={handoff.publicReference}
             // Phase 6R — the form is initialised from the persisted handoff,

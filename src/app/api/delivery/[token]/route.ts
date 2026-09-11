@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getHandoffByRawToken, submitRequestedDeliveryDate, submitRequestedDeliveryDateForOrder } from "@/modules/delivery/delivery-handoff.service";
 import { DeliveryHandoffError } from "@/modules/delivery/errors";
+import { resolveCustomerFacingModeForHandoff } from "@/modules/delivery/order-delivery-request.service";
 import type { DeliveryDateSubmitResponse } from "@/modules/delivery/submit-response";
 
 // Public, unauthenticated POST — same authorization model as the page
@@ -54,10 +55,25 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     }
 
     if (handoff.commerceObjectType === "SHOPIFY_ORDER") {
+      // Phase 6AI — re-resolve the mode live before accepting anything. The
+      // page checked it too, but a customer can sit on an open tab for a long
+      // time, and this is the moment a Shopify write would actually happen.
+      const mode = await resolveCustomerFacingModeForHandoff(handoff);
+      if (!mode) {
+        return NextResponse.json(
+          { error: "Voor deze bestelling hoeft geen datum meer te worden doorgegeven.", retryable: false },
+          { status: 409 },
+        );
+      }
+
+      // A pickup submission never carries a truck answer. Even if a crafted
+      // request supplied one, it is dropped here rather than written: the
+      // question was not asked, so it must not be answered.
       const result = await submitRequestedDeliveryDateForOrder(handoff, {
         rawDateInput: body.requestedDeliveryDate,
         deliveryComment: body.deliveryComment,
-        largeTruckAccessConfirmed: body.largeTruckAccessConfirmed,
+        largeTruckAccessConfirmed:
+          mode === "DELIVERY" ? body.largeTruckAccessConfirmed : undefined,
       });
       const response: DeliveryDateSubmitResponse = {
         outcome: "COMPLETED",

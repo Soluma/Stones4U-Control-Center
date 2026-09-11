@@ -30,11 +30,14 @@ describe("public Order delivery page — dedicated post-order copy (build instru
   });
 
   it("shows the required field label, helper (preference, not a promise), and primary CTA", () => {
-    expect(formSourceFlat).toContain('label="Gewenste leverdatum"');
+    // Phase 6AI — the label, hint and CTA now come from the mode copy table
+    // ("Gewenste bezorgdatum" / "Gewenste afhaaldatum"), because a pickup
+    // order asks the same question in different words.
+    expect(formSourceFlat).toContain('dateLabel: "Gewenste bezorgdatum"');
     expect(formSourceFlat).toContain(
       "De gekozen datum is een voorkeursdatum. De definitieve leverdatum wordt door Stones4U bevestigd.",
     );
-    expect(formSourceFlat).toContain("Gewenste leverdatum doorgeven");
+    expect(formSourceFlat).toContain('submit: "Gegevens doorgeven"');
   });
 
   it("shows the 'what happens next' section", () => {
@@ -57,7 +60,7 @@ describe("public Order delivery page — dedicated post-order copy (build instru
 describe("public Order delivery page — success state (build instructions §8, §9)", () => {
   it("shows the required success copy — thanks, no redirect language, preference/planning framing", () => {
     expect(formSourceFlat).toContain("Bedankt!");
-    expect(formSourceFlat).toContain("Uw gewenste leverdatum is doorgegeven.");
+    expect(formSourceFlat).toContain("Uw gewenste bezorgdatum is doorgegeven.");
     expect(formSourceFlat).toContain("We nemen deze voorkeur mee in onze planning.");
     expect(formSourceFlat).toContain("De definitieve leverdatum wordt door Stones4U bevestigd.");
   });
@@ -111,17 +114,19 @@ describe("public Order delivery page — safe publicReference rendering (build i
 
 describe("public Order delivery page — the client cannot supply anything the server must resolve itself (build instruction §18)", () => {
   it("the POST body carries only what the customer themselves supplies — the date and, since Phase 6P, their remark and truck-access answer", () => {
-    const bodyLiteralMatch = formSource.match(/body:\s*JSON\.stringify\(\{([^}]*)\}\)/);
-    expect(bodyLiteralMatch).not.toBeNull();
-    const fields = bodyLiteralMatch![1]!
-      .split(",")
-      .map((f) => f.trim())
-      .filter(Boolean);
-    // An exact set, so a future field cannot be added to the request without
-    // this guarantee being re-examined deliberately.
-    expect(new Set(fields)).toEqual(
-      new Set(["requestedDeliveryDate: date", "deliveryComment", "largeTruckAccessConfirmed"]),
+    // Phase 6AI — the body is no longer a flat literal (the truck answer is
+    // spread in only for delivery), so assert the GUARANTEE rather than an
+    // exact token list: the customer supplies these three things and nothing
+    // the server must resolve for itself.
+    const body = formSource.slice(
+      formSource.indexOf("body: JSON.stringify({"),
+      formSource.indexOf("});", formSource.indexOf("body: JSON.stringify({")),
     );
+    expect(body).toContain("requestedDeliveryDate: date");
+    expect(body).toContain("deliveryComment");
+    expect(body).toContain("largeTruckAccessConfirmed");
+    // The truck answer is conditional, never unconditional.
+    expect(body).toContain("copy.showTruckQuestion ?");
   });
 
   it("never constructs or sends an orderGid, draftOrderGid, commerceObjectType, shop domain, redirect URL, or payment target from the client", () => {

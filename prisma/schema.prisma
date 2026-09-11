@@ -935,6 +935,16 @@ model DeliveryDateHandoff {
   // it never blocks a submission and is not mirrored to Shopify.
   largeTruckAccessConfirmed Boolean?
 
+  // Phase 6AI — the Stones4U fulfillment mode as resolved when this handoff
+  // was created ("DELIVERY" / "CUSTOMER_PICKUP"). Stored so the staff list can
+  // show Bezorgen/Afhalen without a Shopify call per row.
+  //
+  // It is a SNAPSHOT, never the authority: the public page and the submit
+  // route both re-resolve the mode live from the Order, because an Order can
+  // change between handoff creation and the customer opening the link. Null
+  // for every historical row and never backfilled.
+  fulfillmentMode String?
+
   paymentProvider PaymentProvider          @default(UNKNOWN)
   status          DeliveryDateHandoffStatus @default(PENDING)
 

@@ -38,7 +38,8 @@ describe("payment-first architecture — the REAL Order collects delivery logist
   it("the Order form asks all three questions", () => {
     expect(orderForm).toContain("Ja, de afleverlocatie is bereikbaar met een grote vrachtwagen.");
     expect(orderForm).toContain("Opmerking voor de levering (optioneel)");
-    expect(orderForm).toContain('label="Gewenste leverdatum"');
+    // Phase 6AI — the label is mode-driven; delivery still reads "bezorgdatum".
+    expect(orderForm).toContain('dateLabel: "Gewenste bezorgdatum"');
     expect(orderForm).toContain("Wij leveren van maandag t/m vrijdag");
   });
 

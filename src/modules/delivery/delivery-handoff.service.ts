@@ -129,6 +129,9 @@ export async function createOrGetOrderDeliveryHandoff(input: {
   publicReference?: string | null;
   customerProfileId?: string | null;
   createdById: string;
+  /** Phase 6AI — the fulfillment mode as resolved at creation. A snapshot for
+   * staff display only; the public page re-resolves it live. */
+  fulfillmentMode?: string | null;
 }): Promise<{ handoff: DeliveryDateHandoff; rawToken: string | null }> {
   const existing = await prisma.deliveryDateHandoff.findUnique({
     where: { sourceSystem_externalId: { sourceSystem: "SHOPIFY", externalId: input.shopifyOrderGid } },
@@ -157,6 +160,7 @@ export async function createOrGetOrderDeliveryHandoff(input: {
       // Order row — see submitRequestedDeliveryDateForOrder(), which never
       // calls it at all.
       paymentProvider: "UNKNOWN",
+      fulfillmentMode: input.fulfillmentMode ?? null,
       createdById: input.createdById,
     },
   });

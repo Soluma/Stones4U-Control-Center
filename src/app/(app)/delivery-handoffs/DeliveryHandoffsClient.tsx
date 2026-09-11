@@ -64,6 +64,9 @@ type Handoff = {
   // Never mirrored to Shopify.
   deliveryComment: string | null;
   largeTruckAccessConfirmed: boolean | null;
+  // Phase 6AI — the mode as resolved when this handoff was created. A
+  // snapshot for display; the customer page re-resolves it live.
+  fulfillmentMode: string | null;
   status: "PENDING" | "MIRRORED" | "ERROR";
   createdAt: string;
   updatedAt: string;
@@ -134,6 +137,12 @@ function FilterToggle({ value, onChange }: { value: ListFilter; onChange: (v: Li
   );
 }
 
+/** Phase 6AI — staff see Dutch business words, never the internal enum. */
+const FULFILLMENT_LABEL: Record<string, string> = {
+  DELIVERY: "Bezorgen",
+  CUSTOMER_PICKUP: "Afhalen",
+};
+
 export function DeliveryHandoffsClient({ canCreate }: { canCreate: boolean }) {
   const [tab, setTab] = useState<"order" | "draft">("order");
   const [listFilter, setListFilter] = useState<ListFilter>("all");
@@ -152,6 +161,12 @@ export function DeliveryHandoffsClient({ canCreate }: { canCreate: boolean }) {
 
   const [linkDialog, setLinkDialog] = useState<{ url: string | null; alreadyExisted: boolean } | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<{ result: OrderSearchResult; requestedDeliveryDate: string } | null>(null);
+  // Phase 6AI — the eligibility-gated request action. Holds the last outcome
+  // per Order so staff see the real decision, not a generic failure.
+  const [requestingGid, setRequestingGid] = useState<string | null>(null);
+  const [requestOutcome, setRequestOutcome] = useState<
+    Record<string, { ok: boolean; message: string }>
+  >({});
   // Phase 6L — which Order is open in the fulfillment-classification dialog.
   const [fulfillmentOrder, setFulfillmentOrder] = useState<{ gid: string; name: string } | null>(null);
 
@@ -230,6 +245,61 @@ export function DeliveryHandoffsClient({ canCreate }: { canCreate: boolean }) {
       await loadHandoffs();
     } finally {
       setCreatingGid(null);
+    }
+  }
+
+  /** Phase 6AI — asks the decision engine first, and only creates a handoff
+   *  if it says yes. This is the SAME service the future webhook automation
+   *  will call; there is deliberately no separate test-only implementation. */
+  async function handleRequestFulfillmentMoment(result: OrderSearchResult) {
+    setRequestingGid(result.gid);
+    setRequestOutcome((prev) => {
+      const next = { ...prev };
+      delete next[result.gid];
+      return next;
+    });
+    try {
+      const response = await fetch("/api/delivery-handoffs/order/request", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orderGid: result.gid }),
+      });
+      const body = await response.json();
+
+      if (!response.ok) {
+        setRequestOutcome((prev) => ({
+          ...prev,
+          [result.gid]: { ok: false, message: body.message ?? body.error ?? "Er ging iets mis." },
+        }));
+        return;
+      }
+
+      if (body.outcome === "NOT_ELIGIBLE") {
+        // Not an error — the engine answered, and the answer is no.
+        setRequestOutcome((prev) => ({ ...prev, [result.gid]: { ok: false, message: body.message } }));
+        return;
+      }
+
+      const label = FULFILLMENT_LABEL[body.fulfillmentMode] ?? body.fulfillmentMode ?? "";
+      setRequestOutcome((prev) => ({
+        ...prev,
+        [result.gid]: {
+          ok: true,
+          message:
+            body.outcome === "REUSED"
+              ? `Er bestond al een actieve link voor deze bestelling (${label}).`
+              : `Link aangemaakt (${label}).`,
+        },
+      }));
+      if (body.publicUrl) setLinkDialog({ url: body.publicUrl, alreadyExisted: body.outcome === "REUSED" });
+      await loadHandoffs();
+    } catch {
+      setRequestOutcome((prev) => ({
+        ...prev,
+        [result.gid]: { ok: false, message: "Er ging iets mis. Probeer het opnieuw." },
+      }));
+    } finally {
+      setRequestingGid(null);
     }
   }
 
@@ -347,6 +417,15 @@ export function DeliveryHandoffsClient({ canCreate }: { canCreate: boolean }) {
                       {result.hasExistingHandoff ? "Aanwezig" : "Niet aanwezig"}
                     </TableCell>
                     <TableCell>
+                      {requestOutcome[result.gid] && (
+                        <p
+                          className={`mb-2 text-xs leading-relaxed ${
+                            requestOutcome[result.gid]!.ok ? "text-success-700" : "text-ink-tertiary"
+                          }`}
+                        >
+                          {requestOutcome[result.gid]!.message}
+                        </p>
+                      )}
                       <div className="flex flex-wrap gap-2">
                         <Button
                           size="sm"
@@ -355,6 +434,16 @@ export function DeliveryHandoffsClient({ canCreate }: { canCreate: boolean }) {
                         >
                           Afhandeling
                         </Button>
+                        {!result.isCancelled && (
+                          <Button
+                            size="sm"
+                            variant="primary"
+                            loading={requestingGid === result.gid}
+                            onClick={() => handleRequestFulfillmentMoment(result)}
+                          >
+                            Lever-/afhaalmoment aanvragen
+                          </Button>
+                        )}
                         {result.isCancelled ? (
                           <span className="text-xs text-ink-tertiary">Geannuleerd — geen nieuwe link</span>
                         ) : (
@@ -450,18 +539,27 @@ export function DeliveryHandoffsClient({ canCreate }: { canCreate: boolean }) {
                     {handoff.customerProfile?.displayName ?? handoff.customerProfile?.companyName ?? "—"}
                   </TableCell>
                   <TableCell className="text-ink-secondary">
+                    {/* Phase 6AI — Bezorgen/Afhalen, so staff can tell at a
+                        glance which question this customer was asked. */}
+                    {handoff.fulfillmentMode && (
+                      <span className="mb-1 block text-xs font-medium text-ink-primary">
+                        {FULFILLMENT_LABEL[handoff.fulfillmentMode] ?? handoff.fulfillmentMode}
+                      </span>
+                    )}
                     <span className="block">
                       {handoff.requestedDeliveryDate ? handoff.requestedDeliveryDate.slice(0, 10) : "Nog niet gekozen"}
                     </span>
                     {/* Phase 6P — `false` must never read as "inaccessible";
                         formatLargeTruckAccess() owns that distinction. */}
-                    <span className="mt-1 block text-xs text-ink-tertiary">
-                      {formatLargeTruckAccess(handoff.largeTruckAccessConfirmed)}
-                    </span>
+                    {handoff.fulfillmentMode !== "CUSTOMER_PICKUP" && (
+                      <span className="mt-1 block text-xs text-ink-tertiary">
+                        {formatLargeTruckAccess(handoff.largeTruckAccessConfirmed)}
+                      </span>
+                    )}
                     <span className="mt-1 block whitespace-pre-line text-xs text-ink-tertiary">
                       {handoff.deliveryComment
-                        ? `Opmerking voor levering: ${handoff.deliveryComment}`
-                        : "Opmerking voor levering: geen opmerking"}
+                        ? `${handoff.fulfillmentMode === "CUSTOMER_PICKUP" ? "Opmerking voor afhalen" : "Opmerking voor levering"}: ${handoff.deliveryComment}`
+                        : `${handoff.fulfillmentMode === "CUSTOMER_PICKUP" ? "Opmerking voor afhalen" : "Opmerking voor levering"}: geen opmerking`}
                     </span>
                   </TableCell>
                   <TableCell>
