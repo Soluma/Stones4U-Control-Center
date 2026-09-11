@@ -953,8 +953,13 @@ model DeliveryDateHandoff {
   // "NETWORK_ERROR") — never a raw Shopify response body, never PII.
   mirrorErrorCode String?
 
-  createdById String
-  createdBy   User   @relation(fields: [createdById], references: [id])
+  // Phase 6AJ — nullable. A handoff created by the customer answering on
+  // Shopify's own Order Status page has no staff creator, in exactly the way
+  // customerProfileId above is nullable when identity isn't resolved yet.
+  // Null means "the customer did this themselves", never "unknown staff
+  // member": every staff-created row still carries its creator.
+  createdById String?
+  createdBy   User?   @relation(fields: [createdById], references: [id])
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

@@ -128,7 +128,9 @@ export async function createOrGetOrderDeliveryHandoff(input: {
   shopifyOrderGid: string;
   publicReference?: string | null;
   customerProfileId?: string | null;
-  createdById: string;
+  /** Phase 6AJ — null when the customer answered directly on Shopify's Order
+   * Status page. Every staff-initiated handoff still carries its creator. */
+  createdById: string | null;
   /** Phase 6AI — the fulfillment mode as resolved at creation. A snapshot for
    * staff display only; the public page re-resolves it live. */
   fulfillmentMode?: string | null;

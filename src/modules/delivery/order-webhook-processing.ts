@@ -55,13 +55,17 @@ export type OrderWebhookProcessingResult =
    * a Shopify redelivery is allowed to reprocess it. */
   | { outcome: "FAILED"; errorCode: string };
 
-/** DeliveryDateHandoff.createdById is a required FK to User and this
- * codebase still has no "system actor" concept, so an automatically
- * created handoff is attributed to the first active ADMIN — the same
- * stand-in every bootstrap/verification script in this engagement has
- * used. Unreachable today (no decision returns shouldRequest: true), and
- * an explicitly open question before it ever becomes reachable: who owns
- * an automatically created handoff? */
+/** An automatically created handoff is attributed to the first active ADMIN —
+ * the same stand-in every bootstrap/verification script in this engagement has
+ * used. Unreachable today (no decision returns shouldRequest: true), and an
+ * explicitly open question before it ever becomes reachable: who owns an
+ * automatically created handoff?
+ *
+ * Phase 6AJ made createdById nullable, so null is now a *representable*
+ * answer — but it deliberately means "the customer did this themselves on
+ * Shopify's Order Status page", which is not what an automated webhook is.
+ * This function therefore still resolves a real user and still returns null
+ * only to mean "cannot attribute, do not create". */
 async function resolveWebhookCreatedById(): Promise<string | null> {
   const admin = await prisma.user.findFirst({ where: { role: "ADMIN", active: true }, select: { id: true } });
   return admin?.id ?? null;
