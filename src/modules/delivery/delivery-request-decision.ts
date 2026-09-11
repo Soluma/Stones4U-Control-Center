@@ -55,7 +55,8 @@ export type DeliveryRequestDecisionReason =
   | "ALREADY_HAS_REQUESTED_DELIVERY_DATE"
   | "NO_SHIPPING_ADDRESS"
   /** Phase 6W — the resolved Stones4U fulfillment mode is a definite
-   * non-delivery (CUSTOMER_PICKUP / RETAIL / NONE / PICKUP_POINT). Distinct
+   * mode for which no fulfillment date applies (RETAIL / NONE / PICKUP_POINT
+   * — since 6AH, NOT CUSTOMER_PICKUP). Distinct
    * from INSUFFICIENT_CLASSIFICATION on purpose: this is "we know, and the
    * answer is no", not "we don't know". */
   | "NOT_A_DELIVERY_ORDER"
@@ -84,8 +85,9 @@ const POLICY_REQUIRES_PAYMENT: Record<DeliveryCustomerPolicy, boolean> = {
 };
 
 /**
- * Whether this Order is *positively* known to be a genuine, delivery-bound
- * customer order that Stones4U should proactively ask a date for.
+ * Whether this Order is *positively* known to be one Stones4U should
+ * proactively ask a fulfillment date for — a delivery to arrange, or a pickup
+ * to prepare.
  *
  * **Phase 6W — this is where the long-standing hard `return false` finally
  * went away, and it is worth being precise about what replaced it.**
@@ -102,21 +104,53 @@ const POLICY_REQUIRES_PAYMENT: Record<DeliveryCustomerPolicy, boolean> = {
  * Stones4U signal says so AND no trustworthy native negative contradicts it.
  * A bare native SHIPPING still resolves to `UNKNOWN` and still fails here.
  *
- * So the rule is deliberately narrow: the resolved mode must be exactly
- * `DELIVERY`. Every other mode — including `UNKNOWN` — is not a positive
- * classification. This function does not soften, second-guess, or re-derive
- * the resolver's answer; it only refuses to act on anything weaker.
+ * Phase 6AH broadened *which* modes qualify, without softening how much
+ * evidence each one needs: a resolved `CUSTOMER_PICKUP` now qualifies too,
+ * because a pickup order also needs an agreed date (staff must collect and
+ * prepare the goods first). `UNKNOWN` still does not qualify, and a bare
+ * native SHIPPING still resolves to `UNKNOWN`.
+ *
+ * This function does not soften, second-guess, or re-derive the resolver's
+ * answer; it only refuses to act on anything weaker than a trusted mode.
  */
 function hasTrustworthyDeliveryOrderClassification(order: OrderForHandoffResult): boolean {
-  return order.fulfillmentResolution.mode === "DELIVERY";
+  return FULFILLMENT_MODES_NEEDING_DATE.has(order.fulfillmentResolution.mode);
 }
 
-/** Modes that are a definite, knowable "this is not a delivery". Separated
- * from `UNKNOWN` so the recorded reason distinguishes "we know it's a pickup"
- * from "we could not establish anything" — the two need different follow-up
- * from staff (build instruction §8). */
-const DEFINITE_NON_DELIVERY_MODES: ReadonlySet<FulfillmentMode> = new Set<FulfillmentMode>([
+/**
+ * Modes for which it makes sense to ask the customer for a fulfillment date.
+ *
+ * **PHASE 6AH — CUSTOMER_PICKUP BELONGS HERE, AND DID NOT BEFORE.**
+ *
+ * The original design conflated two different questions:
+ *
+ *   A. "is this literally delivery transport?"
+ *   B. "should we ask this customer for a date?"
+ *
+ * Those are not the same. A pickup order still needs an agreed day, because
+ * warehouse staff must collect and prepare the goods before the customer
+ * arrives. Treating CUSTOMER_PICKUP as equivalent to "no date needed" was a
+ * business error, not a safety measure.
+ *
+ * This set answers question B only. Question A is still answered accurately by
+ * `fulfillmentResolution.mode` itself, which is unchanged.
+ */
+const FULFILLMENT_MODES_NEEDING_DATE: ReadonlySet<FulfillmentMode> = new Set<FulfillmentMode>([
+  "DELIVERY",
   "CUSTOMER_PICKUP",
+]);
+
+/** Modes that are a definite, knowable "no fulfillment date applies".
+ * Separated from `UNKNOWN` so the recorded reason distinguishes "we know this
+ * needs no date" from "we could not establish anything" — the two need
+ * different follow-up from staff.
+ *
+ * NOTE ON THE NAME `NOT_A_DELIVERY_ORDER`: it predates 6AH and now means "no
+ * fulfillment date applies", which is broader. It is deliberately NOT renamed
+ * here — the string is persisted on ShopifyWebhookEvent.eligibilityReason, so
+ * a rename is a data-migration question rather than a code one. See the report
+ * for the recommendation on when to do it. */
+const MODES_WITHOUT_FULFILLMENT_DATE: ReadonlySet<FulfillmentMode> = new Set<FulfillmentMode>([
   "PICKUP_POINT",
   "RETAIL",
   "NONE",
@@ -162,13 +196,14 @@ export function deliveryPolicyForPaymentPolicy(paymentPolicy: PaymentPolicy): De
  *    asking a customer a question it already knows the answer to. Payment
  *    happening later never reopens this (build instruction §10).
  * 3. No shipping address — a reliable negative for a delivery request.
- * 3b. **Phase 6W — fulfillment classification.** The resolved Stones4U mode
- *    must be exactly `DELIVERY`. A definite non-delivery (CUSTOMER_PICKUP,
- *    PICKUP_POINT, RETAIL, NONE) reports `NOT_A_DELIVERY_ORDER`; `UNKNOWN`
- *    reports `INSUFFICIENT_CLASSIFICATION`. Placed ahead of policy and
- *    payment deliberately: whether Stones4U is delivering at all is a more
- *    fundamental question than who pays when, and a pickup Order must never
- *    be reported as merely `WAITING_FOR_PAYMENT`.
+ * 3b. **Fulfillment classification (6W, broadened in 6AH).** The resolved
+ *    Stones4U mode must be one for which a customer date is meaningful:
+ *    `DELIVERY` or `CUSTOMER_PICKUP`. A pickup needs a date too — staff must
+ *    collect and prepare the goods before the customer arrives. `PICKUP_POINT`,
+ *    `RETAIL` and `NONE` report `NOT_A_DELIVERY_ORDER` (read: "no fulfillment
+ *    date applies"); `UNKNOWN` reports `INSUFFICIENT_CLASSIFICATION`. Placed
+ *    ahead of policy and payment deliberately, so an ineligible Order is never
+ *    reported as merely `WAITING_FOR_PAYMENT`.
  * 4. Policy is `UNKNOWN` or `MANUAL_ONLY` — never asks automatically.
  *    `UNKNOWN` reports `INSUFFICIENT_CLASSIFICATION` (we don't know
  *    enough, not "we know this should never happen"); `MANUAL_ONLY`
@@ -220,10 +255,11 @@ export function evaluateDeliveryRequestDecision(input: {
 
   // Step 3b (Phase 6W): fulfillment classification, before policy/payment.
   const fulfillmentMode = order.fulfillmentResolution.mode;
-  if (DEFINITE_NON_DELIVERY_MODES.has(fulfillmentMode)) {
+  if (MODES_WITHOUT_FULFILLMENT_DATE.has(fulfillmentMode)) {
     return { shouldRequest: false, reason: "NOT_A_DELIVERY_ORDER", trigger };
   }
-  if (fulfillmentMode !== "DELIVERY") {
+  if (!FULFILLMENT_MODES_NEEDING_DATE.has(fulfillmentMode)) {
+    // UNKNOWN — we could not establish anything, so we ask nobody anything.
     return { shouldRequest: false, reason: "INSUFFICIENT_CLASSIFICATION", trigger };
   }
 

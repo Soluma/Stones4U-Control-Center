@@ -213,8 +213,10 @@ describe("evaluateDeliveryRequestDecision — priority order (Phase 6W build ins
 });
 
 describe("evaluateDeliveryRequestDecision — fulfillment gate (Phase 6W build instruction §8)", () => {
-  it("every definite non-delivery mode blocks the request, even paid and fully classified", () => {
-    for (const mode of ["CUSTOMER_PICKUP", "PICKUP_POINT", "RETAIL", "NONE"] as const) {
+  it("every mode for which no fulfillment date applies blocks the request, even paid and fully classified", () => {
+    // Phase 6AH — CUSTOMER_PICKUP is deliberately NOT in this list any more:
+    // a pickup needs a date too. These three genuinely need none.
+    for (const mode of ["PICKUP_POINT", "RETAIL", "NONE"] as const) {
       const result = evaluateDeliveryRequestDecision({
         order: resolvedAs(mode, { fullyPaid: true, customerClassification: classification("PREPAID", "CONSUMER") }),
         trigger: "ORDER_PAID",
@@ -233,13 +235,67 @@ describe("evaluateDeliveryRequestDecision — fulfillment gate (Phase 6W build i
     expect(result).toEqual({ shouldRequest: false, reason: "INSUFFICIENT_CLASSIFICATION", trigger: "ORDER_PAID" });
   });
 
-  it("the fulfillment gate runs BEFORE the payment gate — an unpaid pickup Order is NOT_A_DELIVERY_ORDER, never WAITING_FOR_PAYMENT", () => {
+  it("the fulfillment gate runs BEFORE the payment gate — an unpaid RETAIL Order is NOT_A_DELIVERY_ORDER, never WAITING_FOR_PAYMENT", () => {
+    const result = evaluateDeliveryRequestDecision({
+      order: resolvedAs("RETAIL", { fullyPaid: false }),
+      trigger: "ORDER_CREATED",
+      policy: "REGULAR_CONSUMER",
+    });
+    expect(result.reason).toBe("NOT_A_DELIVERY_ORDER");
+  });
+
+  // Phase 6AH — the correction itself.
+  it("CUSTOMER_PICKUP is date-request eligible: staff must prepare the goods before the customer arrives", () => {
+    const result = evaluateDeliveryRequestDecision({
+      order: resolvedAs("CUSTOMER_PICKUP", {
+        fullyPaid: true,
+        customerClassification: classification("PREPAID", "CONSUMER"),
+      }),
+      trigger: "ORDER_PAID",
+      policy: "REGULAR_CONSUMER",
+    });
+    expect(result).toEqual({
+      shouldRequest: true,
+      reason: "READY_FOR_DELIVERY_REQUEST",
+      trigger: "ORDER_PAID",
+    });
+  });
+
+  it("an unpaid PREPAID pickup waits for payment, exactly like a delivery would", () => {
     const result = evaluateDeliveryRequestDecision({
       order: resolvedAs("CUSTOMER_PICKUP", { fullyPaid: false }),
       trigger: "ORDER_CREATED",
       policy: "REGULAR_CONSUMER",
     });
-    expect(result.reason).toBe("NOT_A_DELIVERY_ORDER");
+    expect(result.reason).toBe("WAITING_FOR_PAYMENT");
+  });
+
+  it("an existing date suppresses a pickup request just as it does a delivery one", () => {
+    const result = evaluateDeliveryRequestDecision({
+      order: resolvedAs("CUSTOMER_PICKUP", {
+        fullyPaid: true,
+        hasRequestedDeliveryDateAlready: true,
+        requestedDeliveryDate: "2027-03-16",
+        customerClassification: classification("PREPAID", "CONSUMER"),
+      }),
+      trigger: "ORDER_PAID",
+      policy: "REGULAR_CONSUMER",
+    });
+    expect(result.reason).toBe("ALREADY_HAS_REQUESTED_DELIVERY_DATE");
+  });
+
+  it("ON_ACCOUNT pickup is not blocked merely for being unpaid", () => {
+    const order = resolvedAs("CUSTOMER_PICKUP", {
+      fullyPaid: false,
+      customerClassification: classification("ON_ACCOUNT", "BUSINESS"),
+    });
+    const result = evaluateDeliveryRequestDecision({
+      order,
+      trigger: "ORDER_CREATED",
+      policy: deliveryPolicyForPaymentPolicy(order.customerClassification.paymentPolicy),
+    });
+    expect(result.reason).not.toBe("WAITING_FOR_PAYMENT");
+    expect(result.reason).toBe("READY_FOR_DELIVERY_REQUEST");
   });
 
   it("a bare native SHIPPING that never resolved is still not enough — the Phase 6I production lesson stays enforced", () => {
@@ -322,8 +378,14 @@ describe("evaluateDeliveryRequestDecision — build instruction §23 decision ma
     expect(result).toEqual({ shouldRequest: true, reason: "READY_FOR_DELIVERY_REQUEST", trigger: "ORDER_PAID" });
   });
 
-  it("D. CUSTOMER_PICKUP + PREPAID + paid + no date -> NO delivery request", () => {
+  it("D. (revised in 6AH) CUSTOMER_PICKUP + PREPAID + paid + no date -> READY, because a pickup needs a date too", () => {
     const result = decide(resolvedAs("CUSTOMER_PICKUP", { fullyPaid: true, customerClassification: classification("PREPAID", "CONSUMER") }));
+    expect(result.shouldRequest).toBe(true);
+    expect(result.reason).toBe("READY_FOR_DELIVERY_REQUEST");
+  });
+
+  it("D2. NONE + PREPAID + paid -> still no request, since no date applies", () => {
+    const result = decide(resolvedAs("NONE", { fullyPaid: true, customerClassification: classification("PREPAID", "CONSUMER") }));
     expect(result.shouldRequest).toBe(false);
     expect(result.reason).toBe("NOT_A_DELIVERY_ORDER");
   });
@@ -436,7 +498,7 @@ describe("evaluateDeliveryRequestDecision — the defaulted ordinary customer", 
 });
 
 describe("evaluateDeliveryRequestDecision — what a positive decision actually requires", () => {
-  it("READY is reachable ONLY with a trusted DELIVERY resolution plus a known payment policy that is satisfied", () => {
+  it("READY is reachable ONLY with a date-eligible resolution plus a known payment policy that is satisfied", () => {
     // Every single-factor degradation of the one passing case must fail.
     const passing = deliveryOrder({ fullyPaid: true, customerClassification: classification("PREPAID", "CONSUMER") });
     const policy = deliveryPolicyForPaymentPolicy(passing.customerClassification.paymentPolicy);
@@ -447,7 +509,7 @@ describe("evaluateDeliveryRequestDecision — what a positive decision actually 
       { ...passing, hasShippingAddress: false },
       { ...passing, hasRequestedDeliveryDateAlready: true, requestedDeliveryDate: "2026-09-24" },
       { ...passing, fulfillmentResolution: { mode: "UNKNOWN", source: "NONE", conflict: false, diagnostic: "NONE" } },
-      { ...passing, fulfillmentResolution: { mode: "CUSTOMER_PICKUP", source: "EXPLICIT", conflict: false, diagnostic: "NONE" } },
+      { ...passing, fulfillmentResolution: { mode: "NONE", source: "EXPLICIT", conflict: false, diagnostic: "NONE" } },
       { ...passing, fullyPaid: false },
     ];
     for (const order of degradations) {

@@ -144,8 +144,14 @@ describe("payment-first architecture — automation stays switched off", () => {
     expect(webhookProcessing).toContain("if (decision.shouldRequest && DELIVERY_REQUEST_AUTOMATION_ENABLED)");
   });
 
-  it("the pure engine's READY capability requires a trusted DELIVERY resolution — never a bare native mode", () => {
-    expect(decision).toContain('order.fulfillmentResolution.mode === "DELIVERY"');
+  it("the pure engine's READY capability requires a trusted RESOLVED mode — never a bare native one", () => {
+    // Phase 6AH widened *which* resolved modes qualify (CUSTOMER_PICKUP joined
+    // DELIVERY, because a pickup needs a date too) without loosening the
+    // evidence each one requires. What this test actually guards is that the
+    // decision reads the Layer-2 resolution and never the raw native signal —
+    // the Phase 6I lesson — so it asserts on that, not on a single literal.
+    expect(decision).toContain("FULFILLMENT_MODES_NEEDING_DATE.has(order.fulfillmentResolution.mode)");
+    expect(decision).toMatch(/FULFILLMENT_MODES_NEEDING_DATE[\s\S]{0,200}"DELIVERY",\s*\n\s*"CUSTOMER_PICKUP",/);
     expect(decision).not.toContain("nativeFulfillmentMode ===");
   });
 
