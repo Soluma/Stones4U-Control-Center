@@ -8,6 +8,7 @@ import { joinLogisticsLines } from "@/modules/logistics/line-join";
 import {
   deviationLabel,
   handoffLabel,
+  lineStateDisplay,
   photoHref,
   photoSrc,
   usablePhotos,
@@ -183,7 +184,7 @@ function LogisticsDetail({
                     {pick ? `${pick.pickedQuantity} / ${shopifyLine.currentQuantity}` : `— / ${shopifyLine.currentQuantity}`}
                   </p>
                 </div>
-                <LineState pick={pick} />
+                <LineState pick={pick} pickCompleted={order.pick.completed} />
               </li>
             ))}
           </ul>
@@ -213,7 +214,7 @@ function LogisticsDetail({
                       )}
                     </td>
                     <td className="px-4 py-2.5 text-ink-secondary">
-                      <LineState pick={pick} />
+                      <LineState pick={pick} pickCompleted={order.pick.completed} />
                     </td>
                   </tr>
                 ))}
@@ -318,12 +319,21 @@ function LogisticsDetail({
 
 /** The pick state of one line — the same words in the desktop table and in
  *  the stacked mobile row, so a deviation reads identically on both. */
-function LineState({ pick }: { pick: ReturnType<typeof joinLogisticsLines>["lines"][number]["pick"] }) {
+function LineState({
+  pick,
+  pickCompleted,
+}: {
+  pick: ReturnType<typeof joinLogisticsLines>["lines"][number]["pick"];
+  pickCompleted: boolean;
+}) {
   if (!pick) return <span className="text-xs text-ink-tertiary">Geen pickgegevens</span>;
+  const state = lineStateDisplay(pick, pickCompleted);
   return (
     <span className="flex flex-wrap items-center gap-1.5 text-ink-secondary">
-      {pick.picked ? <Badge tone="success">Gepickt</Badge> : <Badge tone="neutral">Open</Badge>}
+      <Badge tone={state.tone}>{state.label}</Badge>
+      {/* Een afwijking blijft altijd zichtbaar, wat de aantallen ook zeggen. */}
       {pick.deviation && <Badge tone="danger">{deviationLabel(pick.deviation)}</Badge>}
+      {state.hint && <span className="text-xs text-ink-tertiary">{state.hint}</span>}
       {pick.deviationNote && <span className="text-xs">{pick.deviationNote}</span>}
       {pick.pickedByName && <span className="text-xs text-ink-tertiary">{pick.pickedByName}</span>}
     </span>

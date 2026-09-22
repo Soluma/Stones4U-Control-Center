@@ -205,11 +205,21 @@ describe("order detail — Magazijn & logistiek", () => {
     expect(flat).toContain("niet te tonen");
   });
 
+  it("reads a line's state from the shared rule, and keeps the deviation beside it", () => {
+    expect(source).toContain("lineStateDisplay(pick, pickCompleted)");
+    // Both presentations pass whether the sheet itself is finished.
+    expect(source.match(/pickCompleted=\{order\.pick\.completed\}/g)?.length).toBe(2);
+    // The deviation badge does not depend on the state label.
+    expect(source).toContain("{pick.deviation && <Badge tone=\"danger\">{deviationLabel(pick.deviation)}</Badge>}");
+    // No inline picked/Open branch left in the component.
+    expect(source).not.toContain('pick.picked ? <Badge tone="success">Gepickt</Badge>');
+  });
+
   it("stacks the pick lines below md, so a deviation never hides behind a horizontal scroll", () => {
     expect(source).toContain('className="divide-y divide-border-subtle md:hidden"');
     expect(source).toContain('className="hidden overflow-x-auto md:block"');
     // Both presentations state the line the same way.
-    expect(source.match(/<LineState pick=\{pick\} \/>/g)?.length).toBe(2);
+    expect(source.match(/<LineState pick=\{pick\} pickCompleted=\{order\.pick\.completed\} \/>/g)?.length).toBe(2);
   });
 
   it("states an integration problem as one, per reason, inside its own section", () => {
