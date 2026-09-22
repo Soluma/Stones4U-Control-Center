@@ -50,6 +50,44 @@ export function OrdersTable({
 
   return (
     <div className="space-y-2">
+      {/* Onder md gestapeld. Op een telefoon is "wat doet het magazijn
+          ermee" belangrijker dan elke desktopkolom behouden, en die
+          informatie hoort niet achter een horizontale scroll te liggen. */}
+      <ul className="cc-card divide-y divide-border-subtle md:hidden">
+        {orders.map((order) => {
+          const legacyId = legacyOrderId(order.gid);
+          const item = legacyId ? logistics?.byOrderId.get(legacyId) : undefined;
+          return (
+            <li key={order.gid} className="space-y-1.5 px-4 py-3">
+              <div className="flex items-baseline justify-between gap-3">
+                {customerId && legacyId ? (
+                  <Link href={`/customers/${customerId}/orders/${legacyId}`} className="cc-focus-ring font-medium text-ink-primary">
+                    {order.name}
+                  </Link>
+                ) : (
+                  <span className="font-medium text-ink-primary">{order.name}</span>
+                )}
+                {order.displayFinancialStatus && (
+                  <Badge tone={FINANCIAL_TONE[order.displayFinancialStatus] ?? "neutral"}>{order.displayFinancialStatus}</Badge>
+                )}
+              </div>
+              {showLogistics ? (
+                <>
+                  <HandoffCell item={item} unavailable={logistics.unavailable} />
+                  <WarehouseCell item={item} unavailable={logistics.unavailable} />
+                </>
+              ) : (
+                <p className="text-sm text-ink-secondary">{order.displayFulfillmentStatus ?? "—"}</p>
+              )}
+              <p className="text-xs text-ink-tertiary">
+                {formatDate(order.createdAt)} · <span className="tabular-nums">{formatMoney(order.currentTotalPriceSet)}</span>
+              </p>
+            </li>
+          );
+        })}
+      </ul>
+
+      <div className="hidden md:block">
       <Table>
         <TableHead>
           <TableHeaderCell>Order</TableHeaderCell>
@@ -122,6 +160,7 @@ export function OrdersTable({
           })}
         </TableBody>
       </Table>
+      </div>
       {logistics?.unavailable && (
         <p className="text-xs text-ink-tertiary">
           Logistieke gegevens tijdelijk niet beschikbaar — de kolommen Afhandeling en Magazijn zijn daarom leeg.

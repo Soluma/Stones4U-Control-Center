@@ -136,6 +136,16 @@ describe("order history — the Commercieel table", () => {
     expect(flat).toContain("Logistieke gegevens tijdelijk niet beschikbaar");
   });
 
+  it("keeps Afhandeling and Magazijn visible on a phone, in a stacked row instead of a wide table", () => {
+    expect(source).toContain('className="cc-card divide-y divide-border-subtle md:hidden"');
+    expect(source).toContain('<div className="hidden md:block">');
+    // The same two cells carry the logistics facts in both presentations.
+    expect(source.match(/<HandoffCell item=\{item\}/g)?.length).toBe(2);
+    expect(source.match(/<WarehouseCell item=\{item\}/g)?.length).toBe(2);
+    // Date and amount step back to one secondary line on mobile.
+    expect(flat).toContain("{formatDate(order.createdAt)} · <span className=\"tabular-nums\">{formatMoney(order.currentTotalPriceSet)}</span>");
+  });
+
   it("never renders a missing answer as zero pallets or as not picked", () => {
     expect(source).not.toMatch(/0 \/ 0 pallets/);
     expect(source).not.toContain("niet gepickt");
@@ -176,10 +186,30 @@ describe("order detail — Magazijn & logistiek", () => {
 
   it("shows photos as belonging to the order, thumbnails from thumbUrl and the full image from url", () => {
     expect(flat).toContain("Foto&apos;s van deze order");
-    expect(source).toContain("href={photo.url ?? photo.thumbUrl");
-    expect(source).toContain("src={photo.thumbUrl ?? photo.url");
+    expect(source).toContain("src={photoSrc(photo)}");
+    expect(source).toContain("href={photoHref(photo)}");
     expect(source).toContain("order.photos.pendingCount");
     expect(source).toContain("order.photos.failedCount");
+  });
+
+  it("can never render an empty src: the gallery only iterates photos with a usable URL", () => {
+    expect(source).toContain("usablePhotos(order.photos.items)");
+    expect(source).toContain("photos.map((photo)");
+    // No literal empty-string fallback anywhere near an image attribute.
+    expect(source).not.toMatch(/src=\{[^}]*\?\?\s*""/);
+    expect(source).not.toMatch(/href=\{[^}]*\?\?\s*"#"/);
+    // (the line comment explaining the rule mentions src="" — strip comments first)
+    const code = source.replace(/\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
+    expect(code).not.toContain('src=""');
+    // An unusable photo is counted for staff instead of drawn.
+    expect(flat).toContain("niet te tonen");
+  });
+
+  it("stacks the pick lines below md, so a deviation never hides behind a horizontal scroll", () => {
+    expect(source).toContain('className="divide-y divide-border-subtle md:hidden"');
+    expect(source).toContain('className="hidden overflow-x-auto md:block"');
+    // Both presentations state the line the same way.
+    expect(source.match(/<LineState pick=\{pick\} \/>/g)?.length).toBe(2);
   });
 
   it("states an integration problem as one, per reason, inside its own section", () => {

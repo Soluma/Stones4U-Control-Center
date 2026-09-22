@@ -14,14 +14,22 @@ import { eventLabel, eventSummary } from "./presentation";
 
 const ID_PREFIX = "offerteapp-logistics-";
 
+/** "Palletfoto toegevoegd" under "Palletfoto toegevoegd" says nothing twice.
+ *  Presentation only — the event itself, its id and its order are untouched. */
+function sameText(a: string, b: string): boolean {
+  return a.trim().replace(/\s+/g, " ").toLowerCase() === b.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
 export function logisticsEventToTimelineItem(event: LogisticsEvent): TimelineItem {
+  const title = eventLabel(event);
+  const summary = eventSummary(event);
   return {
     id: `${ID_PREFIX}${event.id}`,
     occurredAt: new Date(event.occurredAt),
     source: "OFFERTEAPP",
     kind: event.kind,
-    title: eventLabel(event),
-    summary: eventSummary(event),
+    title,
+    summary: sameText(title, summary) ? null : summary,
     actorName: event.actorName ?? null,
   };
 }
