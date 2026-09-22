@@ -27,6 +27,13 @@ import {
   TrendingUp,
   Trophy,
   RotateCcw,
+  PackageSearch,
+  PackageCheck,
+  ScanLine,
+  Camera,
+  Truck,
+  Printer,
+  Undo2,
   type LucideIcon,
 } from "lucide-react";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -84,6 +91,28 @@ const KIND_STYLE: Record<string, { icon: LucideIcon; tint: string }> = {
   OPPORTUNITY_WON: { icon: Trophy, tint: "bg-success-50 text-success-700" },
   OPPORTUNITY_LOST: { icon: XCircle, tint: "bg-danger-50 text-danger-700" },
   OPPORTUNITY_REOPENED: { icon: RotateCcw, tint: "bg-canvas text-ink-secondary" },
+  // Magazijn & logistiek — projected live from OfferteApp, never stored
+  // here (src/modules/logistics/timeline.ts). The kinds come from
+  // OfferteApp's own contract; an unlisted one still renders via the
+  // fallback below, so a new event kind there never breaks this page.
+  PICK_STARTED: { icon: PackageSearch, tint: "bg-warning-50 text-warning-700" },
+  PICK_CLAIM_TAKEN_OVER: { icon: ArrowRightLeft, tint: "bg-canvas text-ink-secondary" },
+  PICK_LINE_UPDATED: { icon: ListChecks, tint: "bg-canvas text-ink-secondary" },
+  PICK_COMPLETED: { icon: PackageCheck, tint: "bg-success-50 text-success-700" },
+  PALLET_SCANNED: { icon: ScanLine, tint: "bg-success-50 text-success-700" },
+  PALLET_SCAN_UNDONE: { icon: Undo2, tint: "bg-danger-50 text-danger-700" },
+  PALLET_SCAN_CORRECTED: { icon: Undo2, tint: "bg-warning-50 text-warning-700" },
+  PALLET_PHOTO_ATTACHED: { icon: Camera, tint: "bg-accent-50 text-accent-700" },
+  PALLET_PHOTO_REMOVED: { icon: Camera, tint: "bg-danger-50 text-danger-700" },
+  VAN_EIJK_PICKUP_COMPLETED: { icon: Truck, tint: "bg-success-50 text-success-700" },
+  HOEFNAGELS_PICKED_UP: { icon: Truck, tint: "bg-success-50 text-success-700" },
+  CUSTOMER_PICKUP_HANDED_OVER: { icon: PackageCheck, tint: "bg-success-50 text-success-700" },
+  TRANSPORT_CREATED: { icon: Truck, tint: "bg-canvas text-ink-secondary" },
+  TRANSPORT_SENT: { icon: Truck, tint: "bg-accent-50 text-accent-700" },
+  TRANSPORT_SEND_FAILED: { icon: XCircle, tint: "bg-danger-50 text-danger-700" },
+  TRANSPORT_LABELS_PRINTED: { icon: Printer, tint: "bg-canvas text-ink-secondary" },
+  TRANSPORT_STATUS_CHANGED: { icon: ArrowRightLeft, tint: "bg-canvas text-ink-secondary" },
+  TRANSPORT_CANCELLED: { icon: XCircle, tint: "bg-danger-50 text-danger-700" },
 };
 
 function dayKey(date: Date): string {

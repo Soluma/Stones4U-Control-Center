@@ -11,6 +11,7 @@ import { getShopifyCustomerDraftOrders } from "@/integrations/shopify/draft-orde
 import { createTelephonyAdapter, type TelephonyActivityItem } from "@/integrations/telephony/adapter";
 import { createQuotesAdapter, type QuoteSummary } from "@/integrations/quotes/adapter";
 import { createEmailAdapter } from "@/integrations/email/adapter";
+import { createLogisticsAdapter, legacyOrderId } from "@/integrations/logistics/adapter";
 import type { NormalizedEmailMessage } from "@/integrations/email/types";
 import { listOpportunitiesForCustomer } from "@/modules/opportunities/opportunity.service";
 import { listContactsForCustomer } from "@/modules/crm/customer-contact.service";
@@ -20,7 +21,8 @@ import { formatDate, formatDateTime } from "@/lib/format";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Tabs } from "@/components/ui/Tabs";
 import { CustomerHeader } from "./CustomerHeader";
-import { OrdersTable } from "./OrdersTable";
+import { OrdersTable, type OrdersTableLogistics } from "./OrdersTable";
+import { LogisticsBlock } from "./LogisticsBlock";
 import { DraftOrdersTable } from "./DraftOrdersTable";
 import { QuotesTable } from "./QuotesTable";
 import { DeliveryDateHandoffsPanel } from "./DeliveryDateHandoffsPanel";
@@ -99,6 +101,29 @@ export default async function CustomerDetailPage({ params, searchParams }: PageP
   } catch (error) {
     console.error("draft_orders_fetch_failed", error);
     draftOrdersUnavailable = true;
+  }
+
+  // Logistics (OfferteApp) — one batch call for every order on this page,
+  // never one per order, and fetched once here so the Overview block and
+  // the Commercieel table share the same answer. Same fail-isolation as
+  // draftOrders above; `unavailable` is kept distinct from "this order has
+  // no logistics data", because the two must never look alike (build
+  // instruction §8). Null when OfferteApp is not configured at all: then
+  // the logistics columns are simply absent rather than filled with
+  // "niet beschikbaar" on every row.
+  const logisticsAdapter = createLogisticsAdapter();
+  let logistics: OrdersTableLogistics | null = null;
+  if (logisticsAdapter.status().available) {
+    try {
+      const orderIds = data.orders.orders.map((order) => legacyOrderId(order.gid)).filter((id): id is string => !!id);
+      const result = await logisticsAdapter.getForOrders(orderIds);
+      logistics = result.ok
+        ? { byOrderId: result.byOrderId, unavailable: result.partial }
+        : { byOrderId: new Map(), unavailable: true };
+    } catch (error) {
+      console.error("logistics_fetch_failed", error);
+      logistics = { byOrderId: new Map(), unavailable: true };
+    }
   }
 
   // Phase 4c — active contacts fetched once here: reused for the
@@ -205,6 +230,7 @@ export default async function CustomerDetailPage({ params, searchParams }: PageP
           openOpportunities={openOpportunities.filter((o) => o.status === "OPEN")}
           canEdit={canEdit}
           contacts={contactIdentities}
+          logistics={logistics}
         />
       )}
 
@@ -218,6 +244,7 @@ export default async function CustomerDetailPage({ params, searchParams }: PageP
           draftOrdersUnavailable={draftOrdersUnavailable}
           quotes={quotes}
           canEdit={canEdit}
+          logistics={logistics}
         />
       )}
 
@@ -256,6 +283,7 @@ function CommercialTab({
   quotes,
   deliveryDateHandoffs,
   canEdit,
+  logistics,
 }: {
   id: string;
   customerName: string;
@@ -265,13 +293,14 @@ function CommercialTab({
   quotes: QuoteSummary[];
   deliveryDateHandoffs: Parameters<typeof DeliveryDateHandoffsPanel>[0]["handoffs"];
   canEdit: boolean;
+  logistics: OrdersTableLogistics | null;
 }) {
   return (
     <div className="space-y-6">
       <OpportunitiesSection customerId={id} customerName={customerName} canCreate={canEdit} />
       <div className="space-y-3">
         <h2 className="text-sm font-medium text-ink-secondary">Bestellingen</h2>
-        <OrdersTable orders={orders} />
+        <OrdersTable orders={orders} customerId={id} logistics={logistics} />
       </div>
       <div className="space-y-3">
         <h2 className="text-sm font-medium text-ink-secondary">Conceptbestellingen</h2>
@@ -300,6 +329,7 @@ async function OverviewTab({
   openOpportunities,
   canEdit,
   contacts,
+  logistics,
 }: {
   id: string;
   shopifyOrders: Parameters<typeof getCustomerTimeline>[1]["shopifyOrders"];
@@ -311,6 +341,7 @@ async function OverviewTab({
   openOpportunities: Awaited<ReturnType<typeof listOpportunitiesForCustomer>>;
   canEdit: boolean;
   contacts: Parameters<typeof getCustomerTimeline>[1]["contacts"];
+  logistics: OrdersTableLogistics | null;
 }) {
   const [timeline, tasks, appointments, files] = await Promise.all([
     getCustomerTimeline(id, { shopifyOrders, draftOrders: draftOrders ?? [], phoneNumbers, quoteMatchRefs, emailMessages, contacts }),
@@ -327,8 +358,15 @@ async function OverviewTab({
     <div className="grid gap-5 md:grid-cols-2">
       <div className="space-y-3">
         <h2 className="text-sm font-medium text-ink-secondary">Recente orders</h2>
-        <OrdersTable orders={shopifyOrders.slice(0, 5)} />
+        <OrdersTable orders={shopifyOrders.slice(0, 5)} customerId={id} />
       </div>
+      {logistics && (
+        <LogisticsBlock
+          customerId={id}
+          orders={[...logistics.byOrderId.values()]}
+          unavailable={logistics.unavailable && logistics.byOrderId.size === 0}
+        />
+      )}
       <div className="space-y-3">
         <h2 className="text-sm font-medium text-ink-secondary">Recente activiteit</h2>
         <ActivityTimelineView items={timeline.slice(0, 6)} customerId={id} canEdit={canEdit} />
