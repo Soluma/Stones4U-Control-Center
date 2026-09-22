@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { LogisticsEvent, LogisticsLine, OrderLogisticsSummary } from "@/integrations/logistics/types";
 import {
   deviationLabel,
+  lineStateDisplay,
   photoHref,
   photoSrc,
   usablePhotos,
@@ -180,6 +181,60 @@ describe("joining Shopify lines to pick lines", () => {
 
     expect(result.unmatchedPickLines).toHaveLength(1);
     expect(result.lines.every((joined) => joined.pick === null)).toBe(true);
+  });
+});
+
+describe("how one pick line reads", () => {
+  // OfferteApp only flips `picked` when the whole sheet is finalised, so
+  // during a pick a complete line still arrives as picked: false. The CRM
+  // may say what the numbers say — it may not invent a status.
+
+  it("an active pick with the full quantity reads as complete, and says the sheet is not finished", () => {
+    const state = lineStateDisplay(line({ picked: false, pickedQuantity: 3, orderedQuantity: 3 }), false);
+
+    expect(state.label).toBe("Compleet gepickt");
+    expect(state.hint).toBe("Pickbon nog niet afgerond");
+    expect(state.tone).toBe("accent");
+    expect(state.label).not.toBe("Open");
+  });
+
+  it("an active pick that is short stays open", () => {
+    const state = lineStateDisplay(line({ picked: false, pickedQuantity: 2, orderedQuantity: 3 }), false);
+
+    expect(state.label).toBe("Open");
+    expect(state.hint).toBeNull();
+    expect(state.tone).toBe("neutral");
+  });
+
+  it("a finished pick reads as picked, with nothing left to explain", () => {
+    const state = lineStateDisplay(line({ picked: true, pickedQuantity: 3, orderedQuantity: 3 }), true);
+
+    expect(state.label).toBe("Gepickt");
+    expect(state.hint).toBeNull();
+    expect(state.tone).toBe("success");
+  });
+
+  it("never claims a line is finished just because the sheet is", () => {
+    const state = lineStateDisplay(line({ picked: false, pickedQuantity: 1, orderedQuantity: 2 }), true);
+
+    expect(state.label).toBe("Open");
+    expect(state.hint).toBeNull();
+  });
+
+  it("leaves the deviation untouched on a line whose quantity is complete", () => {
+    const shortage = line({ picked: false, pickedQuantity: 3, orderedQuantity: 3, deviation: "SHORTAGE",
+                            deviationNote: "TEST - 1 stuk tekort" });
+    const state = lineStateDisplay(shortage, false);
+
+    // The state says nothing about the deviation; the deviation is rendered
+    // beside it and keeps its own label and note.
+    expect(state.label).toBe("Compleet gepickt");
+    expect(deviationLabel(shortage.deviation)).toBe("Tekort");
+    expect(shortage.deviationNote).toBe("TEST - 1 stuk tekort");
+  });
+
+  it("treats a line with no ordered quantity as open rather than complete", () => {
+    expect(lineStateDisplay(line({ picked: false, pickedQuantity: 0, orderedQuantity: 0 }), false).label).toBe("Open");
   });
 });
 

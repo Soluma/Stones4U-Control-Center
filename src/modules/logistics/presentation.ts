@@ -2,6 +2,7 @@ import { formatDateLong, formatDateTime } from "@/lib/format";
 import type {
   HandoffType,
   LogisticsEvent,
+  LogisticsLine,
   LogisticsPallet,
   OrderLogisticsSummary,
   ScheduleState,
@@ -71,6 +72,38 @@ export function needsAttention(order: OrderLogisticsSummary): boolean {
   if (order.lock.active) return true;
   if (order.pick.started && !order.pick.completed) return true;
   return order.pallets.total > 0 && order.pallets.scanned < order.pallets.total;
+}
+
+export type LineStateDisplay = {
+  label: string;
+  tone: "success" | "accent" | "neutral";
+  /** Why the line is not final yet, when the numbers alone would mislead. */
+  hint: string | null;
+};
+
+/**
+ * How one pick line reads.
+ *
+ * OfferteApp only sets `picked` when the whole pick sheet is finalised, so a
+ * line whose quantity is already complete still arrives as `picked: false`
+ * while picking is underway. Rendering that as "Open" next to "3 / 3" made
+ * staff doubt the numbers (found on staging, 22-09-2026). This states what
+ * the quantities say and names the reason it is not final — a reading of the
+ * data, never a new operational status, and nothing about the stored fields
+ * or the contract changes.
+ */
+export function lineStateDisplay(
+  pick: Pick<LogisticsLine, "picked" | "pickedQuantity" | "orderedQuantity">,
+  pickCompleted: boolean,
+): LineStateDisplay {
+  if (pick.picked) return { label: "Gepickt", tone: "success", hint: null };
+
+  const quantityComplete = pick.orderedQuantity > 0 && pick.pickedQuantity >= pick.orderedQuantity;
+  if (quantityComplete && !pickCompleted) {
+    return { label: "Compleet gepickt", tone: "accent", hint: "Pickbon nog niet afgerond" };
+  }
+
+  return { label: "Open", tone: "neutral", hint: null };
 }
 
 export const DEVIATION_LABELS: Record<string, string> = {
