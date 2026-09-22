@@ -8,6 +8,9 @@ import { joinLogisticsLines } from "@/modules/logistics/line-join";
 import {
   deviationLabel,
   handoffLabel,
+  photoHref,
+  photoSrc,
+  usablePhotos,
   palletScanLine,
   palletTitle,
   scheduleDisplay,
@@ -72,7 +75,11 @@ function LogisticsDetail({
 }) {
   const schedule = scheduleDisplay(order.scheduleState, order.requestedDate);
   const join = joinLogisticsLines(shopifyLines, order.lines);
-  const photos = order.photos.items ?? [];
+  // A photo with neither URL cannot be shown. Rendering <img src=""> would
+  // make the browser re-request this very page, so such an item is counted
+  // and named rather than drawn.
+  const photos = usablePhotos(order.photos.items);
+  const unusablePhotoCount = (order.photos.items ?? []).length - photos.length;
 
   return (
     <div className="space-y-4">
@@ -161,7 +168,26 @@ function LogisticsDetail({
         {shopifyLines.length === 0 ? (
           <p className="px-4 py-3 text-sm text-ink-tertiary">Deze order heeft geen orderregels.</p>
         ) : (
-          <div className="overflow-x-auto">
+          <>
+          {/* Onder md gestapeld: een afwijking mag nooit achter een
+              horizontale scroll verdwijnen. */}
+          <ul className="divide-y divide-border-subtle md:hidden">
+            {join.lines.map(({ shopifyLine, pick }) => (
+              <li key={shopifyLine.gid} className="space-y-1.5 px-4 py-3">
+                <div className="flex items-baseline justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="font-medium text-ink-primary">{shopifyLine.title}</p>
+                    {shopifyLine.variantTitle && <p className="text-xs text-ink-tertiary">{shopifyLine.variantTitle}</p>}
+                  </div>
+                  <p className="shrink-0 text-sm tabular-nums text-ink-secondary">
+                    {pick ? `${pick.pickedQuantity} / ${shopifyLine.currentQuantity}` : `— / ${shopifyLine.currentQuantity}`}
+                  </p>
+                </div>
+                <LineState pick={pick} />
+              </li>
+            ))}
+          </ul>
+          <div className="hidden overflow-x-auto md:block">
             <table className="w-full min-w-[34rem] text-sm">
               <thead>
                 <tr className="text-left text-xs font-medium uppercase tracking-wide text-ink-tertiary">
@@ -187,22 +213,14 @@ function LogisticsDetail({
                       )}
                     </td>
                     <td className="px-4 py-2.5 text-ink-secondary">
-                      {!pick ? (
-                        <span className="text-ink-tertiary">Geen pickgegevens</span>
-                      ) : (
-                        <span className="flex flex-wrap items-center gap-1.5">
-                          {pick.picked ? <Badge tone="success">Gepickt</Badge> : <Badge tone="neutral">Open</Badge>}
-                          {pick.deviation && <Badge tone="danger">{deviationLabel(pick.deviation)}</Badge>}
-                          {pick.deviationNote && <span className="text-xs">{pick.deviationNote}</span>}
-                          {pick.pickedByName && <span className="text-xs text-ink-tertiary">{pick.pickedByName}</span>}
-                        </span>
-                      )}
+                      <LineState pick={pick} />
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
+          </>
         )}
         {/* Liever zichtbaar onopgelost dan stilletjes aan het verkeerde
             product geplakt. */}
@@ -244,18 +262,22 @@ function LogisticsDetail({
       )}
 
       {/* E — foto's horen bij de order, niet bij een pallet. */}
-      {(photos.length > 0 || order.photos.pendingCount > 0 || order.photos.failedCount > 0) && (
+      {(photos.length > 0 || unusablePhotoCount > 0 || order.photos.pendingCount > 0 || order.photos.failedCount > 0) && (
         <div className="cc-card p-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h3 className="inline-flex items-center gap-1.5 text-sm font-medium text-ink-primary">
               <Camera className="h-3.5 w-3.5" aria-hidden />
               Foto&apos;s van deze order
             </h3>
-            {(order.photos.pendingCount > 0 || order.photos.failedCount > 0) && (
+            {(order.photos.pendingCount > 0 || order.photos.failedCount > 0 || unusablePhotoCount > 0) && (
               <span className="text-xs text-ink-tertiary">
-                {order.photos.pendingCount > 0 ? `${order.photos.pendingCount} bezig met uploaden` : ""}
-                {order.photos.pendingCount > 0 && order.photos.failedCount > 0 ? " · " : ""}
-                {order.photos.failedCount > 0 ? `${order.photos.failedCount} mislukt` : ""}
+                {[
+                  order.photos.pendingCount > 0 ? `${order.photos.pendingCount} bezig met uploaden` : null,
+                  order.photos.failedCount > 0 ? `${order.photos.failedCount} mislukt` : null,
+                  unusablePhotoCount > 0 ? `${unusablePhotoCount} niet te tonen` : null,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
               </span>
             )}
           </div>
@@ -264,7 +286,7 @@ function LogisticsDetail({
               {photos.map((photo) => (
                 <li key={photo.shopifyFileGid}>
                   <a
-                    href={photo.url ?? photo.thumbUrl ?? "#"}
+                    href={photoHref(photo)}
                     target="_blank"
                     rel="noreferrer noopener"
                     className="cc-focus-ring block overflow-hidden rounded-md border border-border"
@@ -273,7 +295,7 @@ function LogisticsDetail({
                         en hoeven niet door de image-optimizer van Next heen. */}
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img
-                      src={photo.thumbUrl ?? photo.url ?? ""}
+                      src={photoSrc(photo)}
                       alt={photo.alt || "Palletfoto"}
                       loading="lazy"
                       className="aspect-square w-full bg-canvas object-cover"
@@ -291,6 +313,20 @@ function LogisticsDetail({
         </div>
       )}
     </div>
+  );
+}
+
+/** The pick state of one line — the same words in the desktop table and in
+ *  the stacked mobile row, so a deviation reads identically on both. */
+function LineState({ pick }: { pick: ReturnType<typeof joinLogisticsLines>["lines"][number]["pick"] }) {
+  if (!pick) return <span className="text-xs text-ink-tertiary">Geen pickgegevens</span>;
+  return (
+    <span className="flex flex-wrap items-center gap-1.5 text-ink-secondary">
+      {pick.picked ? <Badge tone="success">Gepickt</Badge> : <Badge tone="neutral">Open</Badge>}
+      {pick.deviation && <Badge tone="danger">{deviationLabel(pick.deviation)}</Badge>}
+      {pick.deviationNote && <span className="text-xs">{pick.deviationNote}</span>}
+      {pick.pickedByName && <span className="text-xs text-ink-tertiary">{pick.pickedByName}</span>}
+    </span>
   );
 }
 

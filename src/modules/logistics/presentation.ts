@@ -105,6 +105,29 @@ export function palletScanLine(pallet: LogisticsPallet): string {
   return `Gescand ${formatDateTime(pallet.scannedAt)}${who}${how ? ` · ${how}` : ""}`;
 }
 
+export type DisplayablePhoto = { thumbUrl?: string | null; url?: string | null };
+
+/**
+ * Photos that can actually be shown. A Shopify file reference can arrive
+ * without either URL (a file still processing, or one whose image was
+ * removed); rendering `<img src="">` for it makes the browser re-request
+ * the current page, so such an item never reaches the gallery.
+ */
+export function usablePhotos<T extends DisplayablePhoto>(items: T[] | undefined | null): T[] {
+  return (items ?? []).filter((photo) => !!(photo.thumbUrl || photo.url));
+}
+
+/** The thumbnail to show: the small one when Shopify gave us one, else the
+ *  full image. Only ever called for a photo that passed usablePhotos(). */
+export function photoSrc(photo: DisplayablePhoto): string {
+  return photo.thumbUrl || photo.url || "";
+}
+
+/** The image to open on click: the full one when there is one. */
+export function photoHref(photo: DisplayablePhoto): string {
+  return photo.url || photo.thumbUrl || "";
+}
+
 /** Dutch titles for the event kinds OfferteApp emits. */
 export const EVENT_LABELS: Record<string, string> = {
   PICK_STARTED: "Picken gestart",

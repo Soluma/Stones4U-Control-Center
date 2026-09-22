@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { LogisticsEvent, LogisticsLine, OrderLogisticsSummary } from "@/integrations/logistics/types";
 import {
   deviationLabel,
+  photoHref,
+  photoSrc,
+  usablePhotos,
   eventLabel,
   eventSummary,
   handoffLabel,
@@ -180,6 +183,34 @@ describe("joining Shopify lines to pick lines", () => {
   });
 });
 
+describe("photos that can actually be shown", () => {
+  const withBoth = { thumbUrl: "https://cdn/thumb.jpg", url: "https://cdn/full.jpg" };
+  const thumbOnly = { thumbUrl: "https://cdn/thumb.jpg", url: null };
+  const fullOnly = { thumbUrl: null, url: "https://cdn/full.jpg" };
+  const neither = { thumbUrl: null, url: null };
+
+  it("drops a photo that has neither a thumbnail nor a full image", () => {
+    expect(usablePhotos([withBoth, neither, thumbOnly, fullOnly])).toEqual([withBoth, thumbOnly, fullOnly]);
+    expect(usablePhotos([neither])).toEqual([]);
+    expect(usablePhotos(undefined)).toEqual([]);
+    expect(usablePhotos([{ thumbUrl: "", url: "" }])).toEqual([]);
+  });
+
+  it("never yields an empty src or href for a photo it keeps", () => {
+    for (const photo of usablePhotos([withBoth, thumbOnly, fullOnly, neither])) {
+      expect(photoSrc(photo)).not.toBe("");
+      expect(photoHref(photo)).not.toBe("");
+    }
+  });
+
+  it("prefers the thumbnail for display and the full image for opening", () => {
+    expect(photoSrc(withBoth)).toBe("https://cdn/thumb.jpg");
+    expect(photoHref(withBoth)).toBe("https://cdn/full.jpg");
+    expect(photoSrc(fullOnly)).toBe("https://cdn/full.jpg");
+    expect(photoHref(thumbOnly)).toBe("https://cdn/thumb.jpg");
+  });
+});
+
 describe("logistics events in the Activity Timeline", () => {
   function event(overrides: Partial<LogisticsEvent> = {}): LogisticsEvent {
     return {
@@ -224,6 +255,26 @@ describe("logistics events in the Activity Timeline", () => {
 
     expect(eventSummary(latestOnly)).toBe("2 van 2 gepickt (laatste stand van deze regel)");
     expect(eventSummary(event())).toBe("Pallet 1/5 gescand");
+  });
+
+  it("says a thing once: a summary identical to the title is dropped", () => {
+    const [photo] = logisticsEventsToTimelineItems([
+      event({ id: "p1", kind: "PALLET_PHOTO_ATTACHED", summary: "Palletfoto toegevoegd" }),
+    ]);
+    expect(photo?.title).toBe("Palletfoto toegevoegd");
+    expect(photo?.summary).toBeNull();
+
+    // Same words, different spacing and case — still one line.
+    const [started] = logisticsEventsToTimelineItems([
+      event({ id: "p2", kind: "PICK_STARTED", summary: "  picken   GESTART " }),
+    ]);
+    expect(started?.summary).toBeNull();
+  });
+
+  it("keeps a summary that actually adds something", () => {
+    const [scanned] = logisticsEventsToTimelineItems([event({ summary: "Pallet 1/5 gescand" })]);
+    expect(scanned?.title).toBe("Pallet gescand");
+    expect(scanned?.summary).toBe("Pallet 1/5 gescand");
   });
 
   it("falls back to a neutral title for an event kind this CRM has not seen yet", () => {
