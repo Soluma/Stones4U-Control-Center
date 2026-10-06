@@ -170,7 +170,7 @@ export function OrdersTable({
   );
 }
 
-function HandoffCell({ item, unavailable }: { item: OrderLogisticsSummary | undefined; unavailable: boolean }) {
+export function HandoffCell({ item, unavailable }: { item: OrderLogisticsSummary | undefined; unavailable: boolean }) {
   if (!item) return <Unknown unavailable={unavailable} />;
   const schedule = scheduleDisplay(item.scheduleState, item.requestedDate);
   return (
@@ -186,7 +186,7 @@ function HandoffCell({ item, unavailable }: { item: OrderLogisticsSummary | unde
 
 /** Completed orders stay short: a finished order needs a status and a
  * completion date, not a progress read-out. */
-function WarehouseCell({ item, unavailable }: { item: OrderLogisticsSummary | undefined; unavailable: boolean }) {
+export function WarehouseCell({ item, unavailable }: { item: OrderLogisticsSummary | undefined; unavailable: boolean }) {
   if (!item) return <Unknown unavailable={unavailable} />;
 
   const status = statusLabel(item.operationalStatus);

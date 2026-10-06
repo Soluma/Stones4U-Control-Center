@@ -100,3 +100,109 @@ export async function getShopifyCustomerOrders(customerGid: string, first = 20):
     lastOrderAt: orders[0]?.createdAt ?? null,
   };
 }
+
+// ── Global order list (Sales → Orders) ────────────────────────────────────
+
+const ORDERS_PAGE_QUERY = /* GraphQL */ `
+  query OrdersPage($first: Int, $last: Int, $after: String, $before: String, $query: String) {
+    orders(first: $first, last: $last, after: $after, before: $before, query: $query, sortKey: CREATED_AT, reverse: true) {
+      pageInfo {
+        hasNextPage
+        hasPreviousPage
+        startCursor
+        endCursor
+      }
+      edges {
+        node {
+          id
+          legacyResourceId
+          name
+          createdAt
+          cancelledAt
+          displayFinancialStatus
+          displayFulfillmentStatus
+          currentTotalPriceSet {
+            shopMoney {
+              amount
+              currencyCode
+            }
+          }
+          customer {
+            id
+            displayName
+          }
+        }
+      }
+    }
+  }
+`;
+
+export const ORDERS_PAGE_SIZE = 50;
+
+export type ShopifyOrderListItem = {
+  gid: string;
+  legacyResourceId: string;
+  name: string;
+  createdAt: string;
+  cancelledAt: string | null;
+  displayFinancialStatus: string | null;
+  displayFulfillmentStatus: string | null;
+  currentTotalPriceSet: { amount: string; currencyCode: string };
+  customer: { gid: string; displayName: string } | null;
+  adminUrl: string;
+};
+
+export type ShopifyOrderPage = {
+  orders: ShopifyOrderListItem[];
+  pageInfo: { hasNextPage: boolean; hasPreviousPage: boolean; startCursor: string | null; endCursor: string | null };
+};
+
+type RawOrderListNode = {
+  id: string;
+  legacyResourceId: string;
+  name: string;
+  createdAt: string;
+  cancelledAt: string | null;
+  displayFinancialStatus: string | null;
+  displayFulfillmentStatus: string | null;
+  currentTotalPriceSet: { shopMoney: { amount: string; currencyCode: string } };
+  customer: { id: string; displayName: string } | null;
+};
+
+type RawOrdersPageResponse = {
+  orders: { pageInfo: ShopifyOrderPage["pageInfo"]; edges: { node: RawOrderListNode }[] };
+};
+
+/** Read-only. One page of the shop's orders, newest first — one GraphQL
+ * request per page, filtered by Shopify itself (`query`), never a bulk fetch
+ * filtered in the browser. `before` pages back towards newer orders. */
+export async function listShopifyOrders(options: {
+  query?: string;
+  after?: string;
+  before?: string;
+  pageSize?: number;
+} = {}): Promise<ShopifyOrderPage> {
+  const config = getShopifyConfig();
+  const pageSize = options.pageSize ?? ORDERS_PAGE_SIZE;
+  const paging = options.before ? { last: pageSize, before: options.before } : { first: pageSize, after: options.after ?? null };
+  const data = await shopifyGraphQL<RawOrdersPageResponse>(ORDERS_PAGE_QUERY, {
+    ...paging,
+    query: options.query?.trim() || null,
+  });
+
+  return {
+    pageInfo: data.orders.pageInfo,
+    orders: data.orders.edges.map(({ node }) => ({
+      gid: node.id,
+      legacyResourceId: node.legacyResourceId,
+      name: node.name,
+      createdAt: node.createdAt,
+      cancelledAt: node.cancelledAt,
+      displayFinancialStatus: node.displayFinancialStatus,
+      displayFulfillmentStatus: node.displayFulfillmentStatus,
+      currentTotalPriceSet: node.currentTotalPriceSet.shopMoney,
+      customer: node.customer ? { gid: node.customer.id, displayName: node.customer.displayName } : null,
+      adminUrl: buildShopifyAdminUrl(config.domain, "orders", node.legacyResourceId),
+    })),
+  };
+}

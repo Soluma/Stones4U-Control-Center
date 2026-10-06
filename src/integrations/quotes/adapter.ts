@@ -56,12 +56,48 @@ export type QuotesAdapterStatus = { available: true } | { available: false; reas
 
 export type QuoteMatchRefs = { customerProfileId?: string; shopifyCustomerGid?: string; email?: string; phone?: string };
 
+/** Both sibling endpoints cap a lookup at this many quotes per source
+ * (OfferteApp MAX_RESULTS, s4u-quote-app MAX_RESULTS) and offer no paging. */
+export const QUOTE_RESULTS_PER_SOURCE = 25;
+
+/**
+ * The global /quotes overview. Today both sibling endpoints require a filter
+ * (shopifyCustomerId/email/phone/number) and refuse an unfiltered request, so
+ * the only mode is a search. A "recent" mode can be added here once the
+ * siblings expose an explicit global list — the page and result shape stay.
+ */
+export type QuoteListQuery = { mode: "search"; term: string };
+
+export type QuoteSourceState = "ok" | "unavailable" | "not_configured";
+
+export type QuoteListResult = {
+  /** Combined and deduped on shopifyDraftOrderGid, newest first. */
+  quotes: QuoteSummary[];
+  sources: Record<QuoteSummary["sourceSystem"], QuoteSourceState>;
+  /** A source returned the maximum, so there may be more matches. */
+  limitReached: Record<QuoteSummary["sourceSystem"], boolean>;
+};
+
+/** Which existing endpoint parameters a free-text term maps to. An e-mail
+ * address is matched exactly; anything else is a quote-number search, and
+ * also an exact phone lookup when it looks like a phone number. The sibling
+ * endpoints OR their filters, so one request per source covers both. */
+export function quoteSearchParams(term: string): { email?: string; phone?: string; number?: string } | null {
+  const trimmed = term.trim();
+  if (trimmed.length < 2) return null;
+  if (trimmed.includes("@")) return { email: trimmed.toLowerCase() };
+  const phoneLike = /^\+?[\d\s\-()]{6,}$/.test(trimmed);
+  return phoneLike ? { number: trimmed, phone: trimmed } : { number: trimmed };
+}
+
 export interface QuotesAdapter {
   status(): QuotesAdapterStatus;
   getActivityForCustomer(matchers: { email?: string; phone?: string }): Promise<QuoteActivityItem[]>;
   /** Full quote records for Customer 360's Commercieel tab — richer than
    * getActivityForCustomer's Timeline-projection shape. */
   getQuotesForCustomer(matchRefs: QuoteMatchRefs): Promise<QuoteSummary[]>;
+  /** The global /quotes overview — both sources at once, one request each. */
+  listQuotes(query: QuoteListQuery): Promise<QuoteListResult>;
 }
 
 export class DisabledQuotesAdapter implements QuotesAdapter {
@@ -77,6 +113,14 @@ export class DisabledQuotesAdapter implements QuotesAdapter {
 
   async getQuotesForCustomer(): Promise<QuoteSummary[]> {
     return [];
+  }
+
+  async listQuotes(): Promise<QuoteListResult> {
+    return {
+      quotes: [],
+      sources: { OFFERTEAPP: "not_configured", S4U_QUOTE_APP: "not_configured" },
+      limitReached: { OFFERTEAPP: false, S4U_QUOTE_APP: false },
+    };
   }
 }
 
@@ -112,17 +156,23 @@ async function fetchJson<T>(url: URL, serviceToken: string): Promise<T | null> {
   }
 }
 
-async function fetchQuotes(
-  config: SiblingConfig,
-  params: { shopifyCustomerId?: string; email?: string; phone?: string },
-): Promise<QuoteSummary[]> {
+type QuoteLookupParams = { shopifyCustomerId?: string; email?: string; phone?: string; number?: string };
+
+/** null = the source did not answer (timeout, HTTP error); [] = it answered
+ * and found nothing. The overview tells those two apart. */
+async function fetchQuoteList(config: SiblingConfig, params: QuoteLookupParams): Promise<QuoteSummary[] | null> {
   const url = new URL("/api/integrations/control-center/quotes", config.baseUrl);
   if (params.shopifyCustomerId) url.searchParams.set("shopifyCustomerId", params.shopifyCustomerId);
   if (params.email) url.searchParams.set("email", params.email);
   if (params.phone) url.searchParams.set("phone", params.phone);
+  if (params.number) url.searchParams.set("number", params.number);
 
   const body = await fetchJson<{ quotes: QuoteSummary[] }>(url, config.serviceToken);
-  return body?.quotes ?? [];
+  return body ? (body.quotes ?? []) : null;
+}
+
+async function fetchQuotes(config: SiblingConfig, params: QuoteLookupParams): Promise<QuoteSummary[]> {
+  return (await fetchQuoteList(config, params)) ?? [];
 }
 
 /** Two quotes represent the same commercial event when they reference the
@@ -130,7 +180,7 @@ async function fetchQuotes(
  * these two uncoupled sources share (docs/platform-discovery/27 §4). Prefers
  * the OfferteApp record as canonical on a collision (the older, more
  * established internal system) — an arbitrary but documented tie-break. */
-function dedupeByDraftOrder(quotes: QuoteSummary[]): QuoteSummary[] {
+export function dedupeByDraftOrder(quotes: QuoteSummary[]): QuoteSummary[] {
   const byDraftOrder = new Map<string, QuoteSummary>();
   const withoutDraftOrder: QuoteSummary[] = [];
 
@@ -192,6 +242,30 @@ export class FederatedQuotesAdapter implements QuotesAdapter {
 
     // Tier 5 — unresolved.
     return [];
+  }
+
+  async listQuotes(query: QuoteListQuery): Promise<QuoteListResult> {
+    const params = quoteSearchParams(query.term);
+    const sources: QuoteListResult["sources"] = {
+      OFFERTEAPP: this.offerteApp ? "ok" : "not_configured",
+      S4U_QUOTE_APP: this.s4uQuoteApp ? "ok" : "not_configured",
+    };
+    const limitReached = { OFFERTEAPP: false, S4U_QUOTE_APP: false };
+    if (!params) return { quotes: [], sources, limitReached };
+
+    const [offerte, s4u] = await Promise.all([
+      this.offerteApp ? fetchQuoteList(this.offerteApp, params) : Promise.resolve([]),
+      this.s4uQuoteApp ? fetchQuoteList(this.s4uQuoteApp, params) : Promise.resolve([]),
+    ]);
+    if (offerte === null) sources.OFFERTEAPP = "unavailable";
+    if (s4u === null) sources.S4U_QUOTE_APP = "unavailable";
+    limitReached.OFFERTEAPP = (offerte?.length ?? 0) >= QUOTE_RESULTS_PER_SOURCE;
+    limitReached.S4U_QUOTE_APP = (s4u?.length ?? 0) >= QUOTE_RESULTS_PER_SOURCE;
+
+    const quotes = dedupeByDraftOrder([...(offerte ?? []), ...(s4u ?? [])]).sort((a, b) =>
+      (b.createdAt ?? "").localeCompare(a.createdAt ?? ""),
+    );
+    return { quotes, sources, limitReached };
   }
 
   async getActivityForCustomer(matchers: { email?: string; phone?: string }): Promise<QuoteActivityItem[]> {

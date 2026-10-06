@@ -45,16 +45,17 @@ export const NAV_SECTIONS: NavSection[] = [
     items: [
       // Phase 4a — docs/architecture/ADR-009-OPPORTUNITY-PIPELINE-MODEL.md.
       // A new capability, not a rename of the offerte-/orderoverzichten
-      // below (those stay federated-document placeholders, untouched by
-      // Phase 4a — docs/platform-discovery/32 §7/§20).
+      // below (docs/platform-discovery/32 §7/§20).
       { label: "Verkoopkansen", href: "/opportunities", icon: TrendingUp },
       // Phase 5A — docs/QUOTE-DELIVERY-DATE-MANUAL-ACTIVATION.md. Distinct
       // from "Leveringen" below (Operations, still comingSoon — a future,
       // broader transport/logistics module) — this is narrowly the
       // customer-wish delivery-date link, not transport planning.
       { label: "Leverdatum-links", href: "/delivery-handoffs", icon: CalendarClock },
-      { label: "Offertes", icon: FileText, comingSoon: true },
-      { label: "Orders", icon: ShoppingCart, comingSoon: true },
+      // Read-only federated overviews: quotes from OfferteApp + the webshop
+      // quote app, orders from Shopify with OfferteApp logistics.
+      { label: "Offertes", href: "/quotes", icon: FileText },
+      { label: "Orders", href: "/orders", icon: ShoppingCart },
     ],
   },
   {

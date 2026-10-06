@@ -98,3 +98,29 @@ export async function getShopifyCustomerDraftOrders(customerGid: string, first =
 
   return { draftOrders };
 }
+
+const DRAFT_ORDER_NAMES_QUERY = /* GraphQL */ `
+  query DraftOrderNames($ids: [ID!]!) {
+    nodes(ids: $ids) {
+      ... on DraftOrder {
+        id
+        name
+      }
+    }
+  }
+`;
+
+/** Read-only. Names ("#D570") for a set of draft-order GIDs in one request —
+ * for the quote overview's "Conceptorder" column. Fails soft: an empty map
+ * means the column falls back to "aanwezig", never an error page. */
+export async function getDraftOrderNames(gids: string[]): Promise<Map<string, string>> {
+  const ids = [...new Set(gids.filter((gid) => gid.startsWith("gid://shopify/DraftOrder/")))].slice(0, 100);
+  if (ids.length === 0) return new Map();
+  try {
+    const data = await shopifyGraphQL<{ nodes: ({ id: string; name: string } | null)[] }>(DRAFT_ORDER_NAMES_QUERY, { ids });
+    return new Map(data.nodes.filter((n): n is { id: string; name: string } => !!n?.id && !!n.name).map((n) => [n.id, n.name]));
+  } catch (error) {
+    console.error("shopify_draft_order_names_failed", error instanceof Error ? error.message : error);
+    return new Map();
+  }
+}
