@@ -8,6 +8,7 @@ import { STAGE_LABEL } from "./labels";
 import { deriveNextAction, deriveOpportunityAttention, type NextActionInfo, type OpportunityAttention } from "./attention";
 import { Prisma } from "@/generated/prisma";
 import type { Role, OpportunityStage, OpportunityLinkType } from "@/generated/prisma";
+import { OPEN_TASK_STATUSES } from "@/modules/tasks/task-status";
 
 // Central Opportunity service layer (docs/architecture/ADR-009-OPPORTUNITY-
 // PIPELINE-MODEL.md, docs/platform-discovery/33-PHASE-4A-BUILD-SPEC.md).
@@ -236,7 +237,7 @@ export async function getOpportunityAttentionContext(opportunityId: string): Pro
 }> {
   const [nextOpenTask, lastActivity] = await Promise.all([
     prisma.task.findFirst({
-      where: { opportunityId, status: { in: ["OPEN", "IN_PROGRESS", "WAITING"] } },
+      where: { opportunityId, status: { in: OPEN_TASK_STATUSES } },
       orderBy: { dueAt: "asc" },
       select: { id: true, title: true, dueAt: true },
     }),
@@ -338,7 +339,7 @@ export async function listOpportunities(filter: OpportunityListFilter = {}) {
     include: {
       ...opportunityListInclude,
       tasks: {
-        where: { status: { in: ["OPEN", "IN_PROGRESS", "WAITING"] } },
+        where: { status: { in: OPEN_TASK_STATUSES } },
         orderBy: { dueAt: "asc" },
         take: 1,
         select: { id: true, title: true, dueAt: true },

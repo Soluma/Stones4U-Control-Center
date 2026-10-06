@@ -5,8 +5,8 @@ import Link from "next/link";
 import { Plus, CheckSquare, Search } from "lucide-react";
 import { Badge, StatusDot } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
-import { Dialog } from "@/components/ui/Dialog";
-import { Input, Select } from "@/components/ui/Input";
+import { CreateTaskDialog } from "../customers/[id]/CreateTaskDialog";
+import { notifyTasksChanged } from "@/lib/task-events";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { SkeletonList } from "@/components/ui/Skeleton";
 import { Tabs } from "@/components/ui/Tabs";
@@ -16,6 +16,7 @@ import { customerDisplayName } from "@/modules/crm/customer-identity";
 type Task = {
   id: string;
   title: string;
+  description: string | null;
   status: "OPEN" | "IN_PROGRESS" | "WAITING" | "DONE" | "CANCELLED";
   priority: "LOW" | "NORMAL" | "HIGH" | "URGENT";
   dueAt: string | null;
@@ -23,8 +24,6 @@ type Task = {
   createdBy: { id: string; name: string };
   customerProfile: { id: string; displayName: string | null; companyName: string | null; customerTypeOverride: "INDIVIDUAL" | "ORGANIZATION" | null } | null;
 };
-
-type AssignableUser = { id: string; name: string };
 
 const STATUS_TONE: Record<Task["status"], "neutral" | "accent" | "success" | "danger" | "warning"> = {
   OPEN: "neutral",
@@ -56,6 +55,13 @@ const PRIORITY_LABEL: Record<Task["priority"], string> = {
   URGENT: "Urgent",
 };
 
+/** Client-side search over the loaded list: title OR description. */
+export function matchesTaskQuery(task: { title: string; description?: string | null }, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  return task.title.toLowerCase().includes(q) || (task.description ?? "").toLowerCase().includes(q);
+}
+
 const TAB_ITEMS = [
   { key: "mine", label: "Mijn taken" },
   { key: "assigned", label: "Toegewezen" },
@@ -66,13 +72,7 @@ const TAB_ITEMS = [
 export function TasksList({ initialTab, isAdmin, canCreate }: { initialTab: string; isAdmin: boolean; canCreate: boolean }) {
   const [tab, setTab] = useState(initialTab);
   const [tasks, setTasks] = useState<Task[] | null>(null);
-  const [users, setUsers] = useState<AssignableUser[]>([]);
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [title, setTitle] = useState("");
-  const [priority, setPriority] = useState<Task["priority"]>("NORMAL");
-  const [assignedToId, setAssignedToId] = useState("");
-  const [dueAt, setDueAt] = useState("");
-  const [submitting, setSubmitting] = useState(false);
   const [query, setQuery] = useState("");
   const [sortBy, setSortBy] = useState<"dueAt" | "priority" | "createdAt">("dueAt");
 
@@ -89,42 +89,19 @@ export function TasksList({ initialTab, isAdmin, canCreate }: { initialTab: stri
     void refresh();
   }, [refresh]);
 
-  useEffect(() => {
-    if (canCreate) {
-      fetch("/api/users/assignable")
-        .then((r) => r.json())
-        .then((data) => setUsers(data.users ?? []));
-    }
-  }, [canCreate]);
-
   async function handleComplete(taskId: string) {
     await fetch(`/api/tasks/${taskId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ status: "DONE" }),
     });
-    await refresh();
-  }
-
-  async function handleCreate() {
-    if (title.trim().length === 0 || !assignedToId) return;
-    setSubmitting(true);
-    await fetch("/api/tasks", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title, priority, assignedToId, dueAt: dueAt ? new Date(dueAt).toISOString() : undefined }),
-    });
-    setTitle("");
-    setPriority("NORMAL");
-    setDueAt("");
-    setDialogOpen(false);
-    setSubmitting(false);
+    notifyTasksChanged();
     await refresh();
   }
 
   const priorityRank: Record<Task["priority"], number> = { URGENT: 0, HIGH: 1, NORMAL: 2, LOW: 3 };
   const filteredTasks = (tasks ?? [])
-    .filter((task) => task.title.toLowerCase().includes(query.trim().toLowerCase()))
+    .filter((task) => matchesTaskQuery(task, query))
     .slice()
     .sort((a, b) => {
       if (sortBy === "priority") return priorityRank[a.priority] - priorityRank[b.priority];
@@ -151,7 +128,7 @@ export function TasksList({ initialTab, isAdmin, canCreate }: { initialTab: stri
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Zoek op titel…"
+            placeholder="Zoek in titel of omschrijving…"
             className="cc-input py-1.5 pl-8 text-sm"
           />
         </div>
@@ -210,42 +187,9 @@ export function TasksList({ initialTab, isAdmin, canCreate }: { initialTab: stri
       </div>
       )}
 
-      <Dialog
-        open={dialogOpen}
-        onClose={() => setDialogOpen(false)}
-        title="Nieuwe taak"
-        footer={
-          <>
-            <Button variant="secondary" onClick={() => setDialogOpen(false)}>
-              Annuleren
-            </Button>
-            <Button variant="primary" loading={submitting} disabled={title.trim().length === 0 || !assignedToId} onClick={handleCreate}>
-              Taak aanmaken
-            </Button>
-          </>
-        }
-      >
-        <div className="space-y-3">
-          <Input label="Titel" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Taakomschrijving" autoFocus />
-          <div className="grid grid-cols-2 gap-3">
-            <Select label="Toewijzen aan" value={assignedToId} onChange={(e) => setAssignedToId(e.target.value)}>
-              <option value="">Kies medewerker…</option>
-              {users.map((u) => (
-                <option key={u.id} value={u.id}>
-                  {u.name}
-                </option>
-              ))}
-            </Select>
-            <Select label="Prioriteit" value={priority} onChange={(e) => setPriority(e.target.value as Task["priority"])}>
-              <option value="LOW">Laag</option>
-              <option value="NORMAL">Normaal</option>
-              <option value="HIGH">Hoog</option>
-              <option value="URGENT">Urgent</option>
-            </Select>
-          </div>
-          <Input label="Deadline (optioneel)" type="date" value={dueAt} onChange={(e) => setDueAt(e.target.value)} />
-        </div>
-      </Dialog>
+      {canCreate && (
+        <CreateTaskDialog open={dialogOpen} onClose={() => setDialogOpen(false)} onCreated={refresh} basePath="/api" />
+      )}
     </div>
   );
 }

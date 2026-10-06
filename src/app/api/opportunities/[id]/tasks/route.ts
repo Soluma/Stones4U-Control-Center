@@ -3,6 +3,7 @@ import { z } from "zod";
 import { requireUser, requireWriteAccess } from "@/platform/auth/guards";
 import { createTask, listTasksForOpportunity } from "@/modules/tasks/task.service";
 import { toErrorResponse } from "@/lib/api-error";
+import { taskDescriptionSchema } from "@/modules/tasks/task-input";
 
 export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -17,7 +18,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
 
 const createTaskSchema = z.object({
   title: z.string().min(1).max(200),
-  description: z.string().max(5000).optional(),
+  description: taskDescriptionSchema.optional(),
   priority: z.enum(["LOW", "NORMAL", "HIGH", "URGENT"]).optional(),
   assignedToId: z.string().min(1),
   dueAt: z.string().datetime().optional(),

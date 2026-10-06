@@ -8,12 +8,23 @@ import type { NormalizedEmailMessage } from "@/integrations/email/types";
 // block alongside "Recente gesprekken"). Never renders bodyPreview as HTML —
 // it is always plain-text-interpolated React content, never
 // dangerouslySetInnerHTML, so a message body can never inject markup.
-export function RecentEmailsBlock({ messages }: { messages: NormalizedEmailMessage[] }) {
-  const recent = messages.slice(0, 5);
+export const RECENT_EMAILS_LIMIT = 5;
 
+export function RecentEmailsBlock({ messages }: { messages: NormalizedEmailMessage[] }) {
   return (
     <div className="space-y-3">
       <h2 className="text-sm font-medium text-ink-secondary">Recente e-mails</h2>
+      <RecentEmailsList messages={messages} />
+    </div>
+  );
+}
+
+/** The list only — Customer 360 shows it inside a CollapsibleSection. */
+export function RecentEmailsList({ messages }: { messages: NormalizedEmailMessage[] }) {
+  const recent = messages.slice(0, RECENT_EMAILS_LIMIT);
+
+  return (
+    <>
       {recent.length === 0 ? (
         <p className="cc-card p-4 text-sm text-ink-tertiary">Geen recente e-mails.</p>
       ) : (
@@ -67,6 +78,6 @@ export function RecentEmailsBlock({ messages }: { messages: NormalizedEmailMessa
           })}
         </div>
       )}
-    </div>
+    </>
   );
 }

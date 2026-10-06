@@ -3,6 +3,7 @@ import { z } from "zod";
 import { requireUser, requireWriteAccess } from "@/platform/auth/guards";
 import { assignTask, updateTaskStatus, getTaskDetail, updateTaskDetails } from "@/modules/tasks/task.service";
 import { toErrorResponse } from "@/lib/api-error";
+import { taskDescriptionSchema } from "@/modules/tasks/task-input";
 
 export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -20,7 +21,7 @@ const patchSchema = z.union([
   z.object({ assignedToId: z.string().min(1) }),
   z.object({
     title: z.string().min(1).max(200).optional(),
-    description: z.string().max(5000).nullable().optional(),
+    description: taskDescriptionSchema.nullable().optional(),
     priority: z.enum(["LOW", "NORMAL", "HIGH", "URGENT"]).optional(),
     dueAt: z.string().datetime().nullable().optional(),
     reminderAt: z.string().datetime().nullable().optional(),

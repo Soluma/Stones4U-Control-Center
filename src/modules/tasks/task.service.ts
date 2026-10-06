@@ -5,6 +5,7 @@ import { ForbiddenError } from "@/platform/auth/guards";
 import { resolveCustomerProfileIdForOpportunity } from "@/modules/opportunities/opportunity.service";
 import { assertContactBelongsToCustomer, CustomerContactValidationError } from "@/modules/crm/customer-contact.service";
 import type { TaskPriority, TaskStatus, Role } from "@/generated/prisma";
+import { OPEN_TASK_STATUSES } from "./task-status";
 
 type Actor = { id: string; role: Role };
 
@@ -171,7 +172,7 @@ export async function assignTask(taskId: string, newAssigneeId: string, actor: A
 export type TaskListFilter = "mine" | "assigned" | "created" | "overdue" | "all";
 
 export async function listTasks(actor: Actor, filter: TaskListFilter) {
-  const openStatuses: TaskStatus[] = ["OPEN", "IN_PROGRESS", "WAITING"];
+  const openStatuses = OPEN_TASK_STATUSES;
 
   if (filter === "all") {
     if (actor.role !== "ADMIN") throw new ForbiddenError("Alleen beheerders kunnen alle taken bekijken.");
@@ -235,15 +236,22 @@ export async function listTasksForOpportunity(opportunityId: string) {
   });
 }
 
+/** Open tasks (OPEN_TASK_STATUSES) assigned to this user — the number on the
+ * Taken badge in the sidebar and the "Aan mij toegewezen" tile. Always the
+ * user's own work, also for ADMIN; tasks they only created do not count. */
+export async function countOpenTasksAssignedTo(userId: string): Promise<number> {
+  return prisma.task.count({ where: { assignedToId: userId, status: { in: OPEN_TASK_STATUSES } } });
+}
+
 export async function getTaskSummary(actor: Actor) {
-  const openStatuses: TaskStatus[] = ["OPEN", "IN_PROGRESS", "WAITING"];
+  const openStatuses = OPEN_TASK_STATUSES;
   const startOfToday = new Date();
   startOfToday.setHours(0, 0, 0, 0);
   const endOfToday = new Date(startOfToday);
   endOfToday.setDate(endOfToday.getDate() + 1);
 
   const [assignedToMe, createdByMe, overdue, dueToday] = await Promise.all([
-    prisma.task.count({ where: { assignedToId: actor.id, status: { in: openStatuses } } }),
+    countOpenTasksAssignedTo(actor.id),
     prisma.task.count({ where: { createdById: actor.id, status: { in: openStatuses } } }),
     prisma.task.count({ where: { assignedToId: actor.id, status: { in: openStatuses }, dueAt: { lt: new Date() } } }),
     prisma.task.count({
@@ -276,9 +284,13 @@ export async function getTaskDetail(taskId: string) {
 
 export async function searchTasks(actor: Actor, query: string, limit = 20) {
   return prisma.task.findMany({
+    // Title OR description; the scoping (assignee/creator unless ADMIN) is a
+    // separate AND condition so the two ORs can never collapse into one.
     where: {
-      title: { contains: query, mode: "insensitive" },
-      ...(actor.role === "ADMIN" ? {} : { OR: [{ assignedToId: actor.id }, { createdById: actor.id }] }),
+      AND: [
+        { OR: [{ title: { contains: query, mode: "insensitive" } }, { description: { contains: query, mode: "insensitive" } }] },
+        ...(actor.role === "ADMIN" ? [] : [{ OR: [{ assignedToId: actor.id }, { createdById: actor.id }] }]),
+      ],
     },
     orderBy: { updatedAt: "desc" },
     take: limit,

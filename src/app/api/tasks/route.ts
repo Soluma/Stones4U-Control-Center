@@ -3,6 +3,7 @@ import { z } from "zod";
 import { requireUser, requireWriteAccess } from "@/platform/auth/guards";
 import { createTask, listTasks, type TaskListFilter } from "@/modules/tasks/task.service";
 import { toErrorResponse } from "@/lib/api-error";
+import { taskDescriptionSchema } from "@/modules/tasks/task-input";
 
 const FILTERS: TaskListFilter[] = ["mine", "assigned", "created", "overdue", "all"];
 
@@ -21,7 +22,7 @@ export async function GET(request: NextRequest) {
 
 const createTaskSchema = z.object({
   title: z.string().min(1).max(200),
-  description: z.string().max(5000).optional(),
+  description: taskDescriptionSchema.optional(),
   priority: z.enum(["LOW", "NORMAL", "HIGH", "URGENT"]).optional(),
   assignedToId: z.string().min(1),
   customerProfileId: z.string().optional(),

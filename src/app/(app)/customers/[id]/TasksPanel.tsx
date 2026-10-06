@@ -9,6 +9,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { SkeletonList } from "@/components/ui/Skeleton";
 import { formatDate } from "@/lib/format";
 import { CreateTaskDialog } from "./CreateTaskDialog";
+import { notifyTasksChanged } from "@/lib/task-events";
 
 type Task = {
   id: string;
@@ -82,6 +83,7 @@ export function TasksPanel({
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ status }),
     });
+    notifyTasksChanged();
     await refresh();
   }
 

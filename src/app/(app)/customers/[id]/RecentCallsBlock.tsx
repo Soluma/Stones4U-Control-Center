@@ -7,12 +7,23 @@ import type { TelephonyActivityItem } from "@/integrations/telephony/adapter";
 // §4.1 — no new tab, a small block alongside the existing openstaande-
 // taken/komende-afspraken pattern). Shows the same items the Activity
 // Timeline projects, just the latest few, in one place a user sees first.
-export function RecentCallsBlock({ calls }: { calls: TelephonyActivityItem[] }) {
-  const recent = calls.slice(0, 5);
+export const RECENT_CALLS_LIMIT = 5;
 
+export function RecentCallsBlock({ calls }: { calls: TelephonyActivityItem[] }) {
   return (
     <div className="space-y-3">
       <h2 className="text-sm font-medium text-ink-secondary">Recente gesprekken</h2>
+      <RecentCallsList calls={calls} />
+    </div>
+  );
+}
+
+/** The list only — Customer 360 shows it inside a CollapsibleSection. */
+export function RecentCallsList({ calls }: { calls: TelephonyActivityItem[] }) {
+  const recent = calls.slice(0, RECENT_CALLS_LIMIT);
+
+  return (
+    <>
       {recent.length === 0 ? (
         <p className="cc-card p-4 text-sm text-ink-tertiary">Geen recente gesprekken.</p>
       ) : (
@@ -44,6 +55,6 @@ export function RecentCallsBlock({ calls }: { calls: TelephonyActivityItem[] }) 
           })}
         </div>
       )}
-    </div>
+    </>
   );
 }

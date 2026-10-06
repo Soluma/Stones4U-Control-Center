@@ -27,8 +27,10 @@ import { DraftOrdersTable } from "./DraftOrdersTable";
 import { QuotesTable } from "./QuotesTable";
 import { DeliveryDateHandoffsPanel } from "./DeliveryDateHandoffsPanel";
 import { listDeliveryDateHandoffsForCustomer } from "@/modules/delivery/delivery-handoff.service";
-import { RecentCallsBlock } from "./RecentCallsBlock";
-import { RecentEmailsBlock } from "./RecentEmailsBlock";
+import { RecentCallsList, RECENT_CALLS_LIMIT } from "./RecentCallsBlock";
+import { RecentEmailsList, RECENT_EMAILS_LIMIT } from "./RecentEmailsBlock";
+import { CollapsibleSection } from "@/components/ui/CollapsibleSection";
+import { OPEN_TASK_STATUSES } from "@/modules/tasks/task-status";
 import { OpenOpportunitiesBlock } from "./OpenOpportunitiesBlock";
 import { OpportunitiesSection } from "./OpportunitiesSection";
 import { ContactsSection } from "./ContactsSection";
@@ -44,6 +46,9 @@ type PageProps = {
   params: Promise<{ id: string }>;
   searchParams: Promise<{ tab?: string }>;
 };
+
+/** Recent items on the overview; the Activiteit-tab shows everything. */
+const RECENT_ACTIVITY_LIMIT = 6;
 
 export default async function CustomerDetailPage({ params, searchParams }: PageProps) {
   const { id } = await params;
@@ -350,7 +355,7 @@ async function OverviewTab({
     listFilesForCustomer(id),
   ]);
 
-  const openTasks = tasks.filter((t) => t.status === "OPEN" || t.status === "IN_PROGRESS" || t.status === "WAITING").slice(0, 5);
+  const openTasks = tasks.filter((t) => OPEN_TASK_STATUSES.includes(t.status)).slice(0, 5);
   const upcomingAppointments = appointments.filter((a) => a.status === "SCHEDULED" && new Date(a.startsAt) >= new Date()).slice(0, 5);
   const recentFiles = files.slice(0, 5);
 
@@ -367,12 +372,17 @@ async function OverviewTab({
           unavailable={logistics.unavailable && logistics.byOrderId.size === 0}
         />
       )}
-      <div className="space-y-3">
-        <h2 className="text-sm font-medium text-ink-secondary">Recente activiteit</h2>
-        <ActivityTimelineView items={timeline.slice(0, 6)} customerId={id} canEdit={canEdit} />
-      </div>
-      <RecentCallsBlock calls={recentCalls} />
-      <RecentEmailsBlock messages={emailMessages} />
+      {/* Recente activiteit, gesprekken en e-mails: standaard ingeklapt — de
+          volledige historie staat op de Activiteit-tab (ongewijzigd). */}
+      <CollapsibleSection title="Recente activiteit" count={Math.min(timeline.length, RECENT_ACTIVITY_LIMIT)} testId="c360-recent-activity">
+        <ActivityTimelineView items={timeline.slice(0, RECENT_ACTIVITY_LIMIT)} customerId={id} canEdit={canEdit} />
+      </CollapsibleSection>
+      <CollapsibleSection title="Recente gesprekken" count={Math.min(recentCalls.length, RECENT_CALLS_LIMIT)} testId="c360-recent-calls">
+        <RecentCallsList calls={recentCalls} />
+      </CollapsibleSection>
+      <CollapsibleSection title="Recente e-mails" count={Math.min(emailMessages.length, RECENT_EMAILS_LIMIT)} testId="c360-recent-emails">
+        <RecentEmailsList messages={emailMessages} />
+      </CollapsibleSection>
       <OpenOpportunitiesBlock
         opportunities={openOpportunities.map((o) => ({
           id: o.id,

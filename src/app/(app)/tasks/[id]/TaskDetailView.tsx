@@ -11,6 +11,8 @@ import { Input, Select, Textarea } from "@/components/ui/Input";
 import { Avatar } from "@/components/ui/Avatar";
 import { formatDate, formatDateTime } from "@/lib/format";
 import { customerDisplayName } from "@/modules/crm/customer-identity";
+import { notifyTasksChanged } from "@/lib/task-events";
+import { TASK_DESCRIPTION_MAX } from "@/modules/tasks/task-input";
 
 type TaskStatus = "OPEN" | "IN_PROGRESS" | "WAITING" | "DONE" | "CANCELLED";
 type TaskPriority = "LOW" | "NORMAL" | "HIGH" | "URGENT";
@@ -81,6 +83,7 @@ export function TaskDetailView({ initialTask, canEdit }: { initialTask: TaskDeta
     });
     setEditing(false);
     setBusy(false);
+    notifyTasksChanged();
     await refresh();
     router.refresh();
   }
@@ -89,6 +92,7 @@ export function TaskDetailView({ initialTask, canEdit }: { initialTask: TaskDeta
     setBusy(true);
     await fetch(`/api/tasks/${task.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status }) });
     setBusy(false);
+    notifyTasksChanged();
     await refresh();
   }
 
@@ -134,7 +138,7 @@ export function TaskDetailView({ initialTask, canEdit }: { initialTask: TaskDeta
         {editing ? (
           <div className="space-y-3">
             <Input label="Titel" value={titleDraft} onChange={(e) => setTitleDraft(e.target.value)} />
-            <Textarea label="Omschrijving" value={descriptionDraft} onChange={(e) => setDescriptionDraft(e.target.value)} rows={3} />
+            <Textarea label="Omschrijving" value={descriptionDraft} onChange={(e) => setDescriptionDraft(e.target.value)} rows={8} maxLength={TASK_DESCRIPTION_MAX} className="resize-y" />
             <div className="grid grid-cols-2 gap-3">
               <Select label="Prioriteit" value={priorityDraft} onChange={(e) => setPriorityDraft(e.target.value as TaskPriority)}>
                 {(["LOW", "NORMAL", "HIGH", "URGENT"] as const).map((p) => (
@@ -159,7 +163,11 @@ export function TaskDetailView({ initialTask, canEdit }: { initialTask: TaskDeta
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <h1 className="text-lg font-semibold tracking-tight text-ink-primary">{task.title}</h1>
-                {task.description && <p className="mt-2 whitespace-pre-wrap text-sm text-ink-secondary">{task.description}</p>}
+                {task.description && (
+                  <p data-testid="task-description" className="mt-2 whitespace-pre-wrap break-words text-sm text-ink-secondary [overflow-wrap:anywhere]">
+                    {task.description}
+                  </p>
+                )}
               </div>
               {canEdit && (
                 <Button variant="secondary" size="sm" onClick={() => setEditing(true)}>

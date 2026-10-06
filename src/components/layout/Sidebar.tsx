@@ -1,18 +1,48 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Gem } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { NAV_SECTIONS } from "./nav-config";
+import { TASKS_CHANGED_EVENT } from "@/lib/task-events";
+import { taskBadgeLabel } from "@/modules/tasks/task-status";
 
 function isActiveHref(pathname: string, href: string): boolean {
   if (href === "/") return pathname === "/";
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
-export function Sidebar() {
+/** Open tasks assigned to me. Starts from the server-rendered count and is
+ * fetched again (once) whenever a task changes in this tab. */
+function useOpenTaskCount(initial: number): number {
+  const [count, setCount] = useState(initial);
+  useEffect(() => setCount(initial), [initial]);
+  useEffect(() => {
+    let cancelled = false;
+    async function reload() {
+      try {
+        const response = await fetch("/api/tasks/open-count", { cache: "no-store" });
+        if (!response.ok) return;
+        const data = (await response.json()) as { openAssignedToMe?: number };
+        if (!cancelled && typeof data.openAssignedToMe === "number") setCount(data.openAssignedToMe);
+      } catch {
+        // keep the last known count
+      }
+    }
+    window.addEventListener(TASKS_CHANGED_EVENT, reload);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(TASKS_CHANGED_EVENT, reload);
+    };
+  }, []);
+  return count;
+}
+
+export function Sidebar({ openTaskCount = 0 }: { openTaskCount?: number }) {
   const pathname = usePathname();
+  const taskBadge = taskBadgeLabel(useOpenTaskCount(openTaskCount));
 
   return (
     <aside className="hidden w-56 shrink-0 flex-col border-r border-border-subtle bg-surface md:flex">
@@ -50,7 +80,16 @@ export function Sidebar() {
                         )}
                       >
                         <Icon className={cn("h-4 w-4 shrink-0", active ? "text-accent-600" : "text-ink-tertiary")} aria-hidden />
-                        {item.label}
+                        <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                        {item.href === "/tasks" && taskBadge && (
+                          <span
+                            data-testid="tasks-badge"
+                            aria-label={`${taskBadge} open taken aan jou toegewezen`}
+                            className="ml-auto inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-accent-500 px-1.5 text-[11px] font-semibold tabular-nums leading-none text-white"
+                          >
+                            {taskBadge}
+                          </span>
+                        )}
                       </Link>
                     </li>
                   );

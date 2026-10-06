@@ -1,17 +1,20 @@
 import Link from "next/link";
-import { Search, Users, CalendarClock, TrendingUp, AlertCircle, Clock } from "lucide-react";
+import { Search, CalendarClock, TrendingUp, AlertCircle, Clock, Wallet } from "lucide-react";
 import { getSessionUser } from "@/platform/auth/session";
 import { TaskSummaryWidget } from "@/components/dashboard/TaskSummaryWidget";
 import { MyWorkTasksList } from "@/components/dashboard/MyWorkTasksList";
 import { MyWorkAppointmentsList } from "@/components/dashboard/MyWorkAppointmentsList";
 import { MyWorkOpportunitiesList } from "@/components/dashboard/MyWorkOpportunitiesList";
 import { listUpcomingAppointments } from "@/modules/appointments/appointment.service";
-import { getRecentActivity } from "@/modules/activity/timeline";
 import { getSalesDashboardMetrics } from "@/modules/opportunities/dashboard";
 import { getMyWorkTasks, getMyWorkAppointments, getMyWorkOpportunityAttention, type MyWorkTask, type MyWorkAppointment, type MyWorkOpportunity } from "@/modules/dashboard/my-work";
 import { formatDateTime, formatMoney } from "@/lib/format";
 import { customerDisplayName } from "@/modules/crm/customer-identity";
 
+// Hoofddashboard: eerst het eigen werk (Mijn Werk), dan compacte totalen en
+// de komende afspraken, verkoop onderaan. Historische klantactiviteit staat
+// bewust niet op het dashboard — die hoort in Customer 360 en de
+// Activiteit-tab — en wordt hier dus ook niet opgehaald.
 export default async function DashboardPage() {
   const user = await getSessionUser();
   if (!user) return null;
@@ -19,9 +22,8 @@ export default async function DashboardPage() {
 
   // "Mijn verkoopkansen"-standaard voor AGENT/USER, ADMIN ziet iedereen —
   // zelfde default als de pipeline-eigenaarfilter (architectuurdoc §14).
-  const [appointments, recentActivity, salesMetrics] = await Promise.all([
+  const [appointments, salesMetrics] = await Promise.all([
     listUpcomingAppointments(user, 5),
-    getRecentActivity(8),
     getSalesDashboardMetrics(user.role === "ADMIN" ? {} : { ownerUserId: user.id }),
   ]);
   const money = (amount: string) => formatMoney({ amount, currencyCode: "EUR" });
@@ -46,15 +48,24 @@ export default async function DashboardPage() {
   ]);
 
   return (
-    <div className="space-y-8">
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight text-ink-primary">Goedendag{firstName ? `, ${firstName}` : ""}</h1>
-        <p className="mt-1 text-sm text-ink-tertiary">Een overzicht van je taken en klantactiviteit.</p>
-      </div>
+    <div className="space-y-10">
+      <header className="flex flex-wrap items-end justify-between gap-4">
+        <div className="min-w-0">
+          <h1 className="text-xl font-semibold tracking-tight text-ink-primary">Goedendag{firstName ? `, ${firstName}` : ""}</h1>
+          <p className="mt-1 text-sm text-ink-tertiary">Je werk voor vandaag, je taken en je verkoop in één overzicht.</p>
+        </div>
+        <Link href="/customers" className="cc-btn-secondary shrink-0" title="Snel zoeken met ⌘K / Ctrl+K">
+          <Search className="h-3.5 w-3.5" aria-hidden />
+          Klant zoeken
+          <kbd className="ml-1 hidden rounded border border-border bg-canvas px-1.5 py-0.5 text-[10px] text-ink-tertiary sm:inline">⌘K</kbd>
+        </Link>
+      </header>
 
-      <section>
-        <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-sm font-medium text-ink-secondary">Mijn Werk</h2>
+      <section aria-labelledby="dash-my-work" data-testid="dashboard-my-work">
+        <div className="mb-4 flex items-center justify-between">
+          <h2 id="dash-my-work" className="text-base font-semibold text-ink-primary">
+            Mijn Werk
+          </h2>
           <Link href="/customers?scope=mine" className="text-xs font-medium text-accent-600 hover:underline">
             Mijn klanten →
           </Link>
@@ -66,14 +77,17 @@ export default async function DashboardPage() {
         </div>
       </section>
 
-      <section>
-        <h2 className="mb-3 text-sm font-medium text-ink-secondary">Taken</h2>
-        <TaskSummaryWidget />
-      </section>
+      <section className="grid gap-5 lg:grid-cols-3" data-testid="dashboard-overview">
+        <div className="min-w-0">
+          <h2 className="mb-3 text-sm font-medium text-ink-secondary">Mijn taken in cijfers</h2>
+          <TaskSummaryWidget />
+        </div>
 
-      <section className="grid gap-5 md:grid-cols-2">
-        <div>
-          <h2 className="mb-3 text-sm font-medium text-ink-secondary">Komende afspraken</h2>
+        <div className="min-w-0 lg:col-span-2">
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="text-sm font-medium text-ink-secondary">Komende afspraken</h2>
+            {user.role === "ADMIN" && <span className="text-xs text-ink-tertiary">hele team</span>}
+          </div>
           {appointments.length === 0 ? (
             <p className="cc-card p-4 text-sm text-ink-tertiary">Geen komende afspraken.</p>
           ) : (
@@ -96,70 +110,52 @@ export default async function DashboardPage() {
             </div>
           )}
         </div>
-
-        <div>
-          <h2 className="mb-3 text-sm font-medium text-ink-secondary">Recente CRM-activiteit</h2>
-          {recentActivity.length === 0 ? (
-            <p className="cc-card p-4 text-sm text-ink-tertiary">Nog geen activiteit.</p>
-          ) : (
-            <div className="cc-card divide-y divide-border-subtle">
-              {recentActivity.map((item) => (
-                <Link key={item.id} href={`/customers/${item.customerProfileId}`} className="cc-table-row block px-4 py-2.5 text-sm">
-                  <span className="block truncate font-medium text-ink-primary">{item.title}</span>
-                  <span className="block truncate text-xs text-ink-tertiary">
-                    {item.customerName ?? "Klant"} · {formatDateTime(item.occurredAt)}
-                  </span>
-                </Link>
-              ))}
-            </div>
-          )}
-        </div>
       </section>
 
-      <section>
+      <section aria-labelledby="dash-sales" data-testid="dashboard-sales">
         <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-sm font-medium text-ink-secondary">
+          <h2 id="dash-sales" className="text-sm font-medium text-ink-secondary">
             Verkoop{user.role !== "ADMIN" ? " — mijn verkoopkansen" : ""}
           </h2>
           <Link href="/opportunities" className="text-xs font-medium text-accent-600 hover:underline">
             Volledige pijplijn →
           </Link>
         </div>
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <div className="cc-card p-4">
-            <p className="text-xs text-ink-tertiary">Open pijplijn</p>
-            <p className="mt-1 text-lg font-semibold tabular-nums text-ink-primary">{money(salesMetrics.openPipelineValue)}</p>
-            <p className="mt-0.5 text-xs text-ink-tertiary">gewogen {money(salesMetrics.weightedPipelineValue)}</p>
+        <div className="cc-card grid grid-cols-2 lg:grid-cols-4 [&>*]:border-border-subtle [&>*:nth-child(odd)]:border-r [&>*:nth-child(-n+2)]:border-b lg:[&>*:nth-child(-n+2)]:border-b-0 lg:[&>*:not(:last-child)]:border-r">
+          <div className="min-w-0 p-4">
+            <p className="flex items-center gap-1.5 text-xs text-ink-tertiary">
+              <Wallet className="h-3.5 w-3.5" aria-hidden /> Open pijplijn
+            </p>
+            <p className="mt-1 truncate text-lg font-semibold tabular-nums text-ink-primary">{money(salesMetrics.openPipelineValue)}</p>
+            <p className="mt-0.5 truncate text-xs text-ink-tertiary">gewogen {money(salesMetrics.weightedPipelineValue)}</p>
           </div>
-          <Link href="/opportunities" className="cc-card cc-table-row p-4">
+          <Link href="/opportunities" className="cc-table-row min-w-0 p-4">
             <p className="flex items-center gap-1.5 text-xs text-ink-tertiary">
               <AlertCircle className="h-3.5 w-3.5" aria-hidden /> Aandacht nodig
             </p>
             <p className="mt-1 text-lg font-semibold tabular-nums text-ink-primary">{salesMetrics.attentionCount}</p>
-            <p className="mt-0.5 text-xs text-ink-tertiary">{salesMetrics.overdueFollowUpsCount} achterstallig</p>
+            <p className="mt-0.5 truncate text-xs text-ink-tertiary">{salesMetrics.overdueFollowUpsCount} achterstallig</p>
           </Link>
-          <div className="cc-card p-4">
+          <div className="min-w-0 p-4">
             <p className="flex items-center gap-1.5 text-xs text-ink-tertiary">
               <Clock className="h-3.5 w-3.5" aria-hidden /> Verwachte sluiting
             </p>
             <p className="mt-1 text-lg font-semibold tabular-nums text-ink-primary">{salesMetrics.expectedClosesNext30DaysCount}</p>
-            <p className="mt-0.5 text-xs text-ink-tertiary">komende 30 dagen</p>
+            <p className="mt-0.5 truncate text-xs text-ink-tertiary">komende 30 dagen</p>
           </div>
-          <div className="cc-card p-4">
+          <div className="min-w-0 p-4">
             <p className="flex items-center gap-1.5 text-xs text-ink-tertiary">
               <TrendingUp className="h-3.5 w-3.5" aria-hidden /> Deze maand
             </p>
-            <p className="mt-1 text-lg font-semibold tabular-nums text-ink-primary">
-              {salesMetrics.wonThisMonthCount} gewonnen
-            </p>
-            <p className="mt-0.5 text-xs text-ink-tertiary">
+            <p className="mt-1 truncate text-lg font-semibold tabular-nums text-ink-primary">{salesMetrics.wonThisMonthCount} gewonnen</p>
+            <p className="mt-0.5 truncate text-xs text-ink-tertiary">
               {money(salesMetrics.wonThisMonthValue)} · {salesMetrics.lostThisMonthCount} verloren
             </p>
           </div>
         </div>
 
         {(salesMetrics.recentWon.length > 0 || salesMetrics.recentLost.length > 0) && (
-          <div className="mt-3 grid gap-3 md:grid-cols-2">
+          <div className="mt-5 grid gap-5 md:grid-cols-2">
             {salesMetrics.recentWon.length > 0 && (
               <div className="cc-card divide-y divide-border-subtle">
                 <p className="px-4 py-2 text-xs font-medium text-ink-tertiary">Recent gewonnen</p>
@@ -184,25 +180,6 @@ export default async function DashboardPage() {
             )}
           </div>
         )}
-      </section>
-
-      <section className="cc-card flex items-center justify-between gap-4 p-5">
-        <div className="flex items-center gap-3">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accent-50 text-accent-600">
-            <Search className="h-4 w-4" aria-hidden />
-          </div>
-          <div>
-            <p className="text-sm font-medium text-ink-primary">Klant opzoeken</p>
-            <p className="text-sm text-ink-tertiary">
-              Gebruik <kbd className="rounded border border-border bg-canvas px-1.5 py-0.5 text-[10px]">⌘K</kbd> voor
-              snel zoeken, of open het volledige overzicht.
-            </p>
-          </div>
-        </div>
-        <Link href="/customers" className="cc-btn-secondary shrink-0">
-          <Users className="h-3.5 w-3.5" aria-hidden />
-          Klanten
-        </Link>
       </section>
     </div>
   );

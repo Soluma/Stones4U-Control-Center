@@ -2,7 +2,8 @@ import "server-only";
 import { prisma } from "@/platform/db/prisma";
 import { listOpportunities } from "@/modules/opportunities/opportunity.service";
 import { SEVERITY_RANK } from "@/modules/opportunities/attention";
-import type { Role, TaskStatus, CustomerType } from "@/generated/prisma";
+import type { Role, CustomerType } from "@/generated/prisma";
+import { OPEN_TASK_STATUSES } from "@/modules/tasks/task-status";
 
 // Phase 6A — "Mijn Werk" (docs/platform-discovery/45-PHASE-6A-BUILD-SPEC.md).
 // Pure read layer combining Task/Appointment/Opportunity into one personal
@@ -28,7 +29,7 @@ const customerProfileSelect = { id: true, displayName: true, companyName: true, 
 // Tasks
 // ---------------------------------------------------------------------------
 
-const OPEN_TASK_STATUSES: TaskStatus[] = ["OPEN", "IN_PROGRESS", "WAITING"];
+// One shared definition (task-status.ts) — the same set as the Taken badge.
 
 export type MyWorkTaskUrgency = "OVERDUE" | "DUE_TODAY";
 
