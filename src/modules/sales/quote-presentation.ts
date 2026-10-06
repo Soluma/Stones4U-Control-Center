@@ -33,6 +33,16 @@ const STATUS_TONE: Record<string, "success" | "warning" | "neutral" | "danger" |
   archived: "neutral",
 };
 
+/** A term with no digit and no "@" can be neither an offertenummer, an
+ * e-mail address nor a phone number — in practice it is a customer or company
+ * name, which neither quote source can search on. Found in production
+ * (v32): searching "verkoelen" returned an empty list that read like "this
+ * customer has no quotes". */
+export function isNameOnlyQuoteTerm(term: string): boolean {
+  const trimmed = term.trim();
+  return trimmed.length >= 2 && !/\d/.test(trimmed) && !trimmed.includes("@");
+}
+
 export function quoteStatusLabel(status: string | null | undefined): string {
   const value = status?.trim() ?? "";
   if (!value) return "Geen status";

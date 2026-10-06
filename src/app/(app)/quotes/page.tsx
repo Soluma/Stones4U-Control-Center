@@ -13,6 +13,7 @@ import {
   QUOTE_SOURCE_LABELS,
   draftOrderDisplay,
   filterQuotes,
+  isNameOnlyQuoteTerm,
   parseQuoteSourceFilter,
   quoteStats,
   quoteStatusLabel,
@@ -31,7 +32,10 @@ export default async function QuotesPage({ searchParams }: PageProps) {
   const { q = "", bron, status = "" } = await searchParams;
   const term = q.trim();
   const source = parseQuoteSourceFilter(bron);
-  const searched = quoteSearchParams(term) !== null;
+  // A name can never match (no source searches on names), so it is not sent
+  // to the sources at all and the page says why instead of "niets gevonden".
+  const nameOnly = isNameOnlyQuoteTerm(term);
+  const searched = !nameOnly && quoteSearchParams(term) !== null;
   const overview = searched ? await loadQuotesOverview(term) : null;
 
   const found = overview?.rows ?? [];
@@ -58,7 +62,7 @@ export default async function QuotesPage({ searchParams }: PageProps) {
           <input
             name="q"
             defaultValue={term}
-            placeholder="Zoek offerte, e-mail of telefoon…"
+            placeholder="Offertenummer, e-mailadres of telefoonnummer…"
             className="cc-input w-full"
             autoComplete="off"
             data-testid="quotes-search"
@@ -89,7 +93,18 @@ export default async function QuotesPage({ searchParams }: PageProps) {
         </button>
       </form>
 
-      {!searched ? (
+      {nameOnly ? (
+        <EmptyState
+          icon={<Search className="h-5 w-5" />}
+          title="Zoeken op naam kan hier nog niet"
+          description={`"${term}" lijkt een naam. Offertes zijn alleen te vinden op offertenummer, e-mailadres of telefoonnummer. Zoek de klant via Klanten — in Customer 360 staan de offertes onder Commercieel.`}
+          action={
+            <Link href="/customers" className="cc-btn-secondary" data-testid="quotes-to-customers">
+              Naar Klanten
+            </Link>
+          }
+        />
+      ) : !searched ? (
         <EmptyState
           icon={<Search className="h-5 w-5" />}
           title="Zoek een offerte"
@@ -132,15 +147,24 @@ export default async function QuotesPage({ searchParams }: PageProps) {
           )}
 
           {visible.length === 0 ? (
-            <EmptyState
-              icon={<FileText className="h-5 w-5" />}
-              title="Geen offertes gevonden"
-              description={
-                found.length > 0
-                  ? "Er zijn wel resultaten, maar niet met deze bron of status."
-                  : `Niets gevonden voor "${term}" in OfferteApp of de webshop.`
-              }
-            />
+            found.length > 0 ? (
+              <EmptyState
+                icon={<FileText className="h-5 w-5" />}
+                title={`${found.length} offerte${found.length === 1 ? "" : "s"} gevonden, maar 0 voldoen aan de huidige filters`}
+                description="De gekozen bron of status sluit alle resultaten uit."
+                action={
+                  <Link href={`/quotes?q=${encodeURIComponent(term)}`} className="cc-btn-secondary" data-testid="quotes-clear-filters">
+                    Filters wissen
+                  </Link>
+                }
+              />
+            ) : (
+              <EmptyState
+                icon={<FileText className="h-5 w-5" />}
+                title="Geen offertes gevonden"
+                description={`Geen offerte met dit nummer, e-mailadres of telefoonnummer in OfferteApp of de webshop.`}
+              />
+            )
           ) : (
             <QuotesOverviewTable rows={visible} draftOrderNames={overview!.draftOrderNames} />
           )}

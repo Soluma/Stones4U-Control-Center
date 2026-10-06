@@ -10,6 +10,7 @@ import {
   quoteStatusLabel,
   statusOptions,
   QUOTE_ACTION_LABELS,
+  isNameOnlyQuoteTerm,
 } from "@/modules/sales/quote-presentation";
 import {
   buildOrderSearchQuery,
@@ -64,6 +65,35 @@ describe("quote presentation", () => {
 
   it("names the external app the action opens", () => {
     expect(QUOTE_ACTION_LABELS).toEqual({ OFFERTEAPP: "Openen in OfferteApp", S4U_QUOTE_APP: "Openen in Quote App" });
+  });
+});
+
+describe("quote search — production regression (v32: 'verkoelen' showed an unexplained empty list)", () => {
+  it("recognises a name, which no quote source can search on", () => {
+    expect(isNameOnlyQuoteTerm("verkoelen")).toBe(true);
+    expect(isNameOnlyQuoteTerm("  Van der Berg Bestrating BV ")).toBe(true);
+  });
+
+  it("never treats a quote number, year, e-mail or phone number as a name", () => {
+    for (const term of ["2026", "OFF-2026-1006-006", "QR-20260930-00002", "klant@voorbeeld.nl", "+31 6 1234 5678", "0612345678"]) {
+      expect(isNameOnlyQuoteTerm(term), term).toBe(false);
+    }
+    expect(isNameOnlyQuoteTerm("a")).toBe(false); // too short — the normal start state handles it
+  });
+
+  const page = source("src/app/(app)/quotes/page.tsx");
+
+  it("does not query the sources for a name and says why, pointing to Klanten", () => {
+    expect(page).toContain("const searched = !nameOnly && quoteSearchParams(term) !== null;");
+    expect(page.indexOf("const nameOnly = isNameOnlyQuoteTerm(term);")).toBeLessThan(page.indexOf("loadQuotesOverview(term)"));
+    expect(page).toContain('title="Zoeken op naam kan hier nog niet"');
+    expect(page).toContain('href="/customers"');
+  });
+
+  it("when filters hide every result, says how many were found and offers 'Filters wissen'", () => {
+    expect(page).toContain("gevonden, maar 0 voldoen aan de huidige filters");
+    expect(page).toContain('href={`/quotes?q=${encodeURIComponent(term)}`}');
+    expect(page).toContain("Filters wissen");
   });
 });
 
