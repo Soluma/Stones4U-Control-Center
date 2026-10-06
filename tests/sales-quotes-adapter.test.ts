@@ -187,3 +187,62 @@ describe("FederatedQuotesAdapter.listQuotes", () => {
     });
   });
 });
+
+describe("FederatedQuotesAdapter.listQuotesForResolvedCustomer", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    for (const key of ENV_KEYS) delete process.env[key];
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("asks both sources once, on hard identifiers only: OfferteApp id+email+phone, Quote App email+phone", async () => {
+    setEnv();
+    const fetchMock = routedFetch({ offerteapp: () => jsonResponse({ quotes: [quote()] }), s4u: () => jsonResponse({ quotes: [quote({ externalId: "s-1", sourceSystem: "S4U_QUOTE_APP" })] }) });
+    vi.stubGlobal("fetch", fetchMock);
+    const { createQuotesAdapter } = await load();
+    const result = await createQuotesAdapter().listQuotesForResolvedCustomer({ legacyId: "7001", email: "Klant@Voorbeeld.NL", phone: "+31612345678" });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const urls = fetchMock.mock.calls.map(([u]) => new URL(String(u)));
+    const off = urls.find((u) => u.hostname.startsWith("offerteapp"))!;
+    const s4u = urls.find((u) => u.hostname.startsWith("s4u"))!;
+    expect(Object.fromEntries(off.searchParams)).toEqual({ shopifyCustomerId: "7001", email: "klant@voorbeeld.nl", phone: "+31612345678" });
+    expect(Object.fromEntries(s4u.searchParams)).toEqual({ email: "klant@voorbeeld.nl", phone: "+31612345678" });
+    // both sources' quotes, not just the first source that found something
+    expect(result.quotes.map((q) => q.sourceSystem).sort()).toEqual(["OFFERTEAPP", "S4U_QUOTE_APP"]);
+  });
+
+  it("never sends a name, and skips the Quote App when the customer has no e-mail or phone", async () => {
+    setEnv();
+    const fetchMock = routedFetch({ offerteapp: () => jsonResponse({ quotes: [] }), s4u: () => jsonResponse({ quotes: [] }) });
+    vi.stubGlobal("fetch", fetchMock);
+    const { createQuotesAdapter } = await load();
+    await createQuotesAdapter().listQuotesForResolvedCustomer({ legacyId: "7001", email: null, phone: null });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const url = new URL(String(fetchMock.mock.calls[0]![0]));
+    expect(Object.fromEntries(url.searchParams)).toEqual({ shopifyCustomerId: "7001" });
+  });
+
+  it("dedupes a shared draft order (OfferteApp kept) and keeps the other source when one is down", async () => {
+    setEnv();
+    const draft = "gid://shopify/DraftOrder/42";
+    vi.stubGlobal(
+      "fetch",
+      routedFetch({
+        offerteapp: () => jsonResponse({ quotes: [quote({ shopifyDraftOrderGid: draft })] }),
+        s4u: () => jsonResponse({ quotes: [quote({ externalId: "s-1", sourceSystem: "S4U_QUOTE_APP", shopifyDraftOrderGid: draft })] }),
+      }),
+    );
+    let mod = await load();
+    let result = await mod.createQuotesAdapter().listQuotesForResolvedCustomer({ legacyId: "7001", email: "a@b.nl", phone: null });
+    expect(result.quotes).toHaveLength(1);
+    expect(result.quotes[0]!.sourceSystem).toBe("OFFERTEAPP");
+
+    vi.resetModules();
+    vi.stubGlobal("fetch", routedFetch({ offerteapp: () => jsonResponse({}, 503), s4u: () => jsonResponse({ quotes: [quote({ externalId: "s-1", sourceSystem: "S4U_QUOTE_APP" })] }) }));
+    mod = await load();
+    result = await mod.createQuotesAdapter().listQuotesForResolvedCustomer({ legacyId: "7001", email: "a@b.nl", phone: null });
+    expect(result.sources).toEqual({ OFFERTEAPP: "unavailable", S4U_QUOTE_APP: "ok" });
+    expect(result.quotes).toHaveLength(1);
+  });
+});

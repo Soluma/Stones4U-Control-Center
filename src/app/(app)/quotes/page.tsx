@@ -1,19 +1,18 @@
 import Link from "next/link";
-import { ExternalLink, FileText, Search } from "lucide-react";
+import { ExternalLink, FileText, Search, UserRound } from "lucide-react";
 import { getSessionUser } from "@/platform/auth/session";
 import { Badge } from "@/components/ui/Badge";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell } from "@/components/ui/Table";
 import { StatStrip } from "@/components/sales/StatStrip";
 import { formatDate, formatMoney } from "@/lib/format";
-import { QUOTE_RESULTS_PER_SOURCE, quoteSearchParams } from "@/integrations/quotes/adapter";
-import { loadQuotesOverview, type QuoteOverviewRow } from "@/modules/sales/sales-overview";
+import { QUOTE_RESULTS_PER_SOURCE } from "@/integrations/quotes/adapter";
+import { searchQuotesOverview, type QuoteCustomerChoice, type QuoteOverviewRow, type QuotesOverview } from "@/modules/sales/sales-overview";
 import {
   QUOTE_ACTION_LABELS,
   QUOTE_SOURCE_LABELS,
   draftOrderDisplay,
   filterQuotes,
-  isNameOnlyQuoteTerm,
   parseQuoteSourceFilter,
   quoteStats,
   quoteStatusLabel,
@@ -21,33 +20,31 @@ import {
   statusOptions,
 } from "@/modules/sales/quote-presentation";
 
-type PageProps = { searchParams: Promise<{ q?: string; bron?: string; status?: string }> };
+type PageProps = { searchParams: Promise<{ q?: string; bron?: string; status?: string; customer?: string; for?: string }> };
 
-// Sales → Offertes. Read-only. Both quote sources only answer a lookup
-// (offertenummer, e-mail, telefoon) — there is no global list to show yet, so
-// the page starts with a search instead of pretending to be complete.
+// Sales → Offertes. Read-only. Offertenummer, e-mail and phone go straight to
+// the quote sources; a name is first resolved to a Shopify customer, whose
+// hard identifiers are then used (sales-overview.ts searchQuotesOverview).
+// There is no global list to show yet, so the page starts with a search.
 export default async function QuotesPage({ searchParams }: PageProps) {
   const user = await getSessionUser();
   if (!user) return null;
-  const { q = "", bron, status = "" } = await searchParams;
-  const term = q.trim();
-  const source = parseQuoteSourceFilter(bron);
-  // A name can never match (no source searches on names), so it is not sent
-  // to the sources at all and the page says why instead of "niets gevonden".
-  const nameOnly = isNameOnlyQuoteTerm(term);
-  const searched = !nameOnly && quoteSearchParams(term) !== null;
-  const overview = searched ? await loadQuotesOverview(term) : null;
+  const sp = await searchParams;
+  const term = (sp.q ?? "").trim();
+  const status = sp.status ?? "";
+  const source = parseQuoteSourceFilter(sp.bron);
+  // A picked customer only counts for the term it was picked for; the server
+  // re-checks it against a fresh Shopify search either way.
+  const selectedCustomer = sp.for === term ? sp.customer : undefined;
+  const outcome = term ? await searchQuotesOverview(term, selectedCustomer) : ({ kind: "start" } as const);
 
-  const found = overview?.rows ?? [];
-  const visible = filterQuotes(found, { source, status });
-  const stats = quoteStats(found);
-  const sourceStates = overview?.sources;
-  const bothDown =
-    !!sourceStates && sourceStates.OFFERTEAPP !== "ok" && sourceStates.S4U_QUOTE_APP !== "ok";
-  const downSources = sourceStates
-    ? (Object.keys(sourceStates) as (keyof typeof sourceStates)[]).filter((s) => sourceStates[s] === "unavailable")
-    : [];
-  const limited = overview ? (Object.keys(overview.limitReached) as (keyof typeof overview.limitReached)[]).filter((s) => overview.limitReached[s]) : [];
+  const found = outcome.kind === "quotes" ? outcome.overview.rows : [];
+  const pinnedCustomer = outcome.kind === "quotes" && outcome.customer && outcome.customerCount > 1 ? outcome.customer : null;
+  const clearFiltersQuery = new URLSearchParams({ q: term });
+  if (pinnedCustomer) {
+    clearFiltersQuery.set("customer", pinnedCustomer.legacyId);
+    clearFiltersQuery.set("for", term);
+  }
 
   return (
     <div className="space-y-6">
@@ -62,12 +59,18 @@ export default async function QuotesPage({ searchParams }: PageProps) {
           <input
             name="q"
             defaultValue={term}
-            placeholder="Offertenummer, e-mailadres of telefoonnummer…"
+            placeholder="Offertenummer, klantnaam, bedrijf, e-mail of telefoon…"
             className="cc-input w-full"
             autoComplete="off"
             data-testid="quotes-search"
           />
         </label>
+        {pinnedCustomer && (
+          <>
+            <input type="hidden" name="customer" value={pinnedCustomer.legacyId} />
+            <input type="hidden" name="for" value={term} />
+          </>
+        )}
         <label className="sm:w-44">
           <span className="cc-label">Bron</span>
           <select name="bron" defaultValue={source} className="cc-input w-full">
@@ -93,28 +96,117 @@ export default async function QuotesPage({ searchParams }: PageProps) {
         </button>
       </form>
 
-      {nameOnly ? (
-        <EmptyState
-          icon={<Search className="h-5 w-5" />}
-          title="Zoeken op naam kan hier nog niet"
-          description={`"${term}" lijkt een naam. Offertes zijn alleen te vinden op offertenummer, e-mailadres of telefoonnummer. Zoek de klant via Klanten — in Customer 360 staan de offertes onder Commercieel.`}
-          action={
-            <Link href="/customers" className="cc-btn-secondary" data-testid="quotes-to-customers">
-              Naar Klanten
-            </Link>
-          }
-        />
-      ) : !searched ? (
+      {outcome.kind === "start" ? (
         <EmptyState
           icon={<Search className="h-5 w-5" />}
           title="Zoek een offerte"
           description={
             term
-              ? "Typ minstens 2 tekens. Zoek op offertenummer, e-mailadres of telefoonnummer."
-              : "Zoek op offertenummer, e-mailadres of telefoonnummer."
+              ? "Typ minstens 2 tekens. Zoek op offertenummer, klantnaam, bedrijf, e-mailadres of telefoonnummer."
+              : "Zoek op offertenummer, klantnaam, bedrijf, e-mailadres of telefoonnummer."
           }
         />
-      ) : bothDown ? (
+      ) : outcome.kind === "customer_search_failed" ? (
+        <EmptyState
+          tone="error"
+          icon={<UserRound className="h-5 w-5" />}
+          title="Klant zoeken lukt nu niet"
+          description="Shopify reageert nu niet. Zoek rechtstreeks op offertenummer, e-mailadres of telefoonnummer, of probeer het zo opnieuw."
+        />
+      ) : outcome.kind === "no_customer" ? (
+        <EmptyState
+          icon={<UserRound className="h-5 w-5" />}
+          title={`Geen klant gevonden voor "${term}"`}
+          description="Zoek rechtstreeks op offertenummer, e-mailadres of telefoonnummer."
+        />
+      ) : outcome.kind === "choose_customer" ? (
+        <CustomerChooser term={term} customers={outcome.customers} invalidSelection={outcome.invalidSelection} />
+      ) : (
+        <QuotesResults
+          term={term}
+          overview={outcome.overview}
+          customer={outcome.customer}
+          customerCount={outcome.customerCount}
+          source={source}
+          status={status}
+          clearFiltersHref={`/quotes?${clearFiltersQuery.toString()}`}
+        />
+      )}
+    </div>
+  );
+}
+
+function CustomerChooser({ term, customers, invalidSelection }: { term: string; customers: QuoteCustomerChoice[]; invalidSelection: boolean }) {
+  return (
+    <section className="space-y-3" data-testid="quotes-customer-choice" aria-labelledby="quotes-choose-title">
+      {invalidSelection && (
+        <p role="status" className="rounded-md border border-warning-500/20 bg-warning-50 px-3 py-2 text-sm text-warning-700">
+          De gekozen klant hoort niet bij deze zoekterm. Kies hieronder opnieuw.
+        </p>
+      )}
+      <h2 id="quotes-choose-title" className="text-sm font-medium text-ink-secondary">
+        {customers.length === 1 ? `Klant gevonden voor "${term}"` : `Meerdere klanten gevonden voor "${term}"`} — kies een klant om de offertes te zien
+      </h2>
+      <ul className="cc-card divide-y divide-border-subtle">
+        {customers.map((c) => (
+          <li key={c.legacyId}>
+            <Link
+              href={`/quotes?${new URLSearchParams({ q: term, customer: c.legacyId, for: term }).toString()}`}
+              className="cc-table-row cc-focus-ring flex flex-col gap-0.5 px-4 py-3 sm:flex-row sm:items-baseline sm:justify-between sm:gap-4"
+            >
+              <span className="min-w-0">
+                <span className="block truncate font-medium text-ink-primary">{c.company || c.displayName}</span>
+                {c.company && c.displayName !== c.company && <span className="block truncate text-xs text-ink-tertiary">{c.displayName}</span>}
+              </span>
+              <span className="min-w-0 truncate text-xs text-ink-tertiary sm:text-right">{[c.email, c.place].filter(Boolean).join(" · ") || "—"}</span>
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function QuotesResults({
+  term,
+  overview,
+  customer,
+  customerCount,
+  source,
+  status,
+  clearFiltersHref,
+}: {
+  term: string;
+  overview: QuotesOverview;
+  customer: QuoteCustomerChoice | null;
+  customerCount: number;
+  source: ReturnType<typeof parseQuoteSourceFilter>;
+  status: string;
+  clearFiltersHref: string;
+}) {
+  const found = overview.rows;
+  const visible = filterQuotes(found, { source, status });
+  const stats = quoteStats(found);
+  const sourceStates = overview.sources;
+  const bothDown = sourceStates.OFFERTEAPP !== "ok" && sourceStates.S4U_QUOTE_APP !== "ok";
+  const downSources = (Object.keys(sourceStates) as (keyof typeof sourceStates)[]).filter((s) => sourceStates[s] === "unavailable");
+  const limited = (Object.keys(overview.limitReached) as (keyof typeof overview.limitReached)[]).filter((s) => overview.limitReached[s]);
+  const customerName = customer ? customer.company || customer.displayName : null;
+
+  return (
+    <>
+      {customer && (
+        <div className="flex flex-wrap items-baseline justify-between gap-2" data-testid="quotes-customer-header">
+          <h2 className="text-base font-semibold text-ink-primary">Offertes voor {customerName}</h2>
+          {customerCount > 1 && (
+            <Link href={`/quotes?${new URLSearchParams({ q: term }).toString()}`} className="text-xs font-medium text-accent-600 hover:underline">
+              Andere klant kiezen
+            </Link>
+          )}
+        </div>
+      )}
+
+      {bothDown ? (
         <EmptyState
           tone="error"
           icon={<FileText className="h-5 w-5" />}
@@ -130,7 +222,7 @@ export default async function QuotesPage({ searchParams }: PageProps) {
           )}
 
           <StatStrip
-            scope={`Aantallen over de ${found.length} gevonden offerte${found.length === 1 ? "" : "s"} voor "${term}" — niet over alle offertes.`}
+            scope={`Aantallen over de ${found.length} gevonden offerte${found.length === 1 ? "" : "s"} ${customerName ? `voor ${customerName}` : `voor "${term}"`} — niet over alle offertes.`}
             items={[
               { label: "Nieuw", value: stats.new, tone: "accent" },
               { label: "In behandeling", value: stats.inProgress, tone: "warning" },
@@ -153,7 +245,7 @@ export default async function QuotesPage({ searchParams }: PageProps) {
                 title={`${found.length} offerte${found.length === 1 ? "" : "s"} gevonden, maar 0 voldoen aan de huidige filters`}
                 description="De gekozen bron of status sluit alle resultaten uit."
                 action={
-                  <Link href={`/quotes?q=${encodeURIComponent(term)}`} className="cc-btn-secondary" data-testid="quotes-clear-filters">
+                  <Link href={clearFiltersHref} className="cc-btn-secondary" data-testid="quotes-clear-filters">
                     Filters wissen
                   </Link>
                 }
@@ -162,15 +254,19 @@ export default async function QuotesPage({ searchParams }: PageProps) {
               <EmptyState
                 icon={<FileText className="h-5 w-5" />}
                 title="Geen offertes gevonden"
-                description={`Geen offerte met dit nummer, e-mailadres of telefoonnummer in OfferteApp of de webshop.`}
+                description={
+                  customerName
+                    ? `Geen offertes voor ${customerName} in OfferteApp of de webshop (gezocht op Shopify-klant, e-mailadres en telefoonnummer).`
+                    : "Geen offerte met dit nummer, e-mailadres of telefoonnummer in OfferteApp of de webshop."
+                }
               />
             )
           ) : (
-            <QuotesOverviewTable rows={visible} draftOrderNames={overview!.draftOrderNames} />
+            <QuotesOverviewTable rows={visible} draftOrderNames={overview.draftOrderNames} />
           )}
         </>
       )}
-    </div>
+    </>
   );
 }
 

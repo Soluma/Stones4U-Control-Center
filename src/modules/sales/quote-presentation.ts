@@ -33,14 +33,27 @@ const STATUS_TONE: Record<string, "success" | "warning" | "neutral" | "danger" |
   archived: "neutral",
 };
 
-/** A term with no digit and no "@" can be neither an offertenummer, an
- * e-mail address nor a phone number — in practice it is a customer or company
- * name, which neither quote source can search on. Found in production
- * (v32): searching "verkoelen" returned an empty list that read like "this
- * customer has no quotes". */
-export function isNameOnlyQuoteTerm(term: string): boolean {
+export type QuoteSearchKind = "too_short" | "direct" | "name";
+
+/**
+ * How /quotes searches for a term.
+ * - "direct": an e-mail address, a phone number, or an offertenummer/number
+ *   ("2026", "OFF-2026-1006-006", "QR-20260930-00002", "0903-001") — sent to
+ *   the quote sources as-is, like before.
+ * - "name": anything else with letters ("verkoelen", "Jansen Tuinen BV",
+ *   "stones4u") — no quote source can search on a name, so the customer is
+ *   found in Shopify first and the quotes are fetched on its hard identifiers.
+ *   Found in production (v32): a name sent as a number search returned an
+ *   empty list that read like "this customer has no quotes".
+ */
+export function quoteSearchKind(term: string): QuoteSearchKind {
   const trimmed = term.trim();
-  return trimmed.length >= 2 && !/\d/.test(trimmed) && !trimmed.includes("@");
+  if (trimmed.length < 2) return "too_short";
+  if (trimmed.includes("@")) return "direct";
+  // A known quote/draft prefix may carry letters; what follows must be a number.
+  const rest = trimmed.replace(/^(off|qr|q|d|#d|#)[-\s]?(?=\d)/i, "");
+  if (/^\+?[\d\s\-/().]+$/.test(rest) && /\d/.test(rest)) return "direct";
+  return "name";
 }
 
 export function quoteStatusLabel(status: string | null | undefined): string {

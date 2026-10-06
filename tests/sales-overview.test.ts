@@ -7,7 +7,11 @@ const findMany = vi.fn();
 vi.mock("@/platform/db/prisma", () => ({ prisma: { customerProfile: { findMany: (...a: unknown[]) => findMany(...a) } } }));
 
 const listQuotes = vi.fn();
-vi.mock("@/integrations/quotes/adapter", () => ({ createQuotesAdapter: () => ({ listQuotes }) }));
+const listQuotesForResolvedCustomer = vi.fn();
+vi.mock("@/integrations/quotes/adapter", () => ({ createQuotesAdapter: () => ({ listQuotes, listQuotesForResolvedCustomer }) }));
+
+const searchCustomers = vi.fn();
+vi.mock("@/modules/crm/customer-profile.service", () => ({ searchCustomers: (...a: unknown[]) => searchCustomers(...a) }));
 
 const getDraftOrderNames = vi.fn();
 vi.mock("@/integrations/shopify/draft-orders", () => ({ getDraftOrderNames: (...a: unknown[]) => getDraftOrderNames(...a) }));
@@ -69,6 +73,8 @@ beforeEach(() => {
   vi.resetModules();
   findMany.mockReset();
   listQuotes.mockReset();
+  listQuotesForResolvedCustomer.mockReset();
+  searchCustomers.mockReset();
   getDraftOrderNames.mockReset().mockResolvedValue(new Map());
   listShopifyOrders.mockReset();
   getForOrders.mockReset();
@@ -198,5 +204,119 @@ describe("loadOrdersOverview", () => {
     const { loadOrdersOverview } = await import("@/modules/sales/sales-overview");
     expect(await loadOrdersOverview({})).toEqual({ ok: false });
     expect(getForOrders).not.toHaveBeenCalled();
+  });
+});
+
+function shopifyCustomer(legacyId: string, overrides: Record<string, unknown> = {}) {
+  return {
+    shopify: {
+      gid: `gid://shopify/Customer/${legacyId}`,
+      legacyId,
+      displayName: `Klant ${legacyId}`,
+      firstName: null,
+      lastName: null,
+      email: `klant${legacyId}@voorbeeld.nl`,
+      phone: `+3161234${legacyId}`,
+      company: null,
+      defaultAddressSummary: "Eindhoven",
+      numberOfOrders: 1,
+      amountSpent: null,
+      ...overrides,
+    },
+    customerProfileId: null,
+  };
+}
+
+const OK = { sources: { OFFERTEAPP: "ok", S4U_QUOTE_APP: "ok" }, limitReached: { OFFERTEAPP: false, S4U_QUOTE_APP: false } };
+
+describe("searchQuotesOverview — name search via the Shopify customer search", () => {
+  it("a name with exactly one Shopify customer: searchCustomers, then both sources on that customer's hard identifiers", async () => {
+    searchCustomers.mockResolvedValue([shopifyCustomer("901")]);
+    listQuotesForResolvedCustomer.mockResolvedValue({ ...OK, quotes: [q({ externalId: "a" }), q({ externalId: "b", sourceSystem: "S4U_QUOTE_APP" })] });
+    findMany.mockResolvedValue([]);
+    const { searchQuotesOverview } = await import("@/modules/sales/sales-overview");
+
+    const out = await searchQuotesOverview("verkoelen");
+
+    expect(searchCustomers).toHaveBeenCalledWith("verkoelen");
+    expect(listQuotes).not.toHaveBeenCalled(); // the name never reaches a quote source
+    expect(listQuotesForResolvedCustomer).toHaveBeenCalledTimes(1);
+    expect(listQuotesForResolvedCustomer).toHaveBeenCalledWith({ legacyId: "901", email: "klant901@voorbeeld.nl", phone: "+31612349" + "01" });
+    expect(out.kind).toBe("quotes");
+    if (out.kind !== "quotes") return;
+    expect(out.overview.rows.map((r) => r.externalId)).toEqual(["a", "b"]);
+    expect(out.customer).toMatchObject({ legacyId: "901", displayName: "Klant 901" });
+  });
+
+  it("a company name behaves the same and shows the company", async () => {
+    searchCustomers.mockResolvedValue([shopifyCustomer("902", { company: "Jansen Tuinen BV" })]);
+    listQuotesForResolvedCustomer.mockResolvedValue({ ...OK, quotes: [] });
+    const { searchQuotesOverview } = await import("@/modules/sales/sales-overview");
+    const out = await searchQuotesOverview("Jansen Tuinen");
+    expect(out.kind === "quotes" && out.customer?.company).toBe("Jansen Tuinen BV");
+    expect(listQuotesForResolvedCustomer).toHaveBeenCalledTimes(1);
+  });
+
+  it("no customer: a clear outcome and zero quote requests", async () => {
+    searchCustomers.mockResolvedValue([]);
+    const { searchQuotesOverview } = await import("@/modules/sales/sales-overview");
+    expect(await searchQuotesOverview("bestaatniet")).toEqual({ kind: "no_customer" });
+    expect(listQuotes).not.toHaveBeenCalled();
+    expect(listQuotesForResolvedCustomer).not.toHaveBeenCalled();
+  });
+
+  it("several customers: a choice first, zero quote requests before one is picked", async () => {
+    searchCustomers.mockResolvedValue([shopifyCustomer("11"), shopifyCustomer("12", { company: "Jansen Tuinen BV" })]);
+    const { searchQuotesOverview } = await import("@/modules/sales/sales-overview");
+    const out = await searchQuotesOverview("jansen");
+    expect(out.kind).toBe("choose_customer");
+    expect(out.kind === "choose_customer" && out.customers.map((c) => c.legacyId)).toEqual(["11", "12"]);
+    expect(listQuotes).not.toHaveBeenCalled();
+    expect(listQuotesForResolvedCustomer).not.toHaveBeenCalled();
+  });
+
+  it("a picked customer: only that customer's identifiers, re-read from Shopify", async () => {
+    searchCustomers.mockResolvedValue([shopifyCustomer("11"), shopifyCustomer("12")]);
+    listQuotesForResolvedCustomer.mockResolvedValue({ ...OK, quotes: [] });
+    const { searchQuotesOverview } = await import("@/modules/sales/sales-overview");
+    const out = await searchQuotesOverview("jansen", "12");
+    expect(listQuotesForResolvedCustomer).toHaveBeenCalledWith({ legacyId: "12", email: "klant12@voorbeeld.nl", phone: "+3161234" + "12" });
+    expect(out.kind === "quotes" && out.customerCount).toBe(2);
+  });
+
+  it("a manipulated customer parameter is not trusted: no quote request, the choice again with a notice", async () => {
+    searchCustomers.mockResolvedValue([shopifyCustomer("11"), shopifyCustomer("12")]);
+    const { searchQuotesOverview } = await import("@/modules/sales/sales-overview");
+    for (const forged of ["999", "11 OR 1=1", "../12", "klant12@voorbeeld.nl"]) {
+      const out = await searchQuotesOverview("jansen", forged);
+      expect(out).toMatchObject({ kind: "choose_customer", invalidSelection: true });
+    }
+    expect(listQuotesForResolvedCustomer).not.toHaveBeenCalled();
+  });
+
+  it("a forged customer with a single real match still does not silently switch customers", async () => {
+    searchCustomers.mockResolvedValue([shopifyCustomer("11")]);
+    const { searchQuotesOverview } = await import("@/modules/sales/sales-overview");
+    expect(await searchQuotesOverview("verkoelen", "999")).toMatchObject({ kind: "choose_customer", invalidSelection: true });
+    expect(listQuotesForResolvedCustomer).not.toHaveBeenCalled();
+  });
+
+  it("Shopify customer search failing is reported, not thrown", async () => {
+    searchCustomers.mockRejectedValue(new Error("Shopify 503"));
+    const { searchQuotesOverview } = await import("@/modules/sales/sales-overview");
+    expect(await searchQuotesOverview("verkoelen")).toEqual({ kind: "customer_search_failed" });
+  });
+
+  it("numbers, quote numbers, e-mail and phone never trigger a customer search", async () => {
+    listQuotes.mockResolvedValue({ ...OK, quotes: [q({ externalId: "a" })] });
+    findMany.mockResolvedValue([]);
+    const { searchQuotesOverview } = await import("@/modules/sales/sales-overview");
+    for (const term of ["2026", "OFF-2026-1006-006", "klant@voorbeeld.nl", "0612345678"]) {
+      const out = await searchQuotesOverview(term);
+      expect(out.kind, term).toBe("quotes");
+      expect(listQuotes).toHaveBeenLastCalledWith({ mode: "search", term });
+    }
+    expect(searchCustomers).not.toHaveBeenCalled();
+    expect(listQuotesForResolvedCustomer).not.toHaveBeenCalled();
   });
 });

@@ -98,7 +98,15 @@ export interface QuotesAdapter {
   getQuotesForCustomer(matchRefs: QuoteMatchRefs): Promise<QuoteSummary[]>;
   /** The global /quotes overview — both sources at once, one request each. */
   listQuotes(query: QuoteListQuery): Promise<QuoteListResult>;
+  /** All quotes of one customer that was already resolved (e.g. found in
+   * Shopify by name): both sources queried on its hard identifiers only —
+   * one request per source, never a name. Unlike getQuotesForCustomer() it
+   * does not stop at the first source that finds something. */
+  listQuotesForResolvedCustomer(ids: ResolvedCustomerIds): Promise<QuoteListResult>;
 }
+
+/** Hard identifiers of a customer resolved in Shopify. A name is never one. */
+export type ResolvedCustomerIds = { legacyId: string | null; email: string | null; phone: string | null };
 
 export class DisabledQuotesAdapter implements QuotesAdapter {
   constructor(private reason: string = "Offerte-integratie is niet geconfigureerd.") {}
@@ -121,6 +129,10 @@ export class DisabledQuotesAdapter implements QuotesAdapter {
       sources: { OFFERTEAPP: "not_configured", S4U_QUOTE_APP: "not_configured" },
       limitReached: { OFFERTEAPP: false, S4U_QUOTE_APP: false },
     };
+  }
+
+  async listQuotesForResolvedCustomer(): Promise<QuoteListResult> {
+    return this.listQuotes();
   }
 }
 
@@ -253,9 +265,37 @@ export class FederatedQuotesAdapter implements QuotesAdapter {
     const limitReached = { OFFERTEAPP: false, S4U_QUOTE_APP: false };
     if (!params) return { quotes: [], sources, limitReached };
 
+    return this.federate(params, params, sources, limitReached);
+  }
+
+  async listQuotesForResolvedCustomer(ids: ResolvedCustomerIds): Promise<QuoteListResult> {
+    const sources: QuoteListResult["sources"] = {
+      OFFERTEAPP: this.offerteApp ? "ok" : "not_configured",
+      S4U_QUOTE_APP: this.s4uQuoteApp ? "ok" : "not_configured",
+    };
+    const limitReached = { OFFERTEAPP: false, S4U_QUOTE_APP: false };
+    const email = ids.email?.trim().toLowerCase() || undefined;
+    const phone = ids.phone?.trim() || undefined;
+    const shopifyCustomerId = ids.legacyId && /^\d+$/.test(ids.legacyId) ? ids.legacyId : undefined;
+    // OfferteApp knows the Shopify customer id; s4u-quote-app has no such
+    // field, so it gets e-mail/phone only. A source with no identifier to
+    // ask for is not called at all (an unfiltered request is refused anyway).
+    const offerteParams = shopifyCustomerId || email || phone ? { shopifyCustomerId, email, phone } : null;
+    const s4uParams = email || phone ? { email, phone } : null;
+    return this.federate(offerteParams, s4uParams, sources, limitReached);
+  }
+
+  /** One request per configured source (when it has parameters), combined
+   * and deduped on the Shopify draft order, newest first. */
+  private async federate(
+    offerteParams: QuoteLookupParams | null,
+    s4uParams: QuoteLookupParams | null,
+    sources: QuoteListResult["sources"],
+    limitReached: QuoteListResult["limitReached"],
+  ): Promise<QuoteListResult> {
     const [offerte, s4u] = await Promise.all([
-      this.offerteApp ? fetchQuoteList(this.offerteApp, params) : Promise.resolve([]),
-      this.s4uQuoteApp ? fetchQuoteList(this.s4uQuoteApp, params) : Promise.resolve([]),
+      this.offerteApp && offerteParams ? fetchQuoteList(this.offerteApp, offerteParams) : Promise.resolve([]),
+      this.s4uQuoteApp && s4uParams ? fetchQuoteList(this.s4uQuoteApp, s4uParams) : Promise.resolve([]),
     ]);
     if (offerte === null) sources.OFFERTEAPP = "unavailable";
     if (s4u === null) sources.S4U_QUOTE_APP = "unavailable";

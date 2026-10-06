@@ -10,7 +10,7 @@ import {
   quoteStatusLabel,
   statusOptions,
   QUOTE_ACTION_LABELS,
-  isNameOnlyQuoteTerm,
+  quoteSearchKind,
 } from "@/modules/sales/quote-presentation";
 import {
   buildOrderSearchQuery,
@@ -68,31 +68,38 @@ describe("quote presentation", () => {
   });
 });
 
-describe("quote search — production regression (v32: 'verkoelen' showed an unexplained empty list)", () => {
-  it("recognises a name, which no quote source can search on", () => {
-    expect(isNameOnlyQuoteTerm("verkoelen")).toBe(true);
-    expect(isNameOnlyQuoteTerm("  Van der Berg Bestrating BV ")).toBe(true);
+describe("quote search kind — production regression (v32: a name gave an unexplained empty list)", () => {
+  it("names go to the Shopify customer search, including company names with digits", () => {
+    for (const term of ["verkoelen", "jansen", "stones4u", "Jansen Tuinen BV", "  Van der Berg Bestrating  "]) {
+      expect(quoteSearchKind(term), term).toBe("name");
+    }
   });
 
-  it("never treats a quote number, year, e-mail or phone number as a name", () => {
-    for (const term of ["2026", "OFF-2026-1006-006", "QR-20260930-00002", "klant@voorbeeld.nl", "+31 6 1234 5678", "0612345678"]) {
-      expect(isNameOnlyQuoteTerm(term), term).toBe(false);
+  it("quote numbers, years, e-mail addresses and phone numbers go to the quote sources directly", () => {
+    for (const term of ["2026", "OFF-2026-1006-006", "QR-20260930-00002", "Q-2026-0903-200", "0903-001", "#D570", "klant@voorbeeld.nl", "+31 6 1234 5678", "0612345678", "06-12345678"]) {
+      expect(quoteSearchKind(term), term).toBe("direct");
     }
-    expect(isNameOnlyQuoteTerm("a")).toBe(false); // too short — the normal start state handles it
+  });
+
+  it("a single character is the start state", () => {
+    expect(quoteSearchKind("a")).toBe("too_short");
+    expect(quoteSearchKind("  ")).toBe("too_short");
   });
 
   const page = source("src/app/(app)/quotes/page.tsx");
 
-  it("does not query the sources for a name and says why, pointing to Klanten", () => {
-    expect(page).toContain("const searched = !nameOnly && quoteSearchParams(term) !== null;");
-    expect(page.indexOf("const nameOnly = isNameOnlyQuoteTerm(term);")).toBeLessThan(page.indexOf("loadQuotesOverview(term)"));
-    expect(page).toContain('title="Zoeken op naam kan hier nog niet"');
-    expect(page).toContain('href="/customers"');
+  it("the page runs every search through searchQuotesOverview and offers name search", () => {
+    expect(page).toContain("await searchQuotesOverview(term, selectedCustomer)");
+    expect(page).toContain('placeholder="Offertenummer, klantnaam, bedrijf, e-mail of telefoon…"');
+    expect(page).not.toContain("Zoeken op naam kan hier nog niet");
+  });
+
+  it("a picked customer only counts for the term it was picked for", () => {
+    expect(page).toContain("const selectedCustomer = sp.for === term ? sp.customer : undefined;");
   });
 
   it("when filters hide every result, says how many were found and offers 'Filters wissen'", () => {
     expect(page).toContain("gevonden, maar 0 voldoen aan de huidige filters");
-    expect(page).toContain('href={`/quotes?q=${encodeURIComponent(term)}`}');
     expect(page).toContain("Filters wissen");
   });
 });
@@ -174,7 +181,7 @@ describe("pages", () => {
 
   it("/quotes starts with a search, never a pretend-complete list, and says when results are capped", () => {
     expect(quotesPage).toContain('title="Zoek een offerte"');
-    expect(quotesPage).toContain("Zoek op offertenummer, e-mailadres of telefoonnummer.");
+    expect(quotesPage).toContain("Zoek op offertenummer, klantnaam, bedrijf, e-mailadres of telefoonnummer.");
     expect(quotesPage).toContain('data-testid="quotes-limit"');
     expect(quotesPage).toContain("Offertes tijdelijk niet beschikbaar");
     expect(quotesPage).toContain("?tab=orders");

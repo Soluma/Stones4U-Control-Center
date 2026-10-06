@@ -3,11 +3,13 @@ import { prisma } from "@/platform/db/prisma";
 import { normalizeEmail } from "@/lib/email";
 import { customerDisplayName } from "@/modules/crm/customer-identity";
 import { createQuotesAdapter, type QuoteListResult, type QuoteSummary } from "@/integrations/quotes/adapter";
+import { searchCustomers } from "@/modules/crm/customer-profile.service";
 import { getDraftOrderNames } from "@/integrations/shopify/draft-orders";
 import { listShopifyOrders, type ShopifyOrderListItem, type ShopifyOrderPage } from "@/integrations/shopify/orders";
 import { createLogisticsAdapter } from "@/integrations/logistics/adapter";
 import type { OrderLogisticsSummary } from "@/integrations/logistics/types";
 import { buildOrderSearchQuery } from "./order-presentation";
+import { quoteSearchKind } from "./quote-presentation";
 
 // Server-side loading for Sales → Offertes and Sales → Orders. Every external
 // system is called once per page load (never once per row), and each one
@@ -53,7 +55,12 @@ export type QuotesOverview = QuoteListResult & { rows: QuoteOverviewRow[]; draft
 /** 1 request per configured quote source, then 2 DB queries and at most 1
  * Shopify request (draft-order names) for the whole result set. */
 export async function loadQuotesOverview(term: string): Promise<QuotesOverview> {
-  const result = await createQuotesAdapter().listQuotes({ mode: "search", term });
+  return enrichQuotes(await createQuotesAdapter().listQuotes({ mode: "search", term }));
+}
+
+/** Customer links (exact GID, then unique exact e-mail) and draft-order
+ * names for a whole result set: 2 DB queries + at most 1 Shopify request. */
+async function enrichQuotes(result: QuoteListResult): Promise<QuotesOverview> {
   const gidQuotes = result.quotes.filter((q) => q.shopifyCustomerGid);
   const [byGid, byEmail, draftOrderNames] = await Promise.all([
     resolveCustomersByShopifyGid(gidQuotes.map((q) => q.shopifyCustomerGid!)),
@@ -123,4 +130,62 @@ export async function loadOrdersOverview(filter: {
     customerProfile: order.customer ? (customers.get(order.customer.gid) ?? null) : null,
   }));
   return { ok: true, page, rows, logistics };
+}
+
+// ── Name search on /quotes ────────────────────────────────────────────────
+
+export type QuoteCustomerChoice = {
+  /** Shopify legacy customer id — what the ?customer= URL parameter carries. */
+  legacyId: string;
+  displayName: string;
+  company: string | null;
+  email: string | null;
+  place: string | null;
+};
+
+export type QuoteSearchOutcome =
+  | { kind: "start" }
+  | { kind: "quotes"; overview: QuotesOverview; customer: QuoteCustomerChoice | null; customerCount: number }
+  | { kind: "choose_customer"; customers: QuoteCustomerChoice[]; invalidSelection: boolean }
+  | { kind: "no_customer" }
+  | { kind: "customer_search_failed" };
+
+function toChoice(c: { legacyId: string; displayName: string; company: string | null; email: string | null; defaultAddressSummary: string | null }): QuoteCustomerChoice {
+  return { legacyId: c.legacyId, displayName: c.displayName, company: c.company, email: c.email, place: c.defaultAddressSummary };
+}
+
+/**
+ * Everything /quotes can search on, in one place.
+ * - Offertenummer, number, e-mail, phone → the quote sources directly.
+ * - A name → Shopify customer search first (the existing searchCustomers()):
+ *   0 customers: stop; 1: its quotes; more: let staff pick — and only then
+ *   ask the quote sources, on that customer's hard identifiers (Shopify id,
+ *   e-mail, phone). A name never reaches a quote source.
+ * `selectedCustomer` comes from the URL, so it is only honoured when that
+ * customer is among the Shopify results for this very term.
+ */
+export async function searchQuotesOverview(term: string, selectedCustomer?: string): Promise<QuoteSearchOutcome> {
+  const kind = quoteSearchKind(term);
+  if (kind === "too_short") return { kind: "start" };
+  if (kind === "direct") return { kind: "quotes", overview: await loadQuotesOverview(term), customer: null, customerCount: 0 };
+
+  let matches;
+  try {
+    matches = (await searchCustomers(term)).map((m) => m.shopify);
+  } catch (error) {
+    console.error("quotes_customer_search_failed", error instanceof Error ? error.message : error);
+    return { kind: "customer_search_failed" };
+  }
+  if (matches.length === 0) return { kind: "no_customer" };
+
+  const requested = selectedCustomer?.trim() ?? "";
+  const picked = requested ? matches.find((m) => m.legacyId === requested) : undefined;
+  const invalidSelection = requested !== "" && !picked;
+  const customer = picked ?? (matches.length === 1 && !invalidSelection ? matches[0] : undefined);
+  if (!customer) return { kind: "choose_customer", customers: matches.map(toChoice), invalidSelection };
+
+  const overview = await enrichQuotes(
+    await createQuotesAdapter().listQuotesForResolvedCustomer({ legacyId: customer.legacyId, email: customer.email, phone: customer.phone }),
+  );
+  return { kind: "quotes", overview, customer: toChoice(customer), customerCount: matches.length };
 }
