@@ -143,10 +143,14 @@ export type QuoteCustomerChoice = {
   place: string | null;
 };
 
+/** How many Shopify customers /quotes offers to choose from. One more is
+ * fetched, only to know whether Shopify has more than this (limit+1). */
+export const QUOTE_CUSTOMER_CHOICE_LIMIT = 15;
+
 export type QuoteSearchOutcome =
   | { kind: "start" }
   | { kind: "quotes"; overview: QuotesOverview; customer: QuoteCustomerChoice | null; customerCount: number }
-  | { kind: "choose_customer"; customers: QuoteCustomerChoice[]; invalidSelection: boolean }
+  | { kind: "choose_customer"; customers: QuoteCustomerChoice[]; invalidSelection: boolean; hasMoreCustomers: boolean }
   | { kind: "no_customer" }
   | { kind: "customer_search_failed" };
 
@@ -169,20 +173,22 @@ export async function searchQuotesOverview(term: string, selectedCustomer?: stri
   if (kind === "too_short") return { kind: "start" };
   if (kind === "direct") return { kind: "quotes", overview: await loadQuotesOverview(term), customer: null, customerCount: 0 };
 
-  let matches;
+  let fetched;
   try {
-    matches = (await searchCustomers(term)).map((m) => m.shopify);
+    fetched = (await searchCustomers(term, QUOTE_CUSTOMER_CHOICE_LIMIT + 1)).map((m) => m.shopify);
   } catch (error) {
     console.error("quotes_customer_search_failed", error instanceof Error ? error.message : error);
     return { kind: "customer_search_failed" };
   }
-  if (matches.length === 0) return { kind: "no_customer" };
+  if (fetched.length === 0) return { kind: "no_customer" };
+  const hasMoreCustomers = fetched.length > QUOTE_CUSTOMER_CHOICE_LIMIT;
+  const matches = fetched.slice(0, QUOTE_CUSTOMER_CHOICE_LIMIT);
 
   const requested = selectedCustomer?.trim() ?? "";
   const picked = requested ? matches.find((m) => m.legacyId === requested) : undefined;
   const invalidSelection = requested !== "" && !picked;
   const customer = picked ?? (matches.length === 1 && !invalidSelection ? matches[0] : undefined);
-  if (!customer) return { kind: "choose_customer", customers: matches.map(toChoice), invalidSelection };
+  if (!customer) return { kind: "choose_customer", customers: matches.map(toChoice), invalidSelection, hasMoreCustomers };
 
   const overview = await enrichQuotes(
     await createQuotesAdapter().listQuotesForResolvedCustomer({ legacyId: customer.legacyId, email: customer.email, phone: customer.phone }),

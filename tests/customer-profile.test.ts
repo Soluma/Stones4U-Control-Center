@@ -275,6 +275,14 @@ describe("searchCustomers — phone-shaped term normalization", () => {
     expect(mockSearchShopifyCustomers).toHaveBeenCalledWith("31649899477", 15);
   });
 
+  it("keeps 15 as the default and passes an explicit limit through (used by /quotes for limit+1)", async () => {
+    const { searchCustomers } = await import("@/modules/crm/customer-profile.service");
+    await searchCustomers("jansen");
+    expect(mockSearchShopifyCustomers).toHaveBeenLastCalledWith("jansen", 15);
+    await searchCustomers("jansen", 16);
+    expect(mockSearchShopifyCustomers).toHaveBeenLastCalledWith("jansen", 16);
+  });
+
   it("leaves a non-phone-shaped term (a name) untouched", async () => {
     const { searchCustomers } = await import("@/modules/crm/customer-profile.service");
     await searchCustomers("Fons Verkoelen");

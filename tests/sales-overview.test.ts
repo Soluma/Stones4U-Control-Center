@@ -238,7 +238,7 @@ describe("searchQuotesOverview — name search via the Shopify customer search",
 
     const out = await searchQuotesOverview("verkoelen");
 
-    expect(searchCustomers).toHaveBeenCalledWith("verkoelen");
+    expect(searchCustomers).toHaveBeenCalledWith("verkoelen", 16);
     expect(listQuotes).not.toHaveBeenCalled(); // the name never reaches a quote source
     expect(listQuotesForResolvedCustomer).toHaveBeenCalledTimes(1);
     expect(listQuotesForResolvedCustomer).toHaveBeenCalledWith({ legacyId: "901", email: "klant901@voorbeeld.nl", phone: "+31612349" + "01" });
@@ -297,7 +297,7 @@ describe("searchQuotesOverview — name search via the Shopify customer search",
   it("a forged customer with a single real match still does not silently switch customers", async () => {
     searchCustomers.mockResolvedValue([shopifyCustomer("11")]);
     const { searchQuotesOverview } = await import("@/modules/sales/sales-overview");
-    expect(await searchQuotesOverview("verkoelen", "999")).toMatchObject({ kind: "choose_customer", invalidSelection: true });
+    expect(await searchQuotesOverview("verkoelen", "999")).toMatchObject({ kind: "choose_customer", invalidSelection: true, hasMoreCustomers: false });
     expect(listQuotesForResolvedCustomer).not.toHaveBeenCalled();
   });
 
@@ -317,6 +317,53 @@ describe("searchQuotesOverview — name search via the Shopify customer search",
       expect(listQuotes).toHaveBeenLastCalledWith({ mode: "search", term });
     }
     expect(searchCustomers).not.toHaveBeenCalled();
+    expect(listQuotesForResolvedCustomer).not.toHaveBeenCalled();
+  });
+});
+
+describe("searchQuotesOverview — the 15-customer choice is never silently cut off", () => {
+  const many = (n: number) => Array.from({ length: n }, (_, i) => shopifyCustomer(String(1000 + i)));
+
+  it("asks Shopify for 16 (limit+1) in one request", async () => {
+    searchCustomers.mockResolvedValue(many(3));
+    const { searchQuotesOverview } = await import("@/modules/sales/sales-overview");
+    await searchQuotesOverview("jansen");
+    expect(searchCustomers).toHaveBeenCalledTimes(1);
+    expect(searchCustomers).toHaveBeenCalledWith("jansen", 16);
+  });
+
+  it("15 customers: all 15 shown, no warning", async () => {
+    searchCustomers.mockResolvedValue(many(15));
+    const { searchQuotesOverview } = await import("@/modules/sales/sales-overview");
+    const out = await searchQuotesOverview("jansen");
+    expect(out).toMatchObject({ kind: "choose_customer", hasMoreCustomers: false });
+    expect(out.kind === "choose_customer" && out.customers).toHaveLength(15);
+  });
+
+  it.each([16, 21])("%i customers: 15 shown plus the 'more customers' warning, 0 quote requests", async (n) => {
+    searchCustomers.mockResolvedValue(many(n));
+    const { searchQuotesOverview } = await import("@/modules/sales/sales-overview");
+    const out = await searchQuotesOverview("jansen");
+    expect(out).toMatchObject({ kind: "choose_customer", hasMoreCustomers: true });
+    expect(out.kind === "choose_customer" && out.customers.map((c) => c.legacyId)).toEqual(many(15).map((c) => c.shopify.legacyId));
+    expect(listQuotes).not.toHaveBeenCalled();
+    expect(listQuotesForResolvedCustomer).not.toHaveBeenCalled();
+  });
+
+  it("a pick from the 15 shown still works when Shopify has more", async () => {
+    searchCustomers.mockResolvedValue(many(21));
+    listQuotesForResolvedCustomer.mockResolvedValue({ ...OK, quotes: [] });
+    const { searchQuotesOverview } = await import("@/modules/sales/sales-overview");
+    const out = await searchQuotesOverview("jansen", "1014");
+    expect(out.kind).toBe("quotes");
+    expect(listQuotesForResolvedCustomer).toHaveBeenCalledTimes(1);
+    expect(listQuotesForResolvedCustomer.mock.calls[0]![0]).toMatchObject({ legacyId: "1014" });
+  });
+
+  it("the 16th (not shown) customer cannot be picked through the URL", async () => {
+    searchCustomers.mockResolvedValue(many(21));
+    const { searchQuotesOverview } = await import("@/modules/sales/sales-overview");
+    expect(await searchQuotesOverview("jansen", "1015")).toMatchObject({ kind: "choose_customer", invalidSelection: true, hasMoreCustomers: true });
     expect(listQuotesForResolvedCustomer).not.toHaveBeenCalled();
   });
 });

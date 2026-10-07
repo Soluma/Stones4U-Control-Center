@@ -98,6 +98,15 @@ describe("quote search kind — production regression (v32: a name gave an unexp
     expect(page).toContain("const selectedCustomer = sp.for === term ? sp.customer : undefined;");
   });
 
+  it("a pick left over from an earlier term is redirected out of the URL", () => {
+    expect(page).toMatch(/if \(\(sp\.customer !== undefined \|\| sp\.for !== undefined\) && sp\.for !== term\) \{[\s\S]{0,300}redirect\(/);
+  });
+
+  it("tells the user when Shopify found more customers than the list shows", () => {
+    expect(page).toContain("Meer klanten gevonden. Verfijn je zoekterm om de juiste klant te vinden.");
+    expect(page).toContain("hasMoreCustomers={outcome.hasMoreCustomers}");
+  });
+
   it("when filters hide every result, says how many were found and offers 'Filters wissen'", () => {
     expect(page).toContain("gevonden, maar 0 voldoen aan de huidige filters");
     expect(page).toContain("Filters wissen");

@@ -23,10 +23,12 @@ export type CustomerSearchResult = {
  * raw Dutch "06..." form returns zero results, "6..."/"316..."/"+316..."
  * all match) — normalizeDutchPhone() already produces exactly that form,
  * so this reuses it rather than adding a second phone-format assumption. */
-export async function searchCustomers(term: string): Promise<CustomerSearchResult[]> {
+/** `limit` defaults to the 15 every existing caller has always used; /quotes
+ * asks for one more to learn whether there are more than it shows. */
+export async function searchCustomers(term: string, limit = 15): Promise<CustomerSearchResult[]> {
   const normalizedPhone = normalizeDutchPhone(term);
   const searchTerm = normalizedPhone ?? term;
-  const shopifyResults = await searchShopifyCustomers(searchTerm, 15);
+  const shopifyResults = await searchShopifyCustomers(searchTerm, limit);
   if (shopifyResults.length === 0) return [];
 
   const existingProfiles = await prisma.customerProfile.findMany({

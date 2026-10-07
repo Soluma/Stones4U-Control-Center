@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { ExternalLink, FileText, Search, UserRound } from "lucide-react";
 import { getSessionUser } from "@/platform/auth/session";
 import { Badge } from "@/components/ui/Badge";
@@ -34,7 +35,15 @@ export default async function QuotesPage({ searchParams }: PageProps) {
   const status = sp.status ?? "";
   const source = parseQuoteSourceFilter(sp.bron);
   // A picked customer only counts for the term it was picked for; the server
-  // re-checks it against a fresh Shopify search either way.
+  // re-checks it against a fresh Shopify search either way. A pick left over
+  // from an earlier term is dropped from the URL instead of lingering there.
+  if ((sp.customer !== undefined || sp.for !== undefined) && sp.for !== term) {
+    const clean = new URLSearchParams();
+    if (term) clean.set("q", term);
+    if (sp.bron) clean.set("bron", sp.bron);
+    if (sp.status) clean.set("status", sp.status);
+    redirect(clean.size > 0 ? `/quotes?${clean.toString()}` : "/quotes");
+  }
   const selectedCustomer = sp.for === term ? sp.customer : undefined;
   const outcome = term ? await searchQuotesOverview(term, selectedCustomer) : ({ kind: "start" } as const);
 
@@ -120,7 +129,12 @@ export default async function QuotesPage({ searchParams }: PageProps) {
           description="Zoek rechtstreeks op offertenummer, e-mailadres of telefoonnummer."
         />
       ) : outcome.kind === "choose_customer" ? (
-        <CustomerChooser term={term} customers={outcome.customers} invalidSelection={outcome.invalidSelection} />
+        <CustomerChooser
+          term={term}
+          customers={outcome.customers}
+          invalidSelection={outcome.invalidSelection}
+          hasMoreCustomers={outcome.hasMoreCustomers}
+        />
       ) : (
         <QuotesResults
           term={term}
@@ -136,7 +150,17 @@ export default async function QuotesPage({ searchParams }: PageProps) {
   );
 }
 
-function CustomerChooser({ term, customers, invalidSelection }: { term: string; customers: QuoteCustomerChoice[]; invalidSelection: boolean }) {
+function CustomerChooser({
+  term,
+  customers,
+  invalidSelection,
+  hasMoreCustomers,
+}: {
+  term: string;
+  customers: QuoteCustomerChoice[];
+  invalidSelection: boolean;
+  hasMoreCustomers: boolean;
+}) {
   return (
     <section className="space-y-3" data-testid="quotes-customer-choice" aria-labelledby="quotes-choose-title">
       {invalidSelection && (
@@ -147,6 +171,11 @@ function CustomerChooser({ term, customers, invalidSelection }: { term: string; 
       <h2 id="quotes-choose-title" className="text-sm font-medium text-ink-secondary">
         {customers.length === 1 ? `Klant gevonden voor "${term}"` : `Meerdere klanten gevonden voor "${term}"`} — kies een klant om de offertes te zien
       </h2>
+      {hasMoreCustomers && (
+        <p role="status" className="rounded-md border border-warning-500/20 bg-warning-50 px-3 py-2 text-sm text-warning-700" data-testid="quotes-more-customers">
+          Meer klanten gevonden. Verfijn je zoekterm om de juiste klant te vinden.
+        </p>
+      )}
       <ul className="cc-card divide-y divide-border-subtle">
         {customers.map((c) => (
           <li key={c.legacyId}>
