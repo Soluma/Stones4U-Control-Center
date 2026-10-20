@@ -38,6 +38,9 @@ describe("Shopify write boundary — every mutation is guarded", () => {
     expect(withMutations.sort()).toEqual(
       [
         "draft-order-mirror.ts",
+        // Op rekening v1 (docs/ON-ACCOUNT-PAYMENT-DUE.md): payment terms,
+        // order invoice, invoice_sent_at and customer credit metafields.
+        "on-account.ts",
         "order-fulfillment-mode-mirror.ts",
         "order-logistics-metafields.ts",
         "order-mirror.ts",

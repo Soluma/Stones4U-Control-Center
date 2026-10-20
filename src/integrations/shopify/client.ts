@@ -221,6 +221,22 @@ function isTransientError(error: unknown): boolean {
   return error.status === 429 || error.status >= 500;
 }
 
+/** 429 = Shopify throttled the request and did NOT execute it — the only
+ * failure that is safe to repeat for a non-idempotent mutation. */
+function isThrottledError(error: unknown): boolean {
+  return error instanceof ShopifyApiError && error.status === 429;
+}
+
+export type ShopifyGraphQLOptions = {
+  /**
+   * false for a mutation that must never run twice (e.g. orderInvoiceSend,
+   * which mails again on every call): a network error, timeout or 5xx may
+   * mean Shopify DID execute it, so only a 429 is retried and every other
+   * failure is surfaced to the caller as "outcome unknown".
+   */
+  retryUnknownOutcome?: boolean;
+};
+
 /**
  * Runs a Shopify Admin GraphQL query/mutation with automatic client-
  * credentials auth and up to MAX_RETRIES retries (linear backoff) on
@@ -228,8 +244,13 @@ function isTransientError(error: unknown): boolean {
  * matching what discovery found worked better in OfferteApp
  * (docs/platform-discovery/12).
  */
-export async function shopifyGraphQL<T>(query: string, variables?: Record<string, unknown>): Promise<T> {
+export async function shopifyGraphQL<T>(
+  query: string,
+  variables?: Record<string, unknown>,
+  options: ShopifyGraphQLOptions = {},
+): Promise<T> {
   const config = getShopifyConfig();
+  const retryable = options.retryUnknownOutcome === false ? isThrottledError : isTransientError;
   let lastError: unknown;
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
@@ -238,7 +259,7 @@ export async function shopifyGraphQL<T>(query: string, variables?: Record<string
       return await performGraphQLRequest<T>(config, accessToken, query, variables);
     } catch (error) {
       lastError = error;
-      if (!isTransientError(error) || attempt === MAX_RETRIES) {
+      if (!retryable(error) || attempt === MAX_RETRIES) {
         throw error;
       }
       await new Promise((resolve) => setTimeout(resolve, 300 * (attempt + 1)));
