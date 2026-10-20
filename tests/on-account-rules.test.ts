@@ -71,10 +71,11 @@ describe("on-account state machine", () => {
     const path = ["REGISTERED", "WAITING_FOR_DELIVERY", "DELIVERED", "TERMS_SET", "INVOICE_SENDING", "INVOICE_SENT", "PAID"] as const;
     path.slice(1).forEach((to, i) => expect(canTransition(path[i]!, to)).toBe(true));
   });
-  it("never lets terminal states move, and never skips straight to INVOICE_SENT", () => {
+  it("never lets terminal states move, and never skips delivery or the terms step", () => {
     expect(canTransition("PAID", "TERMS_SET")).toBe(false);
     expect(canTransition("CANCELLED", "DELIVERED")).toBe(false);
-    expect(canTransition("TERMS_SET", "INVOICE_SENT")).toBe(false);
+    expect(canTransition("DELIVERED", "INVOICE_SENT")).toBe(false);
+    expect(canTransition("DELIVERED", "INVOICE_SENDING")).toBe(false);
     expect(canTransition("WAITING_FOR_DELIVERY", "TERMS_SET")).toBe(false);
     expect(() => assertTransition("PAID", "INVOICE_SENDING")).toThrow(InvalidOnAccountTransitionError);
   });

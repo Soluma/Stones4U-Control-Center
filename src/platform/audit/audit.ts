@@ -68,7 +68,16 @@ export type AuditAction =
   // about how goods are provided, never a customer delivery-date submission.
   | "order_fulfillment_mode.set"
   | "order_fulfillment_mode.cleared"
-  | "order_fulfillment_mode.repaired";
+  | "order_fulfillment_mode.repaired"
+  // Op rekening v1 — docs/ON-ACCOUNT-PAYMENT-DUE.md
+  | "on_account.registered"
+  | "on_account.delivery_recorded"
+  | "on_account.invoice_requested"
+  | "on_account.terms_set"
+  | "on_account.invoice_sent"
+  | "on_account.manual_review"
+  | "on_account.review_resolved"
+  | "customer_credit.updated";
 
 export type AuditEntityType =
   | "User"
@@ -93,7 +102,10 @@ export type AuditEntityType =
   | "DeliveryDateHandoff"
   // Phase 6L — the Shopify Order itself is the audited entity; entityId is
   // the Order GID. No local row exists for it, and none is created.
-  | "ShopifyOrder";
+  | "ShopifyOrder"
+  // Op rekening v1 — entityId is the OnAccountOrder id / Shopify Customer GID
+  | "OnAccountOrder"
+  | "ShopifyCustomer";
 
 type LogAuditInput = {
   userId: string | null;

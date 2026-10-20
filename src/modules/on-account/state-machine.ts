@@ -34,7 +34,9 @@ const TRANSITIONS: Record<OnAccountState, readonly OnAccountState[]> = {
   PENDING_TEMP_TERMS: ["WAITING_FOR_DELIVERY", "DELIVERED", "PAID", "CANCELLED", "MANUAL_REVIEW"],
   WAITING_FOR_DELIVERY: ["DELIVERED", "PAID", "CANCELLED", "MANUAL_REVIEW"],
   DELIVERED: ["TERMS_SET", "PAID", "CANCELLED", "MANUAL_REVIEW"],
-  TERMS_SET: ["INVOICE_SENDING", "PAID", "CANCELLED", "MANUAL_REVIEW"],
+  // TERMS_SET -> INVOICE_SENT only when Shopify's own invoice_sent_at marker
+  // already says it was sent (adopt, never send a second time).
+  TERMS_SET: ["INVOICE_SENDING", "INVOICE_SENT", "PAID", "CANCELLED", "MANUAL_REVIEW"],
   // An uncertain send never goes back to TERMS_SET automatically: that would
   // allow a second mail. Only a verified non-send (Shopify userError) may.
   INVOICE_SENDING: ["INVOICE_SENT", "TERMS_SET", "PAID", "CANCELLED", "MANUAL_REVIEW"],

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { intakeShopifyOrderWebhook } from "@/modules/delivery/webhook-intake";
 import { processOrderWebhookEvent } from "@/modules/delivery/order-webhook-processing";
+import { noteOnAccountFromWebhook } from "@/modules/on-account/webhook-hook";
 
 // Phase 6F — Shopify ORDERS_PAID webhook intake. Topic verified live
 // against this API version's WebhookSubscriptionTopic enum (build
@@ -44,6 +45,15 @@ export async function POST(request: NextRequest) {
   }
   if (intake.outcome === "INVALID_PAYLOAD") {
     return NextResponse.json({ error: "invalid payload" }, { status: 400 });
+  }
+
+  // Op rekening v1: record (or mark paid) only — fast, no Shopify call, never
+  // allowed to change the delivery-date outcome below. Failures are logged;
+  // the worker also sweeps registered orders, so nothing depends on a retry.
+  try {
+    await noteOnAccountFromWebhook("ORDER_PAID", intake.orderGid, rawBody);
+  } catch (error) {
+    console.error("on_account_webhook_hook_failed", error instanceof Error ? error.message : String(error));
   }
 
   const result = await processOrderWebhookEvent({
