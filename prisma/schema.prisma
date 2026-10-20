@@ -231,21 +231,21 @@ model CustomerProfile {
   // once a human has explicitly set/confirmed it (ADR-011 §2).
   companyNameConfirmed Boolean       @default(false)
 
-  notes           Note[]
-  tasks           Task[]
-  activities      Activity[]
+  notes                Note[]
+  tasks                Task[]
+  activities           Activity[]
   // Phase 2 — replaces the never-populated Phase-1 `tags String[]` field
   // (no tag UI ever existed to write it, see docs/platform-discovery/26 §3)
   // with a real, reusable, relational tag model.
-  tagAssignments  CustomerTagAssignment[]
-  files           File[]
-  appointments    Appointment[]
+  tagAssignments       CustomerTagAssignment[]
+  files                File[]
+  appointments         Appointment[]
   // Phase 3a
-  externalMatches ExternalContactMatch[]
+  externalMatches      ExternalContactMatch[]
   // Phase 4a
-  opportunities   Opportunity[]
+  opportunities        Opportunity[]
   // Phase 4c
-  contacts        CustomerContact[]
+  contacts             CustomerContact[]
   // Phase 7 — docs/QUOTE-DELIVERY-DATE-PORTAL-BUILD.md
   deliveryDateHandoffs DeliveryDateHandoff[]
 
@@ -535,33 +535,33 @@ model CustomerTagAssignment {
 // the enum's other values exist so the timeline-rendering code has one
 // shared shape, not because this table stores them.
 model Activity {
-  id                   String             @id @default(cuid())
-  customerProfileId    String
-  customerProfile      CustomerProfile    @relation(fields: [customerProfileId], references: [id], onDelete: Cascade)
-  type                 ActivityType
-  sourceType           ActivitySourceType @default(CONTROL_CENTER)
-  title                String
-  summary              String?
-  occurredAt           DateTime
-  actorId              String?
-  actor                User?              @relation(fields: [actorId], references: [id])
-  relatedNoteId        String?
-  relatedNote          Note?              @relation(fields: [relatedNoteId], references: [id])
-  relatedTaskId        String?
-  relatedTask          Task?              @relation(fields: [relatedTaskId], references: [id])
+  id                           String               @id @default(cuid())
+  customerProfileId            String
+  customerProfile              CustomerProfile      @relation(fields: [customerProfileId], references: [id], onDelete: Cascade)
+  type                         ActivityType
+  sourceType                   ActivitySourceType   @default(CONTROL_CENTER)
+  title                        String
+  summary                      String?
+  occurredAt                   DateTime
+  actorId                      String?
+  actor                        User?                @relation(fields: [actorId], references: [id])
+  relatedNoteId                String?
+  relatedNote                  Note?                @relation(fields: [relatedNoteId], references: [id])
+  relatedTaskId                String?
+  relatedTask                  Task?                @relation(fields: [relatedTaskId], references: [id])
   // Phase 2
-  relatedFileId        String?
-  relatedFile          File?              @relation(fields: [relatedFileId], references: [id])
-  relatedAppointmentId String?
-  relatedAppointment   Appointment?       @relation(fields: [relatedAppointmentId], references: [id])
+  relatedFileId                String?
+  relatedFile                  File?                @relation(fields: [relatedFileId], references: [id])
+  relatedAppointmentId         String?
+  relatedAppointment           Appointment?         @relation(fields: [relatedAppointmentId], references: [id])
   // Phase 4a — fifth related*Id, same pattern as the four above.
-  relatedOpportunityId String?
-  relatedOpportunity   Opportunity?       @relation(fields: [relatedOpportunityId], references: [id])
+  relatedOpportunityId         String?
+  relatedOpportunity           Opportunity?         @relation(fields: [relatedOpportunityId], references: [id])
   // Phase 7 — sixth related*Id, same pattern.
   relatedDeliveryDateHandoffId String?
   relatedDeliveryDateHandoff   DeliveryDateHandoff? @relation(fields: [relatedDeliveryDateHandoffId], references: [id])
-  metadata             Json?
-  createdAt            DateTime           @default(now())
+  metadata                     Json?
+  createdAt                    DateTime             @default(now())
 
   @@index([customerProfileId, occurredAt])
   @@index([relatedOpportunityId, occurredAt])
@@ -928,14 +928,14 @@ model DeliveryDateHandoff {
   // enforced server-side in delivery-details.ts). Plain text only: never
   // parsed as HTML/markdown, never mirrored to Shopify, and deliberately not
   // copied into AuditEvent metadata. Null for every historical row.
-  deliveryComment String?
+  deliveryComment           String?
   // Phase 6P — did the customer confirm the location is reachable by a large
   // truck? `true` = confirmed, `false` = NOT confirmed (which is not a claim
   // of inaccessibility), `null` = never asked. Logistics information only:
   // it never blocks a submission and is not mirrored to Shopify.
   largeTruckAccessConfirmed Boolean?
 
-  paymentProvider PaymentProvider          @default(UNKNOWN)
+  paymentProvider PaymentProvider           @default(UNKNOWN)
   status          DeliveryDateHandoffStatus @default(PENDING)
 
   lastMirrorAt    DateTime?
@@ -1005,7 +1005,7 @@ model ShopifyWebhookEvent {
   // rejected the request before ever reaching business logic (those
   // rejections are not persisted here at all — see the routes' own doc
   // comments for why).
-  eligible         Boolean?
+  eligible          Boolean?
   eligibilityReason String?
 
   // The DeliveryDateHandoff created as a result, if the decision was ever
@@ -1023,4 +1023,109 @@ model ShopifyWebhookEvent {
 
   @@unique([shopDomain, webhookId])
   @@index([status])
+}
+
+// ─── Op rekening v1 — central payment-due service ──────────────────────
+// docs/ON-ACCOUNT-PAYMENT-DUE.md. Shopify stays the source of truth for the
+// order, its payment terms and whether it is paid; this table only tracks
+// OUR progress through the flow (so retries and duplicate events are safe)
+// and never copies customer data. One row per on-account Shopify order.
+
+enum OnAccountState {
+  /// Order seen (tag op-rekening), not yet checked/cleaned.
+  REGISTERED
+  /// draftOrderComplete happened but the temporary FULFILLMENT terms are
+  /// still on the order — retry only deletes them, never recreates anything.
+  PENDING_TEMP_TERMS
+  /// Resting state: PENDING, no payment terms, no due date, no invoice.
+  WAITING_FOR_DELIVERY
+  /// deliveredAt recorded once; FIXED terms not yet (verified) on Shopify.
+  DELIVERED
+  /// FIXED terms with the exact dueAt verified on Shopify; invoice not sent.
+  TERMS_SET
+  /// Exactly one worker claimed the invoice send. If found here after a
+  /// crash, the send outcome is UNCERTAIN — never re-sent blindly.
+  INVOICE_SENDING
+  INVOICE_SENT
+  PAID
+  CANCELLED
+  /// Needs a human; reviewReason says why. Nothing automatic happens.
+  MANUAL_REVIEW
+}
+
+enum OnAccountTriggerSource {
+  /// Source2POS: goods handed over at the counter (handed_over_at).
+  COUNTER_HANDOVER
+  /// OfferteApp audit customer_pickup_handed_over (Pick App "Meegegeven aan klant").
+  PICKUP_HANDOVER
+  /// CRM button "Afgeleverd bij klant" (bezorging, v1).
+  MANUAL_DELIVERY
+  /// "Betaallink nu versturen": the term starts at the invoice moment.
+  MANUAL_INVOICE
+}
+
+model OnAccountOrder {
+  id              String         @id @default(cuid())
+  shopifyOrderGid String         @unique
+  /// Display only (e.g. "#1555"), refreshed on read.
+  orderName       String?
+  /// SOURCE2POS | OFFERTEAPP | UNKNOWN — which app created the order.
+  sourceApp       String
+  /// Snapshot taken when the order was created (order metafield
+  /// stones4u.payment_term_days, fallback custom attribute). Never re-read
+  /// from the customer afterwards.
+  termDays        Int?
+  state           OnAccountState @default(REGISTERED)
+  reviewReason    String?
+
+  deliveredAt       DateTime?
+  triggerSource     OnAccountTriggerSource?
+  triggerEventId    String?
+  /// CRM user id for MANUAL_DELIVERY (plain id, no FK — audit trail lives in AuditEvent).
+  deliveredByUserId String?
+
+  dueAt          DateTime?
+  paymentTermsId String?
+  termsSetAt     DateTime?
+
+  invoiceSendingAt DateTime?
+  invoiceSentAt    DateTime?
+  invoiceRecipient String?
+
+  paidAt      DateTime?
+  cancelledAt DateTime?
+
+  attempts      Int       @default(0)
+  nextAttemptAt DateTime?
+  /// Short category + message, never a raw Shopify body or PII.
+  lastError     String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  events OnAccountEvent[]
+
+  @@index([state, nextAttemptAt])
+}
+
+/// Every incoming trigger/event, deduplicated by (source, eventKey) — a Pick
+/// App/transport/webhook event delivered twice is stored once and ignored.
+model OnAccountEvent {
+  id               String         @id @default(cuid())
+  onAccountOrderId String
+  onAccountOrder   OnAccountOrder @relation(fields: [onAccountOrderId], references: [id], onDelete: Cascade)
+  /// e.g. "offerteapp", "source2pos", "crm", "shopify-webhook"
+  source           String
+  /// Stable id from the source, e.g. "audit:1234" or a request uuid.
+  eventKey         String
+  kind             String
+  occurredAt       DateTime
+  /// APPLIED | IGNORED_ALREADY_DELIVERED | IGNORED_NOT_ELIGIBLE | INFO
+  outcome          String
+  actorUserId      String?
+  metadata         Json?
+  createdAt        DateTime       @default(now())
+
+  @@unique([source, eventKey])
+  @@index([onAccountOrderId])
 }
