@@ -11,6 +11,7 @@ import { AccountManagerControl } from "./AccountManagerControl";
 import { CustomerTagsControl } from "./CustomerTagsControl";
 import { CustomerTypeControl } from "./CustomerTypeControl";
 import { CompanyNameControl } from "./CompanyNameControl";
+import { CustomerCreditControl } from "./CustomerCreditControl";
 import { effectiveCustomerType, customerDisplayName, customerSecondaryName } from "@/modules/crm/customer-identity";
 import type { Customer360 } from "@/modules/crm/customer-profile.service";
 import type { Role } from "@/generated/prisma";
@@ -130,6 +131,10 @@ export function CustomerHeader({
               <div className="flex items-center gap-1.5 text-xs text-ink-tertiary">
                 <span>Klanttype:</span>
                 <CustomerTypeControl customerProfileId={profile.id} override={profile.customerTypeOverride} canEdit={canEdit} />
+              </div>
+              <div className="flex items-center gap-1.5 text-xs text-ink-tertiary">
+                <span>Op rekening:</span>
+                <CustomerCreditControl customerProfileId={profile.id} canEdit={viewerRole === "ADMIN"} />
               </div>
               <div className="flex items-center gap-1.5 text-xs text-ink-tertiary">
                 <span>Bedrijfsnaam:</span>
