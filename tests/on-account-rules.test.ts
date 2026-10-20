@@ -69,7 +69,7 @@ describe("computeDueAt — Amsterdam calendar date + N days at 23:59:59 local", 
 describe("on-account state machine", () => {
   it("allows the happy path", () => {
     const path = ["REGISTERED", "WAITING_FOR_DELIVERY", "DELIVERED", "TERMS_SET", "INVOICE_SENDING", "INVOICE_SENT", "PAID"] as const;
-    for (let i = 1; i < path.length; i++) expect(canTransition(path[i - 1], path[i])).toBe(true);
+    path.slice(1).forEach((to, i) => expect(canTransition(path[i]!, to)).toBe(true));
   });
   it("never lets terminal states move, and never skips straight to INVOICE_SENT", () => {
     expect(canTransition("PAID", "TERMS_SET")).toBe(false);

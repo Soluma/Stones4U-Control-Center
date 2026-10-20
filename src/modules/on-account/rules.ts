@@ -75,7 +75,9 @@ export function computeDueAt(deliveredAt: Date, termDays: number): Date {
   if (!Number.isInteger(termDays) || termDays < 1 || termDays > MAX_TERM_DAYS) {
     throw new InvalidTermDaysError(String(termDays));
   }
-  const [y, m, d] = businessDate(deliveredAt).split("-").map(Number);
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(businessDate(deliveredAt));
+  if (!match) throw new Error("Kon de leverdatum niet bepalen.");
+  const [y, m, d] = [Number(match[1]), Number(match[2]), Number(match[3])];
   // Wall-clock 23:59:59 on the target day, first read as if it were UTC…
   const wallAsUtc = Date.UTC(y, m - 1, d + termDays, 23, 59, 59);
   // …then shifted by Amsterdam's offset on that day. Evaluating the offset at
