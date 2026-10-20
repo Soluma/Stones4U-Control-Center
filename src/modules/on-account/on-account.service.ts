@@ -762,3 +762,46 @@ export async function requestInvoiceNow(input: {
   const row = await prisma.onAccountOrder.findUnique({ where: { shopifyOrderGid: input.orderGid } });
   return { outcome: result.outcome, row };
 }
+
+// ── CRM staff actions ────────────────────────────────────────────────
+
+export class OnAccountActionError extends Error {
+  constructor(
+    message: string,
+    readonly status = 400,
+  ) {
+    super(message);
+  }
+}
+
+/**
+ * Bezorging v1: a staff member confirms "Afgeleverd bij klant". The moment
+ * may be earlier than now (delivered yesterday) but never in the future and
+ * never before the order was registered. One manual delivery per order.
+ */
+export async function recordManualDelivery(id: string, deliveredAt: Date, actorUserId: string): Promise<RecordDeliveryResult> {
+  const row = await prisma.onAccountOrder.findUnique({ where: { id } });
+  if (!row) throw new OnAccountActionError("Order niet gevonden.", 404);
+  if (Number.isNaN(deliveredAt.getTime())) throw new OnAccountActionError("Ongeldig levermoment.");
+  if (deliveredAt.getTime() > Date.now() + 60_000) throw new OnAccountActionError("Het levermoment kan niet in de toekomst liggen.");
+  if (deliveredAt.getTime() < row.createdAt.getTime() - 24 * 60 * 60_000) {
+    throw new OnAccountActionError("Het levermoment ligt vóór het aanmaken van de order.");
+  }
+  return recordDelivery({
+    orderGid: row.shopifyOrderGid,
+    triggerSource: "MANUAL_DELIVERY",
+    source: "crm",
+    eventKey: `manual-delivery:${row.id}`,
+    kind: "MANUAL_DELIVERY",
+    occurredAt: deliveredAt,
+    actorUserId,
+  });
+}
+
+export async function listOnAccountOrders(limit = 300) {
+  return prisma.onAccountOrder.findMany({
+    orderBy: [{ updatedAt: "desc" }],
+    take: limit,
+    include: { events: { orderBy: { createdAt: "desc" }, take: 5 } },
+  });
+}

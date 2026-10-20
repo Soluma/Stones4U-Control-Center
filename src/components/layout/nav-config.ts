@@ -12,6 +12,7 @@ import {
   Settings,
   TrendingUp,
   CalendarClock,
+  Receipt,
   type LucideIcon,
 } from "lucide-react";
 
@@ -56,6 +57,8 @@ export const NAV_SECTIONS: NavSection[] = [
       // quote app, orders from Shopify with OfferteApp logistics.
       { label: "Offertes", href: "/quotes", icon: FileText },
       { label: "Orders", href: "/orders", icon: ShoppingCart },
+      // Op rekening v1 — docs/ON-ACCOUNT-PAYMENT-DUE.md
+      { label: "Op rekening", href: "/op-rekening", icon: Receipt },
     ],
   },
   {

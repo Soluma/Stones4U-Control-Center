@@ -139,6 +139,7 @@ import {
   reconcileOnAccountOrder,
   recordDelivery,
   registerOnAccountOrder,
+  recordManualDelivery,
   requestInvoiceNow,
   resolveReview,
   runOnAccountWorker,
@@ -470,5 +471,21 @@ describe("manual invoice, paid webhook, worker", () => {
     expect(result.polled.find((p) => p.id === rowId)?.outcome).toBe("SOURCE_UNAVAILABLE");
     expect((await rowOf(o.id)).state).toBe("WAITING_FOR_DELIVERY");
     expect((await rowOf(o.id)).nextAttemptAt).not.toBeNull();
+  });
+});
+
+describe("CRM 'Afgeleverd bij klant' (bezorging v1)", () => {
+  it("records once (double click = duplicate), validates the moment, then terms + one invoice", async () => {
+    const o = newOrder();
+    await registerOnAccountOrder(o.id, "WEBHOOK");
+    const row = await rowOf(o.id);
+    await expect(recordManualDelivery(row.id, new Date(Date.now() + 3_600_000), "u1")).rejects.toThrow(/toekomst/);
+    await expect(recordManualDelivery(row.id, new Date(row.createdAt.getTime() - 3 * 86_400_000), "u1")).rejects.toThrow(/vóór/);
+    const at = new Date(Date.now() - 3_600_000);
+    const [a, b] = await Promise.all([recordManualDelivery(row.id, at, "u1"), recordManualDelivery(row.id, at, "u1")]);
+    expect([a.outcome, b.outcome].sort()).toEqual(["APPLIED", "DUPLICATE"]);
+    const after = await rowOf(o.id);
+    expect(after).toMatchObject({ state: "INVOICE_SENT", triggerSource: "MANUAL_DELIVERY", deliveredByUserId: "u1" });
+    expect(ops("invoice")).toHaveLength(1);
   });
 });
