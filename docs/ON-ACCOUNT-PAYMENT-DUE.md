@@ -195,5 +195,34 @@ webhook after go-live. Adopting old orders is a separate, approved step.
   conflicting term then goes to MANUAL_REVIEW (no guessing).
 - `orderInvoiceSend` has no idempotency key in Shopify. Hence the claim, the
   marker, and the "never resend blindly" rule.
-- The worker needs a scheduler (Fly machine schedule or an external cron).
-  Without it, orders stay in WAITING_FOR_DELIVERY / TERMS_SET.
+
+## Scheduler
+
+`src/instrumentation.ts` starts an in-process timer on the CRM's always-on
+machines. No extra machine and no extra cost. Every
+`ON_ACCOUNT_SCHEDULER_INTERVAL_MS` (default 5 min, minimum 1 min) it POSTs
+to the machine's own `/api/internal/on-account/run`, with the worker token.
+
+The run itself (`src/modules/on-account/scheduler.ts`):
+
+- **Lock:** `pg_try_advisory_xact_lock`. Two machines, two ticks, or a
+  manual call never overlap; the losing run gets `SKIPPED_LOCKED`.
+- **Deadline:** default 4 min. No new order is started after it.
+- **Logging:** one JSON log line per run (`on_account_scheduler_run`).
+- **Failures:** a failed run writes the audit event
+  `on_account.scheduler_failed`. Per-order failures appear as
+  `lastError` / MANUAL_REVIEW on /op-rekening.
+
+It is the same idempotent `runOnAccountWorker`, so there is no second
+logic.
+
+The timer is off unless `ON_ACCOUNT_SCHEDULER_ENABLED=true`. The route also
+refuses while `ON_ACCOUNT_SERVICE_ENABLED` is not `true`.
+
+Alternatives considered:
+
+| Option | Interval | Cost |
+|---|---|---|
+| Fly scheduled machine | `hourly` at best (too coarse) | ~€0 |
+| Extra Fly process group with cron | any interval | ~$2–3/month always-on |
+| External cron (GitHub Actions) | best effort, delays | free, extra secret outside Fly |

@@ -672,9 +672,13 @@ export type PickupEventSource = (orderGid: string) => Promise<{ id: string; occu
  * One worker pass (called by the scheduled internal route): advance every
  * due row, and poll WAITING_FOR_DELIVERY orders for a pickup handover.
  */
-export async function runOnAccountWorker(options: { limit?: number; pickupEvents?: PickupEventSource } = {}) {
+export async function runOnAccountWorker(options: { limit?: number; pickupEvents?: PickupEventSource; deadlineAt?: number } = {}) {
   const limit = options.limit ?? 25;
   const now = new Date();
+  // Soft deadline: no NEW order is started after it (one already running
+  // finishes; every step is a compare-and-set, so a late finish is safe).
+  const pastDeadline = () => options.deadlineAt !== undefined && Date.now() >= options.deadlineAt;
+  let stoppedByDeadline = false;
   const due = await prisma.onAccountOrder.findMany({
     where: {
       state: { in: ["REGISTERED", "PENDING_TEMP_TERMS", "DELIVERED", "TERMS_SET", "INVOICE_SENDING"] },
@@ -685,18 +689,26 @@ export async function runOnAccountWorker(options: { limit?: number; pickupEvents
   });
   const advanced: { id: string; state: OnAccountState }[] = [];
   for (const row of due) {
+    if (pastDeadline()) {
+      stoppedByDeadline = true;
+      break;
+    }
     const final = await reconcileOnAccountOrder(row.id);
     advanced.push({ id: row.id, state: final.state });
   }
 
   const polled: { id: string; outcome: string }[] = [];
-  if (options.pickupEvents) {
+  if (options.pickupEvents && !stoppedByDeadline) {
     const waiting = await prisma.onAccountOrder.findMany({
       where: { state: "WAITING_FOR_DELIVERY", OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }] },
       orderBy: { updatedAt: "asc" },
       take: limit,
     });
     for (const row of waiting) {
+      if (pastDeadline()) {
+        stoppedByDeadline = true;
+        break;
+      }
       await prisma.onAccountOrder.updateMany({
         where: { id: row.id, state: "WAITING_FOR_DELIVERY" },
         data: { nextAttemptAt: new Date(Date.now() + PICKUP_POLL_INTERVAL_MS) },
@@ -728,7 +740,7 @@ export async function runOnAccountWorker(options: { limit?: number; pickupEvents
       }
     }
   }
-  return { advanced, polled };
+  return { advanced, polled, stoppedByDeadline };
 }
 
 // ── "Betaallink nu versturen" (OfferteApp, via the integration API) ──

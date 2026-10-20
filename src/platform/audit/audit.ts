@@ -77,6 +77,7 @@ export type AuditAction =
   | "on_account.invoice_sent"
   | "on_account.manual_review"
   | "on_account.review_resolved"
+  | "on_account.scheduler_failed"
   | "customer_credit.updated";
 
 export type AuditEntityType =

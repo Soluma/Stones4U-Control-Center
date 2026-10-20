@@ -145,6 +145,7 @@ import {
   runOnAccountWorker,
 } from "@/modules/on-account/on-account.service";
 import { noteOnAccountFromWebhook } from "@/modules/on-account/webhook-hook";
+import { runScheduledOnAccountPass } from "@/modules/on-account/scheduler";
 
 const created: string[] = [];
 function newOrder(overrides: Partial<FakeOrder> = {}): FakeOrder {
@@ -487,5 +488,74 @@ describe("CRM 'Afgeleverd bij klant' (bezorging v1)", () => {
     const after = await rowOf(o.id);
     expect(after).toMatchObject({ state: "INVOICE_SENT", triggerSource: "MANUAL_DELIVERY", deliveredByUserId: "u1" });
     expect(ops("invoice")).toHaveLength(1);
+  });
+});
+
+describe("scheduled pass (scheduler -> same idempotent worker)", () => {
+  const readsOf = (gid: string) => ops("read").filter((c) => c.args === gid).length;
+
+  it("two overlapping passes: exactly one runs, the other is SKIPPED_LOCKED; one invoice", async () => {
+    const o = newOrder();
+    await registerOnAccountOrder(o.id, "WEBHOOK");
+    let slowFirst = true;
+    const source = async (gid: string) => {
+      if (gid !== o.id) return [];
+      if (slowFirst) {
+        slowFirst = false;
+        await new Promise((r) => setTimeout(r, 400)); // holds the lock
+      }
+      return [{ id: `pickup-${o.id}`, occurredAt: new Date(Date.now() - 60_000).toISOString() }];
+    };
+    const first = runScheduledOnAccountPass({ trigger: "test-a", pickupEvents: source, limit: 500 });
+    await new Promise((r) => setTimeout(r, 100));
+    const second = await runScheduledOnAccountPass({ trigger: "test-b", pickupEvents: source, limit: 500 });
+    expect(second.status).toBe("SKIPPED_LOCKED");
+    expect((await first).status).toBe("RAN");
+    expect(await rowOf(o.id)).toMatchObject({ state: "INVOICE_SENT", triggerSource: "PICKUP_HANDOVER" });
+    expect(ops("invoice").filter((c) => (c.args as { gid: string }).gid === o.id)).toHaveLength(1);
+    // the lock is released after the pass
+    expect((await runScheduledOnAccountPass({ trigger: "test-c", limit: 500 })).status).toBe("RAN");
+  });
+
+  it("an empty pass runs and changes nothing", async () => {
+    await runScheduledOnAccountPass({ trigger: "warm", limit: 500 });
+    shop.calls = [];
+    const result = await runScheduledOnAccountPass({ trigger: "empty", limit: 500 });
+    expect(result).toMatchObject({ status: "RAN", advanced: 0, polled: 0, stoppedByDeadline: false });
+    expect(ops("invoice")).toHaveLength(0);
+    expect(ops("create")).toHaveLength(0);
+  });
+
+  it("a retryable Shopify failure backs off (attempts, nextAttemptAt, lastError) and resumes later", async () => {
+    const o = newOrder();
+    const row = await prisma.onAccountOrder.create({ data: { shopifyOrderGid: o.id, sourceApp: "UNKNOWN", state: "REGISTERED" } });
+    shop.fail.read = 1;
+    await runScheduledOnAccountPass({ trigger: "retry-1", limit: 500 });
+    const failed = await rowOf(o.id);
+    expect(failed).toMatchObject({ state: "REGISTERED", attempts: 1 });
+    expect(failed.lastError).toMatch(/read failed/);
+    expect(failed.nextAttemptAt!.getTime()).toBeGreaterThan(Date.now());
+    const readsBefore = readsOf(o.id);
+    await runScheduledOnAccountPass({ trigger: "retry-2", limit: 500 });
+    expect(readsOf(o.id)).toBe(readsBefore); // still backing off: not touched
+    await prisma.onAccountOrder.update({ where: { id: row.id }, data: { nextAttemptAt: new Date(Date.now() - 1000) } });
+    await runScheduledOnAccountPass({ trigger: "retry-3", limit: 500 });
+    expect((await rowOf(o.id)).state).toBe("WAITING_FOR_DELIVERY");
+  });
+
+  it("MANUAL_REVIEW is never picked up again, however many passes run", async () => {
+    const o = newOrder();
+    await prisma.onAccountOrder.create({ data: { shopifyOrderGid: o.id, sourceApp: "UNKNOWN", state: "MANUAL_REVIEW", reviewReason: "INVOICE_SEND_UNCERTAIN" } });
+    for (let i = 0; i < 3; i++) await runScheduledOnAccountPass({ trigger: `review-${i}`, limit: 500, pickupEvents: async () => [] });
+    expect(readsOf(o.id)).toBe(0);
+    expect(await rowOf(o.id)).toMatchObject({ state: "MANUAL_REVIEW", attempts: 0 });
+  });
+
+  it("past the deadline no new order is started", async () => {
+    const o = newOrder();
+    await prisma.onAccountOrder.create({ data: { shopifyOrderGid: o.id, sourceApp: "UNKNOWN", state: "REGISTERED" } });
+    const result = await runScheduledOnAccountPass({ trigger: "deadline", limit: 500, deadlineMs: 0 });
+    expect(result).toMatchObject({ status: "RAN", advanced: 0, stoppedByDeadline: true });
+    expect(readsOf(o.id)).toBe(0);
   });
 });
