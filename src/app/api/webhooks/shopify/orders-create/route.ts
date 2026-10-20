@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { intakeShopifyOrderWebhook } from "@/modules/delivery/webhook-intake";
 import { processOrderWebhookEvent } from "@/modules/delivery/order-webhook-processing";
-import { noteOnAccountFromWebhook } from "@/modules/on-account/webhook-hook";
+import { noteOnAccountFromWebhookSafely } from "@/modules/on-account/webhook-hook";
 
 // Phase 6C — Shopify ORDERS_CREATE webhook intake, refactored in Phase 6F
 // onto the shared intake/processing modules it now has in common with
@@ -52,11 +52,7 @@ export async function POST(request: NextRequest) {
   // Op rekening v1: record (or mark paid) only — fast, no Shopify call, never
   // allowed to change the delivery-date outcome below. Failures are logged;
   // the worker also sweeps registered orders, so nothing depends on a retry.
-  try {
-    await noteOnAccountFromWebhook("ORDER_CREATED", intake.orderGid, rawBody);
-  } catch (error) {
-    console.error("on_account_webhook_hook_failed", error instanceof Error ? error.message : String(error));
-  }
+  await noteOnAccountFromWebhookSafely("ORDER_CREATED", intake.orderGid, rawBody);
 
   const result = await processOrderWebhookEvent({
     receiptId: intake.receiptId,

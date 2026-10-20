@@ -63,3 +63,22 @@ export async function noteOnAccountFromWebhook(trigger: "ORDER_CREATED" | "ORDER
   await prisma.onAccountOrder.updateMany({ where: { id: row.id, state: row.state }, data: { nextAttemptAt: new Date() } });
   return "QUEUED";
 }
+
+/**
+ * What the webhook routes call: never throws, so the on-account hook can
+ * never change the delivery-date outcome of the same webhook. A failure is
+ * logged (fixed event name, short reason only); the worker sweeps
+ * registered orders, so nothing depends on Shopify's redelivery.
+ */
+export async function noteOnAccountFromWebhookSafely(
+  trigger: "ORDER_CREATED" | "ORDER_PAID",
+  orderGid: string,
+  rawBody: string,
+): Promise<OnAccountWebhookOutcome | "FAILED"> {
+  try {
+    return await noteOnAccountFromWebhook(trigger, orderGid, rawBody);
+  } catch (error) {
+    console.error("on_account_webhook_hook_failed", trigger, error instanceof Error ? error.name : "unknown");
+    return "FAILED";
+  }
+}

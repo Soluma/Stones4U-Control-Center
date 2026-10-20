@@ -201,7 +201,7 @@ async function stepCleanup(row: OnAccountOrder, snapshot: OnAccountOrderSnapshot
       await toReview(row, term.error, term.detail);
       return "MOVED";
     }
-    await prisma.onAccountOrder.updateMany({ where: { id: row.id, state: row.state }, data: { termDays: term.termDays, orderName: snapshot.name } });
+    await prisma.onAccountOrder.updateMany({ where: { id: row.id, state: row.state }, data: { termDays: term.termDays, orderName: snapshot.name, sourceApp: detectSourceApp(snapshot.appName) } });
     row = { ...row, termDays: term.termDays };
   }
 
