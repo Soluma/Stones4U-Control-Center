@@ -1009,6 +1009,24 @@ describe("Phase I — the ONE definitive invoice + ONE Stones4U invoice mail", (
     expect(ops("invoice")).toHaveLength(0);
   });
 
+  it("the WORKER (not just a direct reconcile) picks up every retryable Phase I state", async () => {
+    const o = newOrder();
+    await registerOnAccountOrder(o.id, "WEBHOOK");
+    shop.mailMode = "neverArrived";
+    await deliver(o, "i13");
+    const row = await rowOf(o.id);
+    expect(row.state).toBe("INVOICE_READY");
+    await due(row.id);
+    await runOnAccountWorker({ limit: 500 });
+    expect((await rowOf(o.id)).state).toBe("INVOICE_SENT");
+    expect(ops("invoice")).toHaveLength(1);
+  });
+
+  it("the worker list of workable states is the state machine's (INVOICE_READY / INVOICE_GENERATING included)", async () => {
+    const { WORKABLE_STATES } = await import("@/modules/on-account/state-machine");
+    expect([...WORKABLE_STATES].sort()).toEqual(["DELIVERED", "INVOICE_GENERATING", "INVOICE_READY", "INVOICE_SENDING", "PENDING_TEMP_TERMS", "REGISTERED", "TERMS_SET"]);
+  });
+
   it("a crashed generator (INVOICE_GENERATING past the grace) is retried safely", async () => {
     const o = newOrder({ terms: { id: "gid://shopify/PaymentTerms/ours4", type: "FIXED", dueAt: "2026-11-19T22:59:59Z" } });
     const row = await termsSetRow(o, "gid://shopify/PaymentTerms/ours4", { state: "INVOICE_GENERATING", invoiceGeneratingAt: new Date(Date.now() - 10 * 60_000) });

@@ -24,6 +24,7 @@ import {
   nextAttemptDelayMs,
   REVIEW_REASON_LABELS,
   TERMINAL_STATES,
+  WORKABLE_STATES,
   type ReviewReason,
 } from "./state-machine";
 
@@ -907,7 +908,9 @@ export async function runOnAccountWorker(options: { limit?: number; pickupEvents
   let stoppedByDeadline = false;
   const due = await prisma.onAccountOrder.findMany({
     where: {
-      state: { in: ["REGISTERED", "PENDING_TEMP_TERMS", "DELIVERED", "TERMS_SET", "INVOICE_SENDING"] },
+      // One list for "the worker may advance this" (state-machine.ts), so a new
+      // state can never be forgotten here again.
+      state: { in: [...WORKABLE_STATES] },
       OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }],
     },
     orderBy: { updatedAt: "asc" },
