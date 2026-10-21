@@ -1,4 +1,5 @@
 import "server-only";
+import { e2eFaultActive, InjectedE2EFault } from "./e2e-fault";
 import { Prisma, type OnAccountOrder, type OnAccountState, type OnAccountTriggerSource } from "@/generated/prisma";
 import { prisma } from "@/platform/db/prisma";
 import { logAudit } from "@/platform/audit/audit";
@@ -365,6 +366,7 @@ async function stepInvoice(row: OnAccountOrder, snapshot: OnAccountOrderSnapshot
 
   let result: Awaited<ReturnType<typeof sendOrderInvoice>>;
   try {
+    if (e2eFaultActive("invoice_send_outcome_unknown", row.shopifyOrderGid)) throw new InjectedE2EFault("invoice_send_outcome_unknown");
     result = await sendOrderInvoice(
       row.shopifyOrderGid,
       recipient,
@@ -382,6 +384,8 @@ async function stepInvoice(row: OnAccountOrder, snapshot: OnAccountOrderSnapshot
   }
 
   if (result.outcome === "SENT") {
+    // E2E only: the mail went out, the process "dies" before recording it.
+    if (e2eFaultActive("crash_after_invoice_send", row.shopifyOrderGid)) throw new InjectedE2EFault("crash_after_invoice_send");
     await markInvoiceSent(sending, new Date(), recipient, "order_invoice_send");
     return "MOVED";
   }

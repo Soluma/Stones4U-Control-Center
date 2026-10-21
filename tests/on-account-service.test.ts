@@ -559,3 +559,54 @@ describe("scheduled pass (scheduler -> same idempotent worker)", () => {
     expect(readsOf(o.id)).toBe(0);
   });
 });
+
+describe("E2E fault injection (staging-only switches)", () => {
+  const DEV = "stones4u-dev.myshopify.com";
+  const setEnv = (vars: Record<string, string | undefined>) => {
+    for (const [k, v] of Object.entries(vars)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  };
+  const clear = () =>
+    setEnv({ E2E_ON_ACCOUNT_FAULT: undefined, E2E_ON_ACCOUNT_FAULT_ORDER: undefined, SHOPIFY_SHOP_DOMAIN: undefined, SHOPIFY_WRITE_ALLOWED_MYSHOPIFY_DOMAINS: undefined });
+
+  it("is inert unless point, exact order and dev-only shop wiring all match", async () => {
+    const { e2eFaultActive } = await import("@/modules/on-account/e2e-fault");
+    const gid = "gid://shopify/Order/1";
+    setEnv({ E2E_ON_ACCOUNT_FAULT: "crash_after_invoice_send", E2E_ON_ACCOUNT_FAULT_ORDER: gid, SHOPIFY_SHOP_DOMAIN: DEV, SHOPIFY_WRITE_ALLOWED_MYSHOPIFY_DOMAINS: DEV });
+    expect(e2eFaultActive("crash_after_invoice_send", gid)).toBe(true);
+    expect(e2eFaultActive("crash_after_invoice_send", "gid://shopify/Order/2")).toBe(false);
+    expect(e2eFaultActive("invoice_send_outcome_unknown", gid)).toBe(false);
+    setEnv({ SHOPIFY_SHOP_DOMAIN: "9h7x2c-ku.myshopify.com" });
+    expect(e2eFaultActive("crash_after_invoice_send", gid)).toBe(false);
+    setEnv({ SHOPIFY_SHOP_DOMAIN: DEV, SHOPIFY_WRITE_ALLOWED_MYSHOPIFY_DOMAINS: `${DEV},9h7x2c-ku.myshopify.com` });
+    expect(e2eFaultActive("crash_after_invoice_send", gid)).toBe(false);
+    clear();
+    expect(e2eFaultActive("crash_after_invoice_send", gid)).toBe(false);
+  });
+
+  it("crash after a real send: stays INVOICE_SENDING, then adopts Shopify's event — never a second mail", async () => {
+    const o = newOrder({ metafields: { termDays: "30", handedOverAt: new Date(Date.now() - 60_000).toISOString(), invoiceSentAt: null } });
+    setEnv({ E2E_ON_ACCOUNT_FAULT: "crash_after_invoice_send", E2E_ON_ACCOUNT_FAULT_ORDER: o.id, SHOPIFY_SHOP_DOMAIN: DEV, SHOPIFY_WRITE_ALLOWED_MYSHOPIFY_DOMAINS: DEV });
+    await registerOnAccountOrder(o.id, "WEBHOOK");
+    clear();
+    const stuck = await rowOf(o.id);
+    expect(stuck.state).toBe("INVOICE_SENDING");
+    expect(ops("invoice")).toHaveLength(1);
+    await prisma.onAccountOrder.update({ where: { id: stuck.id }, data: { invoiceSendingAt: new Date(Date.now() - 5 * 60_000), nextAttemptAt: null } });
+    const final = await reconcileOnAccountOrder(stuck.id);
+    expect(final.state).toBe("INVOICE_SENT");
+    expect(ops("invoice")).toHaveLength(1);
+  });
+
+  it("outcome unknown and nothing went out: MANUAL_REVIEW, no automatic resend", async () => {
+    const o = newOrder({ metafields: { termDays: "30", handedOverAt: new Date(Date.now() - 60_000).toISOString(), invoiceSentAt: null } });
+    setEnv({ E2E_ON_ACCOUNT_FAULT: "invoice_send_outcome_unknown", E2E_ON_ACCOUNT_FAULT_ORDER: o.id, SHOPIFY_SHOP_DOMAIN: DEV, SHOPIFY_WRITE_ALLOWED_MYSHOPIFY_DOMAINS: DEV });
+    await registerOnAccountOrder(o.id, "WEBHOOK");
+    clear();
+    expect(await rowOf(o.id)).toMatchObject({ state: "MANUAL_REVIEW", reviewReason: "INVOICE_SEND_UNCERTAIN" });
+    await runOnAccountWorker({ limit: 500 });
+    expect(ops("invoice")).toHaveLength(0);
+  });
+});
