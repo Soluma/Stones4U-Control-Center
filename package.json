@@ -31,6 +31,7 @@
     "lucide-react": "^1.39.0",
     "mailparser": "^3.9.20",
     "next": "15.5.25",
+    "pdfkit": "^0.17.2",
     "react": "19.1.1",
     "react-dom": "19.1.1",
     "zod": "^4.4.3"
@@ -39,6 +40,7 @@
     "@eslint/eslintrc": "^3.2.0",
     "@types/mailparser": "^3.4.6",
     "@types/node": "^22.10.0",
+    "@types/pdfkit": "^0.17.3",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
     "@vitejs/plugin-react": "^4.3.4",

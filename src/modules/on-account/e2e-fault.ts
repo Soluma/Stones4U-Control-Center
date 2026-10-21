@@ -6,7 +6,17 @@
 //     SHOPIFY_WRITE_ALLOWED_MYSHOPIFY_DOMAINS are both exactly stones4u-dev).
 // Production never has these variables and is never the dev shop.
 
-export type OnAccountFaultPoint = "invoice_send_outcome_unknown" | "crash_after_invoice_send";
+export type OnAccountFaultPoint =
+  | "invoice_send_outcome_unknown"
+  | "crash_after_invoice_send"
+  /** Phase I: PDF rendering throws (nothing stored, nothing sent). */
+  | "invoice_pdf_render_fails"
+  /** Phase I: Shopify returns no payment URL. */
+  | "payment_link_unavailable"
+  /** Phase I: the mail call times out before OfferteApp received it. */
+  | "invoice_mail_timeout_before_send"
+  /** Phase I: OfferteApp reports the SMTP hand-over as uncertain. */
+  | "invoice_mail_uncertain";
 
 const DEV_SHOP = "stones4u-dev.myshopify.com";
 

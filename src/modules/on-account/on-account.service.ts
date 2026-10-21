@@ -3,15 +3,21 @@ import { e2eFaultActive, InjectedE2EFault } from "./e2e-fault";
 import { Prisma, type OnAccountOrder, type OnAccountState, type OnAccountTriggerSource } from "@/generated/prisma";
 import { prisma } from "@/platform/db/prisma";
 import { logAudit } from "@/platform/audit/audit";
+import { createHash, randomUUID } from "crypto";
 import { readOnAccountOrder, type OnAccountOrderSnapshot } from "@/integrations/shopify/on-account-read";
+import { readInvoiceOrder, readPaymentLink } from "@/integrations/shopify/invoice-read";
 import {
   createFixedPaymentTerms,
   deleteOrderPaymentTerms,
-  sendOrderInvoice,
   setOrderInvoiceSentAt,
   updateToFixedPaymentTerms,
 } from "@/integrations/shopify/on-account";
-import { computeDueAt, InvalidTermDaysError, invoiceMessage, ON_ACCOUNT_TAG, parseTermDays, sameInstant } from "./rules";
+import { fetchCompanyProfile, invoiceMailStatus, sendInvoiceMail, type InvoiceMailOutcome } from "@/integrations/offerteapp/invoice-mail";
+import { downloadObject, uploadObject } from "@/integrations/storage/r2";
+import { computeDueAt, InvalidTermDaysError, ON_ACCOUNT_TAG, parseTermDays, sameInstant } from "./rules";
+import { buildInvoiceSnapshot, InvoiceSnapshotError, snapshotSha256, toCents, type InvoiceSnapshot } from "./invoice/snapshot";
+import { renderInvoicePdf } from "./invoice/render";
+import { buildInvoiceMail, isAcceptablePaymentUrl } from "./invoice/mail";
 import {
   assertTransition,
   MAX_ATTEMPTS,
@@ -339,17 +345,191 @@ async function resolveUncertainSend(row: OnAccountOrder, snapshot: OnAccountOrde
   return "MOVED";
 }
 
-/** TERMS_SET: claim, send exactly one invoice, record it twice (DB + Shopify marker). */
-async function stepInvoice(row: OnAccountOrder, snapshot: OnAccountOrderSnapshot): Promise<StepOutcome> {
-  if (await settleIfNotPayable(row, snapshot)) return "MOVED";
+// ── Phase I: the definitive invoice + ONE Stones4U invoice mail ─────
+//
+// TERMS_SET -> INVOICE_GENERATING -> INVOICE_READY -> INVOICE_SENDING -> INVOICE_SENT
+//
+// - Invoice number = the Shopify order number. Exactly one OnAccountInvoice
+//   per order (unique on order, GID, number and sendKey); once stored, the
+//   snapshot and PDF are reused, never rebuilt.
+// - Generating has no external effect; a failure returns to TERMS_SET.
+// - The mail goes through OfferteApp (Stones4U's mail provider) with the
+//   invoice's sendKey: OfferteApp mails at most once per key, so a retry or
+//   an unknown outcome is resolved by asking OfferteApp, never by mailing
+//   again. An SMTP hand-over that may have succeeded -> MANUAL_REVIEW.
+// - Shopify's orderInvoiceSend is NOT used by this automatic flow (the
+//   customer would get two mails). Rows still in INVOICE_SENDING from the
+//   pre-Phase I flow keep being resolved from Shopify's marker/event.
+
+const INVOICE_GENERATING_GRACE_MS = 2 * 60_000;
+
+function paymentLinkHosts(): string[] {
+  const shop = process.env.SHOPIFY_SHOP_DOMAIN?.trim();
+  const extra = (process.env.ON_ACCOUNT_PAYMENT_LINK_HOSTS ?? "").split(",").map((h) => h.trim()).filter(Boolean);
+  return [...(shop ? [shop] : []), ...extra];
+}
+
+async function suppressMail(orderId: string, reason: string): Promise<void> {
+  await prisma.onAccountInvoice.updateMany({ where: { onAccountOrderId: orderId, sentAt: null }, data: { mailSuppressedReason: reason } });
+}
+
+/** TERMS_SET: build the ONE definitive invoice (fresh Shopify read -> snapshot -> PDF -> stored). */
+async function stepGenerateInvoice(row: OnAccountOrder, snapshot: OnAccountOrderSnapshot): Promise<StepOutcome> {
+  if (snapshot.cancelledAt) return (await moveState(row, "CANCELLED", { cancelledAt: new Date(snapshot.cancelledAt), nextAttemptAt: null })) ? "MOVED" : "IDLE";
   if (snapshot.metafields.invoiceSentAt) {
-    // Second lock: Shopify already says it was sent.
+    // Pre-Phase I marker: an invoice already went out — adopt, never mail again.
     await markInvoiceSent(row, new Date(snapshot.metafields.invoiceSentAt), null, "shopify_marker");
     return "MOVED";
   }
-  const terms = snapshot.paymentTerms;
-  if (!terms || terms.type !== "FIXED" || !row.dueAt || !sameInstant(terms.schedules[0]?.dueAt ?? null, row.dueAt)) {
-    await toReview(row, "DUE_DATE_CONFLICT", "vervaldatum op de order wijkt af van wat is gezet");
+  if (!row.deliveredAt || !row.dueAt || !row.termDays) {
+    await toReview(row, "DUE_DATE_CONFLICT", "levering/vervaldatum/termijn ontbreekt op de rij");
+    return "MOVED";
+  }
+  const existing = await prisma.onAccountInvoice.findUnique({ where: { onAccountOrderId: row.id } });
+  if (existing) return (await moveState(row, "INVOICE_READY", { attempts: 0, lastError: null })) ? "MOVED" : "IDLE";
+
+  // The claim: exactly one worker builds the invoice.
+  const claimedAt = new Date();
+  if (!(await moveState(row, "INVOICE_GENERATING", { invoiceGeneratingAt: claimedAt }))) return "IDLE";
+  const generating: OnAccountOrder = { ...row, state: "INVOICE_GENERATING", invoiceGeneratingAt: claimedAt };
+
+  try {
+    const order = await readInvoiceOrder(row.shopifyOrderGid);
+    if (!order) throw new Error("ORDER_NOT_FOUND");
+    if (order.cancelledAt) {
+      await moveState(generating, "CANCELLED", { cancelledAt: new Date(order.cancelledAt), nextAttemptAt: null });
+      return "MOVED";
+    }
+    const company = await fetchCompanyProfile();
+    let invoice: InvoiceSnapshot;
+    try {
+      invoice = buildInvoiceSnapshot({
+        order,
+        company,
+        termDays: row.termDays,
+        deliveredAt: row.deliveredAt,
+        dueAt: row.dueAt,
+        issuedAt: new Date(),
+      });
+    } catch (error) {
+      if (!(error instanceof InvoiceSnapshotError)) throw error;
+      await toReview(generating, error.reason, error.message);
+      return "MOVED";
+    }
+    const paidAlready = order.displayFinancialStatus === "PAID" || invoice.totals.outstandingCents <= 0;
+    if (!paidAlready && invoice.totals.outstandingCents !== invoice.totals.totalCents) {
+      await toReview(generating, "OUTSTANDING_MISMATCH", "openstaand bedrag wijkt af van het ordertotaal (deelbetaling?)");
+      return "MOVED";
+    }
+    if (e2eFaultActive("invoice_pdf_render_fails", row.shopifyOrderGid)) throw new InjectedE2EFault("invoice_pdf_render_fails");
+    const pdf = await renderInvoicePdf({ snapshot: invoice, logo: company.logo });
+    const pdfSha256 = createHash("sha256").update(pdf).digest("hex");
+    // Content-addressed: the same key always holds the same bytes.
+    const storageKey = `invoices/${invoice.invoiceDate.slice(0, 4)}/${invoice.invoiceNumber}/${pdfSha256}.pdf`;
+    await uploadObject({ storageKey, body: pdf, mimeType: "application/pdf" });
+
+    const created = await prisma.onAccountInvoice.create({
+      data: {
+        onAccountOrderId: row.id,
+        shopifyOrderGid: row.shopifyOrderGid,
+        invoiceNumber: invoice.invoiceNumber,
+        shopifyOrderName: invoice.shopifyOrderName,
+        invoiceDate: invoice.invoiceDate,
+        deliveredAt: row.deliveredAt,
+        termDays: row.termDays,
+        dueAt: row.dueAt,
+        currency: invoice.currency,
+        totalAmount: new Prisma.Decimal(invoice.totals.totalCents).div(100),
+        taxAmount: new Prisma.Decimal(invoice.totals.vatCents).div(100),
+        outstandingAmount: new Prisma.Decimal(invoice.totals.outstandingCents).div(100),
+        snapshot: invoice as unknown as Prisma.InputJsonObject,
+        snapshotSha256: snapshotSha256(invoice),
+        pdfSha256,
+        pdfSize: pdf.length,
+        storageKey,
+        sendKey: randomUUID(),
+        mailSuppressedReason: paidAlready ? "PAID_BEFORE_SEND" : null,
+      },
+    });
+    await logAudit({
+      userId: null,
+      action: "on_account.invoice_generated",
+      entityType: "OnAccountOrder",
+      entityId: row.id,
+      metadata: {
+        orderGid: row.shopifyOrderGid,
+        invoiceNumber: created.invoiceNumber,
+        invoiceDate: created.invoiceDate,
+        totalCents: invoice.totals.totalCents,
+        pdfSha256,
+        storageKey,
+        paidAlready,
+      },
+    });
+    if (paidAlready) {
+      // Paid before the mail: the invoice exists (bookkeeping), no payment mail.
+      await moveState(generating, "PAID", { paidAt: new Date(), nextAttemptAt: null, invoiceGeneratingAt: null });
+      return "MOVED";
+    }
+    await moveState(generating, "INVOICE_READY", { invoiceGeneratingAt: null, attempts: 0, lastError: null, nextAttemptAt: null });
+    return "MOVED";
+  } catch (error) {
+    // Nothing left this system: safe to retry later from TERMS_SET.
+    await moveState(generating, "TERMS_SET", { invoiceGeneratingAt: null });
+    await recordFailure({ ...generating, state: "TERMS_SET" }, error);
+    return "IDLE";
+  }
+}
+
+async function markStonesInvoiceMailSent(row: OnAccountOrder, invoiceId: string, recipient: string, messageId: string | null, how: string): Promise<void> {
+  const sentAt = new Date();
+  await prisma.onAccountInvoice.updateMany({
+    where: { id: invoiceId, sentAt: null },
+    data: { sentAt, mailRecipient: recipient, mailMessageId: messageId },
+  });
+  await markInvoiceSent(row, sentAt, recipient, how);
+}
+
+/** INVOICE_SENDING (Phase I): what does OfferteApp know about this sendKey? Never mails. */
+async function resolveInvoiceMail(row: OnAccountOrder, invoice: { id: string; sendKey: string }): Promise<StepOutcome> {
+  const status = await invoiceMailStatus(invoice.sendKey);
+  switch (status.status) {
+    case "SENT":
+      await markStonesInvoiceMailSent(row, invoice.id, row.invoiceRecipient ?? "", status.messageId, "stones4u_invoice_mail_status");
+      return "MOVED";
+    case "NONE":
+    case "NOT_SENT":
+      // Nothing (accepted) for this key: the same key may be mailed again.
+      await moveState(row, "INVOICE_READY", { invoiceSendingAt: null });
+      await recordFailure({ ...row, state: "INVOICE_READY" }, new Error(`factuurmail niet verstuurd (${status.status})`));
+      return "IDLE";
+    case "UNCERTAIN":
+      await toReview(row, "INVOICE_SEND_UNCERTAIN", status.detail ?? "SMTP-overdracht onzeker");
+      return "MOVED";
+    default:
+      // IN_PROGRESS / UNKNOWN: ask again later, never resend.
+      await recordFailure(row, new Error(`factuurmail-status ${status.status}: ${status.detail ?? ""}`));
+      return "IDLE";
+  }
+}
+
+/** INVOICE_READY: re-check the order, fetch Shopify's payment URL, mail the stored PDF once. */
+async function stepSendInvoiceMail(row: OnAccountOrder, snapshot: OnAccountOrderSnapshot): Promise<StepOutcome> {
+  const invoice = await prisma.onAccountInvoice.findUnique({ where: { onAccountOrderId: row.id } });
+  if (!invoice) {
+    await toReview(row, "INVOICE_PDF_INTEGRITY", "factuurrecord ontbreekt");
+    return "MOVED";
+  }
+  if (snapshot.cancelledAt) {
+    await suppressMail(row.id, "CANCELLED_BEFORE_SEND");
+    return (await moveState(row, "CANCELLED", { cancelledAt: new Date(snapshot.cancelledAt), nextAttemptAt: null })) ? "MOVED" : "IDLE";
+  }
+  if (snapshot.displayFinancialStatus === "PAID" || amount(snapshot.outstanding) <= 0) {
+    await suppressMail(row.id, "PAID_BEFORE_SEND");
+    return (await moveState(row, "PAID", { paidAt: new Date(), nextAttemptAt: null })) ? "MOVED" : "IDLE";
+  }
+  if (amount(snapshot.outstanding) !== toCents(invoice.outstandingAmount.toFixed(2))) {
+    await toReview(row, "OUTSTANDING_MISMATCH", "openstaand bedrag gewijzigd sinds de factuur");
     return "MOVED";
   }
   const recipient = snapshot.email ?? snapshot.customerEmail;
@@ -358,48 +538,69 @@ async function stepInvoice(row: OnAccountOrder, snapshot: OnAccountOrderSnapshot
     return "MOVED";
   }
 
-  // The claim: exactly one worker can move TERMS_SET -> INVOICE_SENDING.
+  // Shopify's own payment URL, read now — never constructed, never logged.
+  const link = e2eFaultActive("payment_link_unavailable", row.shopifyOrderGid) ? null : await readPaymentLink(row.shopifyOrderGid);
+  const url = link?.url ?? null;
+  if (!url) {
+    await recordFailure(row, new Error("PAYMENT_LINK_UNAVAILABLE: Shopify gaf geen betaal-URL"));
+    return "IDLE";
+  }
+  const legacyId = row.shopifyOrderGid.split("/").pop() ?? "";
+  if (!paymentLinkHosts().some((host) => isAcceptablePaymentUrl(url, host, legacyId))) {
+    await toReview(row, "PAYMENT_LINK_UNAVAILABLE", "betaal-URL hoort niet bij deze order/shop");
+    return "MOVED";
+  }
+
+  const pdf = await downloadObject(invoice.storageKey);
+  if (createHash("sha256").update(pdf).digest("hex") !== invoice.pdfSha256) {
+    await toReview(row, "INVOICE_PDF_INTEGRITY", "checksum van de opgeslagen PDF klopt niet");
+    return "MOVED";
+  }
+  const mail = buildInvoiceMail(invoice.snapshot as unknown as InvoiceSnapshot, url);
+
+  // The claim: exactly one worker mails this invoice.
   const sendingAt = new Date();
-  const claimed = await moveState(row, "INVOICE_SENDING", { invoiceSendingAt: sendingAt, invoiceRecipient: recipient });
-  if (!claimed) return "IDLE";
+  if (!(await moveState(row, "INVOICE_SENDING", { invoiceSendingAt: sendingAt, invoiceRecipient: recipient }))) return "IDLE";
   const sending: OnAccountOrder = { ...row, state: "INVOICE_SENDING", invoiceSendingAt: sendingAt, invoiceRecipient: recipient };
 
-  let result: Awaited<ReturnType<typeof sendOrderInvoice>>;
-  try {
-    if (e2eFaultActive("invoice_send_outcome_unknown", row.shopifyOrderGid)) throw new InjectedE2EFault("invoice_send_outcome_unknown");
-    result = await sendOrderInvoice(
-      row.shopifyOrderGid,
-      recipient,
-      invoiceMessage({ termDays: row.termDays ?? 0, dueAt: row.dueAt, deliveredAt: row.deliveredAt ?? sendingAt, triggerSource: row.triggerSource ?? "" }),
-    );
-  } catch (error) {
-    // Outcome unknown: stay INVOICE_SENDING, then try to resolve from Shopify.
-    await prisma.onAccountOrder.update({ where: { id: row.id }, data: { lastError: `INVOICE_SEND_OUTCOME_UNKNOWN: ${shortError(error)}` } });
-    const after = await readOnAccountOrder(row.shopifyOrderGid).catch(() => null);
-    if (!after) {
-      await toReview({ ...sending, lastError: shortError(error) }, "INVOICE_SEND_UNCERTAIN", shortError(error));
+  let result: InvoiceMailOutcome;
+  if (e2eFaultActive("invoice_mail_timeout_before_send", row.shopifyOrderGid)) {
+    result = { status: "UNKNOWN", detail: "E2E injected: timeout before OfferteApp received the request" };
+  } else if (e2eFaultActive("invoice_mail_uncertain", row.shopifyOrderGid)) {
+    result = { status: "UNCERTAIN", detail: "E2E injected: SMTP hand-over uncertain" };
+  } else {
+    result = await sendInvoiceMail({
+      sendKey: invoice.sendKey,
+      to: recipient,
+      subject: mail.subject,
+      html: mail.html,
+      text: mail.text,
+      attachment: { filename: mail.filename, contentBase64: pdf.toString("base64"), sha256: invoice.pdfSha256 },
+    });
+  }
+
+  switch (result.status) {
+    case "SENT":
+      // E2E only: the mail went out, the process "dies" before recording it.
+      if (e2eFaultActive("crash_after_invoice_send", row.shopifyOrderGid)) throw new InjectedE2EFault("crash_after_invoice_send");
+      await markStonesInvoiceMailSent(sending, invoice.id, recipient, result.messageId, "stones4u_invoice_mail");
       return "MOVED";
-    }
-    return resolveUncertainSend({ ...sending, lastError: shortError(error) }, after);
+    case "NOT_SENT":
+      await moveState(sending, "INVOICE_READY", { invoiceSendingAt: null });
+      await recordFailure({ ...sending, state: "INVOICE_READY" }, new Error(`factuurmail niet verstuurd: ${result.detail ?? ""}`));
+      return "IDLE";
+    case "REJECTED":
+      await toReview(sending, "INVOICE_MAIL_REJECTED", result.detail ?? undefined);
+      return "MOVED";
+    case "UNCERTAIN":
+      await toReview(sending, "INVOICE_SEND_UNCERTAIN", result.detail ?? undefined);
+      return "MOVED";
+    case "IN_PROGRESS":
+      return "IDLE";
+    case "UNKNOWN":
+      await prisma.onAccountOrder.update({ where: { id: row.id }, data: { lastError: `INVOICE_MAIL_OUTCOME_UNKNOWN: ${result.detail ?? ""}`.slice(0, 300) } });
+      return resolveInvoiceMail(sending, invoice);
   }
-
-  if (result.outcome === "SENT") {
-    // E2E only: the mail went out, the process "dies" before recording it.
-    if (e2eFaultActive("crash_after_invoice_send", row.shopifyOrderGid)) throw new InjectedE2EFault("crash_after_invoice_send");
-    await markInvoiceSent(sending, new Date(), recipient, "order_invoice_send");
-    return "MOVED";
-  }
-
-  // Shopify definitely did not send (userErrors). Re-read: paid in between?
-  const after = await readOnAccountOrder(row.shopifyOrderGid);
-  if (after && (after.displayFinancialStatus === "PAID" || amount(after.outstanding) <= 0)) {
-    await moveState(sending, "PAID", { paidAt: new Date(), nextAttemptAt: null });
-    return "MOVED";
-  }
-  const message = result.userErrors.map((e) => e.message).join("; ");
-  await moveState(sending, "TERMS_SET", { invoiceSendingAt: null });
-  await recordFailure({ ...sending, state: "TERMS_SET" }, new Error(`orderInvoiceSend weigerde: ${message}`));
-  return "IDLE";
 }
 
 /**
@@ -431,12 +632,23 @@ export async function reconcileOnAccountOrder(id: string, options: { snapshot?: 
           outcome = await stepTerms(row, snapshot);
           break;
         case "TERMS_SET":
-          outcome = await stepInvoice(row, snapshot);
+          outcome = await stepGenerateInvoice(row, snapshot);
+          break;
+        case "INVOICE_GENERATING": {
+          // Only a crashed generator leaves a row here; nothing left this system.
+          const startedAt = row.invoiceGeneratingAt?.getTime() ?? 0;
+          if (Date.now() - startedAt < INVOICE_GENERATING_GRACE_MS) return row;
+          outcome = (await moveState(row, "TERMS_SET", { invoiceGeneratingAt: null })) ? "MOVED" : "IDLE";
+          break;
+        }
+        case "INVOICE_READY":
+          outcome = await stepSendInvoiceMail(row, snapshot);
           break;
         case "INVOICE_SENDING": {
           const startedAt = row.invoiceSendingAt?.getTime() ?? 0;
           if (Date.now() - startedAt < IN_FLIGHT_SEND_GRACE_MS) return row; // maybe still in flight elsewhere
-          outcome = await resolveUncertainSend(row, snapshot);
+          const invoice = await prisma.onAccountInvoice.findUnique({ where: { onAccountOrderId: row.id } });
+          outcome = invoice ? await resolveInvoiceMail(row, invoice) : await resolveUncertainSend(row, snapshot);
           break;
         }
         default:
@@ -641,11 +853,21 @@ export async function resolveReview(id: string, resolution: ReviewResolution, ac
       to = "INVOICE_SENT";
       data = { ...reset, invoiceSentAt: row.invoiceSendingAt ?? new Date() };
       break;
-    case "RETRY_INVOICE":
+    case "RETRY_INVOICE": {
       if (!row.dueAt) throw new Error("Er is nog geen vervaldatum gezet.");
-      to = "TERMS_SET";
+      const invoice = await prisma.onAccountInvoice.findUnique({ where: { onAccountOrderId: row.id } });
+      if (invoice) {
+        if (invoice.sentAt) throw new Error("Deze factuur is al verstuurd.");
+        // A human checked: the mail did NOT go out. A new send key allows
+        // exactly one new mail of the SAME stored invoice.
+        await prisma.onAccountInvoice.update({ where: { id: invoice.id }, data: { sendKey: randomUUID() } });
+        to = "INVOICE_READY";
+      } else {
+        to = "TERMS_SET";
+      }
       data = { ...reset, invoiceSendingAt: null };
       break;
+    }
     case "RETRY_FROM_START":
       to = row.deliveredAt ? "DELIVERED" : "REGISTERED";
       data = { ...reset, ...(row.deliveredAt ? {} : { termDays: null }) };
@@ -818,6 +1040,6 @@ export async function listOnAccountOrders(limit = 300) {
   return prisma.onAccountOrder.findMany({
     orderBy: [{ updatedAt: "desc" }],
     take: limit,
-    include: { events: { orderBy: { createdAt: "desc" }, take: 5 } },
+    include: { events: { orderBy: { createdAt: "desc" }, take: 5 }, invoice: true },
   });
 }

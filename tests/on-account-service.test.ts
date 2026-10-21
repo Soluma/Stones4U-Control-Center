@@ -1,4 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { createHash } from "crypto";
 
 // Op rekening v1 — central service against the real test database and an
 // in-memory FAKE Shopify that behaves like stones4u-dev did in fase 0:
@@ -7,6 +8,8 @@ import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 // "sent invoice" event, draft metafields do not exist on the order unless set.
 
 type FakeOrder = {
+  /** Phase I: quantities changed after the sale (refund/edit). */
+  changed?: boolean;
   id: string;
   name: string;
   tags: string[];
@@ -27,6 +30,14 @@ const shop = vi.hoisted(() => ({
   calls: [] as { op: string; args: unknown }[],
   fail: {} as Record<string, number | "uncertain">,
   seq: 1,
+  /** Phase I: what the fake OfferteApp knows per sendKey (it mails at most once per key). */
+  mailKeys: new Map<string, "SENT" | "NOT_SENT" | "UNCERTAIN">(),
+  /** Phase I: one-shot mail behaviours. */
+  mailMode: null as null | "lostResponse" | "neverArrived" | "notSent" | "uncertain" | "rejected",
+  objects: new Map<string, Buffer>(),
+  noPaymentUrl: false,
+  foreignPaymentUrl: false,
+  company: null as null | Record<string, unknown>,
 }));
 
 function snapshotOf(o: FakeOrder) {
@@ -109,29 +120,160 @@ vi.mock("@/integrations/shopify/on-account", () => ({
     }
     throw new Error("terms not found (fake)");
   }),
-  sendOrderInvoice: vi.fn(async (gid: string, to: string, message: string) => {
-    await latency();
-    shop.calls.push({ op: "invoice", args: { gid, to, message } });
-    const o = shop.orders.get(gid)!;
-    if (shop.fail.invoice === "uncertain") {
-      delete shop.fail.invoice;
-      o.events.push({ createdAt: new Date().toISOString(), message: `CRM sent invoice ${o.name} to Klant (${to})` }); // it DID go out
-      throw new Error("timeout after send (fake)");
-    }
-    if (shop.fail.invoiceLost === "uncertain") {
-      delete shop.fail.invoiceLost;
-      throw new Error("timeout, nothing visible (fake)");
-    }
-    if (o.financial === "PAID") return { outcome: "NOT_SENT", userErrors: [{ field: null, message: "No outstanding balance exist", code: "ORDER_INVOICE_SEND_UNSUCCESSFUL" }] };
-    o.events.push({ createdAt: new Date().toISOString(), message: `CRM sent invoice ${o.name} to Klant (${to})` });
-    return { outcome: "SENT" };
-  }),
   setOrderInvoiceSentAt: vi.fn(async (gid: string, at: Date) => {
     shop.calls.push({ op: "marker", args: gid });
     maybeFail("marker");
     shop.orders.get(gid)!.metafields.invoiceSentAt = at.toISOString();
   }),
 }));
+
+const FULL_COMPANY = {
+  name: "Stones4U",
+  address: "Voorbeeldstraat 1",
+  postcode: "4000 AA",
+  city: "Tiel",
+  phone: null,
+  email: "info@stones4u.eu",
+  website: "www.stones4u.eu",
+  kvk: "12345678",
+  vatNumber: "NL001234567B01",
+  iban: "NL00BANK0123456789",
+  logo: null,
+};
+
+function invoiceOrderOf(o: FakeOrder) {
+  const m = (amount: string) => ({ shopMoney: { amount } });
+  const totalCents = Math.round(Number(o.total) * 100);
+  const taxCents = Math.round((totalCents * 21) / 121);
+  const tax = (taxCents / 100).toFixed(2);
+  const taxLine = { title: "NL btw", rate: 0.21, ratePercentage: 21, priceSet: m(tax) };
+  return {
+    id: o.id,
+    name: o.name,
+    legacyResourceId: o.id.split("/").pop()!,
+    createdAt: "2026-10-20T08:00:00Z",
+    cancelledAt: o.cancelledAt,
+    displayFinancialStatus: o.financial,
+    currencyCode: "EUR",
+    taxesIncluded: true,
+    email: o.email,
+    billingAddress: null,
+    shippingAddress: null,
+    customer: {
+      displayName: "Jan Klant",
+      email: o.email,
+      defaultAddress: { company: "Klant B.V.", name: "Jan Klant", firstName: "Jan", lastName: "Klant", address1: "Teststraat 1", address2: null, zip: "1234 AB", city: "Tiel", country: "Netherlands", countryCodeV2: "NL" },
+      vatNumber: null,
+    },
+    purchasingEntity: { __typename: "Customer" },
+    lineItems: {
+      nodes: [
+        {
+          id: `${o.id}/line`,
+          title: "Testregel",
+          variantTitle: null,
+          sku: "T1",
+          quantity: 1,
+          currentQuantity: o.changed ? 0 : 1,
+          originalUnitPriceSet: m(o.total),
+          originalTotalSet: m(o.total),
+          discountAllocations: [],
+          taxLines: [taxLine],
+        },
+      ],
+    },
+    shippingLines: { nodes: [] },
+    subtotalPriceSet: m(o.total),
+    currentSubtotalPriceSet: m(o.total),
+    totalDiscountsSet: m("0.00"),
+    totalShippingPriceSet: m("0.00"),
+    totalTaxSet: m(tax),
+    currentTotalTaxSet: m(tax),
+    totalPriceSet: m(o.total),
+    currentTotalPriceSet: m(o.total),
+    totalOutstandingSet: m(o.outstanding),
+    taxLines: [taxLine],
+    paymentTerms: o.terms ? { paymentTermsType: o.terms.type, paymentSchedules: { nodes: o.terms.dueAt ? [{ dueAt: o.terms.dueAt }] : [] } } : null,
+  };
+}
+
+vi.mock("@/integrations/shopify/invoice-read", () => ({
+  readInvoiceOrder: vi.fn(async (gid: string) => {
+    await latency();
+    shop.calls.push({ op: "invoiceRead", args: gid });
+    maybeFail("invoiceRead");
+    const o = shop.orders.get(gid);
+    return o ? invoiceOrderOf(o) : null;
+  }),
+  readPaymentLink: vi.fn(async (gid: string) => {
+    shop.calls.push({ op: "paymentLink", args: gid });
+    maybeFail("paymentLink");
+    const o = shop.orders.get(gid);
+    if (!o) return null;
+    const legacy = shop.foreignPaymentUrl ? "999" : gid.split("/").pop();
+    return {
+      displayFinancialStatus: o.financial,
+      cancelledAt: o.cancelledAt,
+      outstanding: o.outstanding,
+      url: shop.noPaymentUrl ? null : `https://stones4u-dev.myshopify.com/98120958297/order_payment/${legacy}?secret=fake`,
+    };
+  }),
+}));
+
+vi.mock("@/integrations/offerteapp/invoice-mail", () => ({
+  fetchCompanyProfile: vi.fn(async () => {
+    maybeFail("company");
+    return shop.company ?? FULL_COMPANY;
+  }),
+  sendInvoiceMail: vi.fn(async (req: { sendKey: string; to: string; subject: string; text: string; attachment: { filename: string; sha256: string; contentBase64: string } }) => {
+    await latency();
+    const known = shop.mailKeys.get(req.sendKey);
+    if (known === "SENT") return { status: "SENT", messageId: `<${req.sendKey}@test>` }; // per-key dedupe: no second mail
+    if (known === "UNCERTAIN") return { status: "UNCERTAIN", detail: "earlier hand-over uncertain" };
+    const mode = shop.mailMode;
+    shop.mailMode = null;
+    if (mode === "neverArrived") return { status: "UNKNOWN", detail: "timeout (fake)" };
+    if (mode === "notSent") {
+      shop.mailKeys.set(req.sendKey, "NOT_SENT");
+      return { status: "NOT_SENT", detail: "connect (fake)" };
+    }
+    if (mode === "uncertain") {
+      shop.mailKeys.set(req.sendKey, "UNCERTAIN");
+      return { status: "UNCERTAIN", detail: "disconnect mid-data (fake)" };
+    }
+    if (mode === "rejected") return { status: "REJECTED", detail: "HTTP 400 (fake)" };
+    const { prisma: db } = await import("@/platform/db/prisma");
+    const invoice = await db.onAccountInvoice.findUnique({ where: { sendKey: req.sendKey } });
+    shop.calls.push({
+      op: "invoice",
+      args: { gid: invoice?.shopifyOrderGid, to: req.to, message: req.text, subject: req.subject, filename: req.attachment.filename, sha256: req.attachment.sha256, sendKey: req.sendKey, pdf: Buffer.from(req.attachment.contentBase64, "base64") },
+    });
+    shop.mailKeys.set(req.sendKey, "SENT");
+    if (mode === "lostResponse") return { status: "UNKNOWN", detail: "response lost (fake)" }; // it DID go out
+    return { status: "SENT", messageId: `<${req.sendKey}@test>` };
+  }),
+  invoiceMailStatus: vi.fn(async (key: string) => {
+    const known = shop.mailKeys.get(key);
+    if (known === "SENT") return { status: "SENT", messageId: `<${key}@test>` };
+    if (known) return { status: known, detail: null };
+    return { status: "NONE", detail: null };
+  }),
+}));
+
+vi.mock("@/integrations/storage/r2", () => ({
+  uploadObject: vi.fn(async (input: { storageKey: string; body: Buffer }) => {
+    shop.calls.push({ op: "upload", args: input.storageKey });
+    maybeFail("upload");
+    shop.objects.set(input.storageKey, input.body);
+  }),
+  downloadObject: vi.fn(async (key: string) => {
+    const body = shop.objects.get(key);
+    if (!body) throw new Error("no such object (fake)");
+    return body;
+  }),
+}));
+
+process.env.ON_ACCOUNT_PAYMENT_LINK_HOSTS = "stones4u-dev.myshopify.com";
 
 import { prisma } from "@/platform/db/prisma";
 import {
@@ -152,7 +294,7 @@ function newOrder(overrides: Partial<FakeOrder> = {}): FakeOrder {
   const n = Math.floor(Math.random() * 1e12);
   const o: FakeOrder = {
     id: `gid://shopify/Order/${n}`,
-    name: `#T${n % 10000}`,
+    name: `#T${n}`,
     tags: ["op-rekening"],
     cancelledAt: null,
     financial: "PENDING",
@@ -176,8 +318,13 @@ const rowOf = (gid: string) => prisma.onAccountOrder.findUniqueOrThrow({ where: 
 beforeEach(() => {
   shop.calls = [];
   shop.fail = {};
+  shop.mailMode = null;
+  shop.noPaymentUrl = false;
+  shop.foreignPaymentUrl = false;
+  shop.company = null;
 });
 afterAll(async () => {
+  await prisma.onAccountInvoice.deleteMany({ where: { shopifyOrderGid: { in: created } } });
   await prisma.onAccountOrder.deleteMany({ where: { shopifyOrderGid: { in: created } } });
   await prisma.auditEvent.deleteMany({ where: { entityType: "OnAccountOrder" } });
 });
@@ -324,45 +471,69 @@ describe("delivery -> FIXED dueAt -> exactly one invoice", () => {
     expect((await rowOf(o.id)).state).toBe("INVOICE_SENT");
   });
 
-  it("send timed out but Shopify shows the 'sent invoice' event -> INVOICE_SENT, no second mail", async () => {
+  it("mail response lost but OfferteApp recorded the send for this key -> INVOICE_SENT, no second mail", async () => {
     const o = newOrder();
     await registerOnAccountOrder(o.id, "WEBHOOK");
-    shop.fail.invoice = "uncertain";
+    shop.mailMode = "lostResponse";
     await recordDelivery({ orderGid: o.id, triggerSource: "MANUAL_DELIVERY", source: "crm", eventKey: "m4", kind: "MANUAL_DELIVERY", occurredAt: new Date(), actorUserId: null });
     expect((await rowOf(o.id)).state).toBe("INVOICE_SENT");
     expect(ops("invoice")).toHaveLength(1);
   });
 
-  it("send timed out and nothing visible on Shopify -> MANUAL_REVIEW INVOICE_SEND_UNCERTAIN; never re-sent automatically", async () => {
+  it("request never reached OfferteApp (timeout) -> back to INVOICE_READY with backoff; the next pass mails exactly once", async () => {
     const o = newOrder();
     await registerOnAccountOrder(o.id, "WEBHOOK");
-    shop.fail.invoiceLost = "uncertain";
+    shop.mailMode = "neverArrived";
     await recordDelivery({ orderGid: o.id, triggerSource: "MANUAL_DELIVERY", source: "crm", eventKey: "m5", kind: "MANUAL_DELIVERY", occurredAt: new Date(), actorUserId: null });
     const row = await rowOf(o.id);
-    expect(row).toMatchObject({ state: "MANUAL_REVIEW", reviewReason: "INVOICE_SEND_UNCERTAIN" });
-    await runOnAccountWorker();
+    expect(row.state).toBe("INVOICE_READY");
+    expect(row.nextAttemptAt!.getTime()).toBeGreaterThan(Date.now());
+    expect(ops("invoice")).toHaveLength(0);
+    await prisma.onAccountOrder.update({ where: { id: row.id }, data: { nextAttemptAt: new Date(Date.now() - 1000) } });
     await reconcileOnAccountOrder(row.id);
-    expect(ops("invoice")).toHaveLength(1);
-    // a human decides: "not sent" -> exactly one new send
-    const user = await prisma.user.create({ data: { email: `oa-${Date.now()}@example.com`, name: "T", passwordHash: "x", role: "ADMIN" } });
-    await resolveReview(row.id, "RETRY_INVOICE", user.id, "Gecontroleerd in Shopify: niet verstuurd");
-    expect(ops("invoice")).toHaveLength(2);
+    await reconcileOnAccountOrder(row.id);
     expect((await rowOf(o.id)).state).toBe("INVOICE_SENT");
+    expect(ops("invoice")).toHaveLength(1);
+  });
+
+  it("SMTP hand-over uncertain -> MANUAL_REVIEW INVOICE_SEND_UNCERTAIN; never re-sent automatically; a human 'not sent' allows exactly one more", async () => {
+    const o = newOrder();
+    await registerOnAccountOrder(o.id, "WEBHOOK");
+    shop.mailMode = "uncertain";
+    await recordDelivery({ orderGid: o.id, triggerSource: "MANUAL_DELIVERY", source: "crm", eventKey: "m5b", kind: "MANUAL_DELIVERY", occurredAt: new Date(), actorUserId: null });
+    const row = await rowOf(o.id);
+    expect(row).toMatchObject({ state: "MANUAL_REVIEW", reviewReason: "INVOICE_SEND_UNCERTAIN" });
+    await runOnAccountWorker({ limit: 500 });
+    await reconcileOnAccountOrder(row.id);
+    expect(ops("invoice")).toHaveLength(0);
+    const invoiceBefore = await prisma.onAccountInvoice.findUniqueOrThrow({ where: { onAccountOrderId: row.id } });
+    const user = await prisma.user.create({ data: { email: `oa-${Date.now()}@example.com`, name: "T", passwordHash: "x", role: "ADMIN" } });
+    await resolveReview(row.id, "RETRY_INVOICE", user.id, "Gecontroleerd: niet verstuurd");
+    expect(ops("invoice")).toHaveLength(1);
+    expect((await rowOf(o.id)).state).toBe("INVOICE_SENT");
+    const invoiceAfter = await prisma.onAccountInvoice.findUniqueOrThrow({ where: { onAccountOrderId: row.id } });
+    // the same invoice (number, snapshot, PDF), only a new send key
+    expect(invoiceAfter.invoiceNumber).toBe(invoiceBefore.invoiceNumber);
+    expect(invoiceAfter.pdfSha256).toBe(invoiceBefore.pdfSha256);
+    expect(invoiceAfter.sendKey).not.toBe(invoiceBefore.sendKey);
     await prisma.auditEvent.deleteMany({ where: { userId: user.id } });
     await prisma.user.delete({ where: { id: user.id } });
   });
 
-  it("Shopify refuses the send because it was paid meanwhile -> PAID", async () => {
+  it("paid between the invoice and the mail -> no payment mail, PAID, the invoice is kept (PAID_BEFORE_SEND)", async () => {
     const o = newOrder();
     await registerOnAccountOrder(o.id, "WEBHOOK");
-    await recordDelivery({ orderGid: o.id, triggerSource: "MANUAL_DELIVERY", source: "crm", eventKey: "m6", kind: "MANUAL_DELIVERY", occurredAt: new Date(), actorUserId: null, skipReconcile: true });
+    shop.mailMode = "notSent";
+    await recordDelivery({ orderGid: o.id, triggerSource: "MANUAL_DELIVERY", source: "crm", eventKey: "m6", kind: "MANUAL_DELIVERY", occurredAt: new Date(), actorUserId: null });
     const row = await rowOf(o.id);
-    await reconcileOnAccountOrder(row.id); // -> terms set + invoice sent
-    expect((await rowOf(o.id)).state).toBe("INVOICE_SENT");
+    expect(row.state).toBe("INVOICE_READY");
     o.financial = "PAID";
     o.outstanding = "0.00";
+    await prisma.onAccountOrder.update({ where: { id: row.id }, data: { nextAttemptAt: null } });
     await reconcileOnAccountOrder(row.id);
     expect((await rowOf(o.id)).state).toBe("PAID");
+    expect(ops("invoice")).toHaveLength(0);
+    expect(await prisma.onAccountInvoice.findUniqueOrThrow({ where: { onAccountOrderId: row.id } })).toMatchObject({ mailSuppressedReason: "PAID_BEFORE_SEND", sentAt: null });
   });
 
   it("partial delivery is never invoiced automatically (MANUAL_REVIEW)", async () => {
@@ -586,7 +757,7 @@ describe("E2E fault injection (staging-only switches)", () => {
     expect(e2eFaultActive("crash_after_invoice_send", gid)).toBe(false);
   });
 
-  it("crash after a real send: stays INVOICE_SENDING, then adopts Shopify's event — never a second mail", async () => {
+  it("crash after a real send: stays INVOICE_SENDING, then adopts OfferteApp's record of the key — never a second mail", async () => {
     const o = newOrder({ metafields: { termDays: "30", handedOverAt: new Date(Date.now() - 60_000).toISOString(), invoiceSentAt: null } });
     setEnv({ E2E_ON_ACCOUNT_FAULT: "crash_after_invoice_send", E2E_ON_ACCOUNT_FAULT_ORDER: o.id, SHOPIFY_SHOP_DOMAIN: DEV, SHOPIFY_WRITE_ALLOWED_MYSHOPIFY_DOMAINS: DEV });
     await registerOnAccountOrder(o.id, "WEBHOOK");
@@ -600,13 +771,249 @@ describe("E2E fault injection (staging-only switches)", () => {
     expect(ops("invoice")).toHaveLength(1);
   });
 
-  it("outcome unknown and nothing went out: MANUAL_REVIEW, no automatic resend", async () => {
+  it("SMTP outcome uncertain (fault switch): MANUAL_REVIEW, no automatic resend", async () => {
     const o = newOrder({ metafields: { termDays: "30", handedOverAt: new Date(Date.now() - 60_000).toISOString(), invoiceSentAt: null } });
-    setEnv({ E2E_ON_ACCOUNT_FAULT: "invoice_send_outcome_unknown", E2E_ON_ACCOUNT_FAULT_ORDER: o.id, SHOPIFY_SHOP_DOMAIN: DEV, SHOPIFY_WRITE_ALLOWED_MYSHOPIFY_DOMAINS: DEV });
+    setEnv({ E2E_ON_ACCOUNT_FAULT: "invoice_mail_uncertain", E2E_ON_ACCOUNT_FAULT_ORDER: o.id, SHOPIFY_SHOP_DOMAIN: DEV, SHOPIFY_WRITE_ALLOWED_MYSHOPIFY_DOMAINS: DEV });
     await registerOnAccountOrder(o.id, "WEBHOOK");
     clear();
     expect(await rowOf(o.id)).toMatchObject({ state: "MANUAL_REVIEW", reviewReason: "INVOICE_SEND_UNCERTAIN" });
     await runOnAccountWorker({ limit: 500 });
     expect(ops("invoice")).toHaveLength(0);
+  });
+});
+
+describe("Phase I — the ONE definitive invoice + ONE Stones4U invoice mail", () => {
+  const DEV = "stones4u-dev.myshopify.com";
+  const invoiceOf = (rowId: string) => prisma.onAccountInvoice.findUnique({ where: { onAccountOrderId: rowId } });
+  const deliver = (o: FakeOrder, key: string) =>
+    recordDelivery({ orderGid: o.id, triggerSource: "MANUAL_DELIVERY", source: "crm", eventKey: key, kind: "MANUAL_DELIVERY", occurredAt: new Date(Date.now() - 60_000), actorUserId: null });
+  const due = async (rowId: string) => prisma.onAccountOrder.update({ where: { id: rowId }, data: { nextAttemptAt: new Date(Date.now() - 1000) } });
+  const withFault = (point: string, gid: string) => {
+    process.env.E2E_ON_ACCOUNT_FAULT = point;
+    process.env.E2E_ON_ACCOUNT_FAULT_ORDER = gid;
+    process.env.SHOPIFY_SHOP_DOMAIN = DEV;
+    process.env.SHOPIFY_WRITE_ALLOWED_MYSHOPIFY_DOMAINS = DEV;
+  };
+  const noFault = () => {
+    for (const k of ["E2E_ON_ACCOUNT_FAULT", "E2E_ON_ACCOUNT_FAULT_ORDER", "SHOPIFY_SHOP_DOMAIN", "SHOPIFY_WRITE_ALLOWED_MYSHOPIFY_DOMAINS"]) delete process.env[k];
+  };
+  const termsSetRow = (o: FakeOrder, termsId: string, extra: Record<string, unknown> = {}) =>
+    prisma.onAccountOrder.create({
+      data: {
+        shopifyOrderGid: o.id,
+        sourceApp: "SOURCE2POS",
+        termDays: 30,
+        state: "TERMS_SET",
+        deliveredAt: new Date("2026-10-20T10:00:00Z"),
+        triggerSource: "MANUAL_DELIVERY",
+        dueAt: new Date("2026-11-19T22:59:59Z"),
+        paymentTermsId: termsId,
+        termsSetAt: new Date(),
+        ...extra,
+      },
+    });
+
+  it("invoice number = Shopify order number; amounts are Shopify's; the stored PDF is exactly the attached one", async () => {
+    const o = newOrder();
+    await registerOnAccountOrder(o.id, "WEBHOOK");
+    await deliver(o, "i1");
+    const row = await rowOf(o.id);
+    expect(row.state).toBe("INVOICE_SENT");
+    const inv = (await invoiceOf(row.id))!;
+    expect(inv.invoiceNumber).toBe(o.name.replace("#", ""));
+    expect(inv.shopifyOrderGid).toBe(o.id);
+    expect(inv.totalAmount.toFixed(2)).toBe("48.40");
+    expect(inv.taxAmount.toFixed(2)).toBe("8.40");
+    expect(inv.outstandingAmount.toFixed(2)).toBe("48.40");
+    expect(inv.dueAt.toISOString()).toBe(row.dueAt!.toISOString());
+    expect(inv.deliveredAt.toISOString()).toBe(row.deliveredAt!.toISOString());
+    expect(inv.storageKey).toBe(`invoices/${inv.invoiceDate.slice(0, 4)}/${inv.invoiceNumber}/${inv.pdfSha256}.pdf`);
+    const stored = shop.objects.get(inv.storageKey)!;
+    expect(stored.subarray(0, 5).toString()).toBe("%PDF-");
+    expect(createHash("sha256").update(stored).digest("hex")).toBe(inv.pdfSha256);
+    const mail = ops("invoice")[0]!.args as { subject: string; filename: string; sha256: string; pdf: Buffer; message: string };
+    expect(mail.subject).toBe(`Factuur Stones4U ${inv.invoiceNumber}`);
+    expect(mail.filename).toBe(`Factuur_${inv.invoiceNumber}.pdf`);
+    expect(mail.sha256).toBe(inv.pdfSha256);
+    expect(mail.pdf.equals(stored)).toBe(true);
+    expect(mail.message).toContain(`Factuurnummer: ${inv.invoiceNumber}`);
+    expect(mail.message).toContain("Te betalen: € 48,40");
+    expect(mail.message).toContain("order_payment/");
+    expect(inv).toMatchObject({ mailRecipient: "klant@example.com", sentAt: expect.any(Date), mailSuppressedReason: null });
+    const snapshot = inv.snapshot as { lines: { netExclCents: number; vatCents: number }[]; totals: { totalCents: number } };
+    expect(snapshot.totals.totalCents).toBe(4840);
+    expect(snapshot.lines[0]).toMatchObject({ netExclCents: 4000, vatCents: 840 });
+  });
+
+  it("three workers at TERMS_SET: exactly one invoice, one PDF upload, one mail", async () => {
+    const o = newOrder({ terms: { id: "gid://shopify/PaymentTerms/ours2", type: "FIXED", dueAt: "2026-11-19T22:59:59Z" } });
+    const row = await termsSetRow(o, "gid://shopify/PaymentTerms/ours2");
+    await Promise.all([reconcileOnAccountOrder(row.id), reconcileOnAccountOrder(row.id), reconcileOnAccountOrder(row.id)]);
+    expect(ops("upload")).toHaveLength(1);
+    expect(await prisma.onAccountInvoice.count({ where: { shopifyOrderGid: o.id } })).toBe(1);
+    expect(ops("invoice")).toHaveLength(1);
+    expect((await rowOf(o.id)).state).toBe("INVOICE_SENT");
+  });
+
+  it("scheduler again / later reconciles never rebuild the invoice nor mail again", async () => {
+    const o = newOrder();
+    await registerOnAccountOrder(o.id, "WEBHOOK");
+    await deliver(o, "i3");
+    const row = await rowOf(o.id);
+    const before = (await invoiceOf(row.id))!;
+    await reconcileOnAccountOrder(row.id);
+    await runOnAccountWorker({ limit: 500 });
+    await runScheduledOnAccountPass({ trigger: "phase-i", limit: 500 });
+    const after = (await invoiceOf(row.id))!;
+    expect(after.snapshotSha256).toBe(before.snapshotSha256);
+    expect(after.pdfSha256).toBe(before.pdfSha256);
+    expect(ops("upload").filter((c) => String(c.args).includes(`/${before.invoiceNumber}/`))).toHaveLength(1);
+    expect(ops("invoice").filter((c) => (c.args as { gid: string }).gid === o.id)).toHaveLength(1);
+  });
+
+  it("PDF generation fails -> nothing stored, nothing sent, TERMS_SET with backoff; next attempt makes exactly one invoice", async () => {
+    const o = newOrder();
+    await registerOnAccountOrder(o.id, "WEBHOOK");
+    withFault("invoice_pdf_render_fails", o.id);
+    await deliver(o, "i4");
+    noFault();
+    const row = await rowOf(o.id);
+    expect(row.state).toBe("TERMS_SET");
+    expect(row.lastError).toMatch(/invoice_pdf_render_fails/);
+    expect(await invoiceOf(row.id)).toBeNull();
+    expect(ops("invoice")).toHaveLength(0);
+    await due(row.id);
+    await reconcileOnAccountOrder(row.id);
+    expect((await rowOf(o.id)).state).toBe("INVOICE_SENT");
+    expect(ops("invoice")).toHaveLength(1);
+  });
+
+  it("Shopify gives no payment URL -> no mail, INVOICE_READY with backoff; once it does -> exactly one mail", async () => {
+    const o = newOrder();
+    await registerOnAccountOrder(o.id, "WEBHOOK");
+    shop.noPaymentUrl = true;
+    await deliver(o, "i5");
+    const row = await rowOf(o.id);
+    expect(row.state).toBe("INVOICE_READY");
+    expect(row.lastError).toMatch(/PAYMENT_LINK_UNAVAILABLE/);
+    expect(ops("invoice")).toHaveLength(0);
+    shop.noPaymentUrl = false;
+    await due(row.id);
+    await reconcileOnAccountOrder(row.id);
+    expect((await rowOf(o.id)).state).toBe("INVOICE_SENT");
+    expect(ops("invoice")).toHaveLength(1);
+  });
+
+  it("a payment URL for another order is never mailed (MANUAL_REVIEW)", async () => {
+    const o = newOrder();
+    await registerOnAccountOrder(o.id, "WEBHOOK");
+    shop.foreignPaymentUrl = true;
+    await deliver(o, "i6");
+    expect(await rowOf(o.id)).toMatchObject({ state: "MANUAL_REVIEW", reviewReason: "PAYMENT_LINK_UNAVAILABLE" });
+    expect(ops("invoice")).toHaveLength(0);
+  });
+
+  it("mail definitely not sent (SMTP refused) -> back to INVOICE_READY; retry with the same key mails exactly once", async () => {
+    const o = newOrder();
+    await registerOnAccountOrder(o.id, "WEBHOOK");
+    shop.mailMode = "notSent";
+    await deliver(o, "i7");
+    const row = await rowOf(o.id);
+    expect(row.state).toBe("INVOICE_READY");
+    const key = (await invoiceOf(row.id))!.sendKey;
+    await due(row.id);
+    await reconcileOnAccountOrder(row.id);
+    expect((await rowOf(o.id)).state).toBe("INVOICE_SENT");
+    expect(ops("invoice")).toHaveLength(1);
+    expect((ops("invoice")[0]!.args as { sendKey: string }).sendKey).toBe(key);
+  });
+
+  it("mail provider rejects the request -> MANUAL_REVIEW, nothing sent", async () => {
+    const o = newOrder();
+    await registerOnAccountOrder(o.id, "WEBHOOK");
+    shop.mailMode = "rejected";
+    await deliver(o, "i7b");
+    expect(await rowOf(o.id)).toMatchObject({ state: "MANUAL_REVIEW", reviewReason: "INVOICE_MAIL_REJECTED" });
+    expect(ops("invoice")).toHaveLength(0);
+  });
+
+  it("cancelled after the invoice, before the mail -> CANCELLED, no mail", async () => {
+    const o = newOrder();
+    await registerOnAccountOrder(o.id, "WEBHOOK");
+    shop.mailMode = "notSent";
+    await deliver(o, "i8");
+    const row = await rowOf(o.id);
+    o.cancelledAt = new Date().toISOString();
+    await due(row.id);
+    await reconcileOnAccountOrder(row.id);
+    expect((await rowOf(o.id)).state).toBe("CANCELLED");
+    expect(ops("invoice")).toHaveLength(0);
+    expect((await invoiceOf(row.id))!.mailSuppressedReason).toBe("CANCELLED_BEFORE_SEND");
+  });
+
+  it("paid before the invoice is built -> the invoice is still made (bookkeeping), no mail, PAID", async () => {
+    const o = newOrder({ terms: { id: "gid://shopify/PaymentTerms/ours3", type: "FIXED", dueAt: "2026-11-19T22:59:59Z" } });
+    o.financial = "PAID";
+    o.outstanding = "0.00";
+    const row = await termsSetRow(o, "gid://shopify/PaymentTerms/ours3");
+    await reconcileOnAccountOrder(row.id);
+    expect((await rowOf(o.id)).state).toBe("PAID");
+    expect(ops("invoice")).toHaveLength(0);
+    expect(await invoiceOf(row.id)).toMatchObject({ mailSuppressedReason: "PAID_BEFORE_SEND", sentAt: null });
+  });
+
+  it("order changed after the sale (quantity refunded) -> MANUAL_REVIEW, no invoice", async () => {
+    const o = newOrder();
+    await registerOnAccountOrder(o.id, "WEBHOOK");
+    o.changed = true;
+    await deliver(o, "i9");
+    const row = await rowOf(o.id);
+    expect(row).toMatchObject({ state: "MANUAL_REVIEW", reviewReason: "INVOICE_ORDER_CHANGED" });
+    expect(await invoiceOf(row.id)).toBeNull();
+    expect(ops("invoice")).toHaveLength(0);
+  });
+
+  it("Stones4U company details incomplete (e.g. no IBAN) -> MANUAL_REVIEW, no invoice", async () => {
+    const o = newOrder();
+    await registerOnAccountOrder(o.id, "WEBHOOK");
+    shop.company = { ...FULL_COMPANY, iban: null };
+    await deliver(o, "i10");
+    const row = await rowOf(o.id);
+    expect(row).toMatchObject({ state: "MANUAL_REVIEW", reviewReason: "COMPANY_PROFILE_INCOMPLETE" });
+    expect(row.lastError).toContain("iban");
+    expect(await invoiceOf(row.id)).toBeNull();
+  });
+
+  it("OfferteApp unreachable for the company details -> TERMS_SET with backoff (fails gracefully)", async () => {
+    const o = newOrder();
+    await registerOnAccountOrder(o.id, "WEBHOOK");
+    shop.fail.company = 1;
+    await deliver(o, "i11");
+    const row = await rowOf(o.id);
+    expect(row.state).toBe("TERMS_SET");
+    expect(row.attempts).toBe(1);
+    expect(await invoiceOf(row.id)).toBeNull();
+  });
+
+  it("a stored PDF that no longer matches its checksum is never mailed", async () => {
+    const o = newOrder();
+    await registerOnAccountOrder(o.id, "WEBHOOK");
+    shop.mailMode = "notSent";
+    await deliver(o, "i12");
+    const row = await rowOf(o.id);
+    const inv = (await invoiceOf(row.id))!;
+    shop.objects.set(inv.storageKey, Buffer.from("%PDF-tampered"));
+    await due(row.id);
+    await reconcileOnAccountOrder(row.id);
+    expect(await rowOf(o.id)).toMatchObject({ state: "MANUAL_REVIEW", reviewReason: "INVOICE_PDF_INTEGRITY" });
+    expect(ops("invoice")).toHaveLength(0);
+  });
+
+  it("a crashed generator (INVOICE_GENERATING past the grace) is retried safely", async () => {
+    const o = newOrder({ terms: { id: "gid://shopify/PaymentTerms/ours4", type: "FIXED", dueAt: "2026-11-19T22:59:59Z" } });
+    const row = await termsSetRow(o, "gid://shopify/PaymentTerms/ours4", { state: "INVOICE_GENERATING", invoiceGeneratingAt: new Date(Date.now() - 10 * 60_000) });
+    await reconcileOnAccountOrder(row.id);
+    expect((await rowOf(o.id)).state).toBe("INVOICE_SENT");
+    expect(ops("invoice")).toHaveLength(1);
   });
 });

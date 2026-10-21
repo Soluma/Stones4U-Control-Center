@@ -103,6 +103,15 @@ export async function uploadObject(input: { storageKey: string; body: Buffer; mi
   );
 }
 
+/** Reads an object back in full (server-side only, e.g. to attach a stored
+ * invoice PDF to a mail after verifying its checksum). */
+export async function downloadObject(storageKey: string): Promise<Buffer> {
+  const { client, bucket } = getClient();
+  const result = await client.send(new GetObjectCommand({ Bucket: bucket, Key: storageKey }));
+  if (!result.Body) throw new StorageConfigError(`Object ${storageKey} heeft geen inhoud.`);
+  return Buffer.from(await result.Body.transformToByteArray());
+}
+
 export async function deleteObject(storageKey: string): Promise<void> {
   const { client, bucket } = getClient();
   await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: storageKey }));

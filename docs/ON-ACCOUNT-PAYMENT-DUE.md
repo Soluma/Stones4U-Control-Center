@@ -226,3 +226,89 @@ Alternatives considered:
 | Fly scheduled machine | `hourly` at best (too coarse) | ~€0 |
 | Extra Fly process group with cron | any interval | ~$2–3/month always-on |
 | External cron (GitHub Actions) | best effort, delays | free, extra secret outside Fly |
+
+## Phase I — the definitive invoice and ONE invoice mail
+
+Decision (2026-10-21): **the Shopify order number is the invoice number**
+(Shopify order #1842 is invoice 1842). There is no CRM number series, and
+nothing waits for Exact Online.
+
+### Flow
+
+The flow replaces Shopify's `orderInvoiceSend` in the automatic path:
+
+```
+DELIVERY -> dueAt -> FIXED payment terms (TERMS_SET)
+  -> INVOICE_GENERATING   one worker:
+       fresh read of the exact order GID
+       -> snapshot -> PDF -> stored
+  -> INVOICE_READY        the invoice exists, immutable
+  -> INVOICE_SENDING      one worker:
+       re-read the order, read Shopify's payment URL,
+       mail the stored PDF once
+  -> INVOICE_SENT
+```
+
+### Financial source
+
+The Shopify Order is the only financial source (`src/integrations/shopify/invoice-read.ts`). All amounts are whole cents:
+- line `originalTotal`, minus the discount allocations;
+- shipping lines;
+- the VAT line per rate;
+- totals and the outstanding amount.
+
+The snapshot (`invoice/snapshot.ts`) refuses to exist when:
+- the lines plus shipping do not add up exactly to the Shopify total and VAT;
+- the order was edited or refunded;
+- the FIXED due date is not ours;
+- there is no invoice address (billing address, then the customer's default address, then the shipping address);
+- the Stones4U details are incomplete. Name, address, KvK, VAT number and IBAN are required, and come from OfferteApp Settings.
+
+The unit price excl. VAT (art. 35a Wet OB) is derived for display only.
+
+### PDF
+
+- The PDF is rendered by `invoice/render.ts` (pdfkit, A4). It is byte-for-byte reproducible from the same snapshot.
+- It is stored in the existing private R2 bucket under the content-addressed key `invoices/<year>/<number>/<sha256>.pdf`.
+- It is recorded in `OnAccountInvoice`, one row per order, unique on the order, GID, number and sendKey, with `onDelete: Restrict`.
+- The PDF is never rebuilt. A download (`GET /api/on-account/:id/invoice`) and a mail both verify the checksum first.
+
+### Mail
+
+- The mail goes through OfferteApp, Stones4U's existing SMTP: `POST /api/integrations/control-center/invoice-mail`, with the existing service token.
+- **Subject:** "Factuur Stones4U <nr>".
+- **Attachment:** `Factuur_<nr>.pdf`.
+- **Body:** the invoice facts and a **FACTUUR BETALEN** button.
+- The button uses Shopify's own `paymentCollectionDetails.additionalPaymentCollectionUrl`:
+  - it is read right before sending;
+  - it is accepted only if it is an https `/order_payment/<this order id>` link on an allowed host (`SHOPIFY_SHOP_DOMAIN` plus `ON_ACCOUNT_PAYMENT_LINK_HOSTS`);
+  - it is never built by us, and never logged.
+
+### Exactly one mail
+
+- The invoice has a `sendKey`. OfferteApp records an attempt before it talks to SMTP and mails at most once per key.
+- **SENT:** INVOICE_SENT.
+- **NOT_SENT** (connect, login or recipient refused): back to INVOICE_READY with backoff.
+- **No answer from OfferteApp:** the CRM asks `GET /invoice-mail/<sendKey>`; it never resends blindly.
+- **UNCERTAIN** (SMTP hand-over broke), or an attempt without an outcome: MANUAL_REVIEW `INVOICE_SEND_UNCERTAIN`.
+- **A human "not sent":** a new sendKey for the **same** invoice.
+
+### Paid or cancelled before the mail
+
+- **Paid:** the invoice is still made (bookkeeping), but no payment mail is sent (`mailSuppressedReason PAID_BEFORE_SEND`). The state becomes PAID.
+- **Cancelled after the invoice:** no mail (`CANCELLED_BEFORE_SEND`).
+
+### Staging-only fault switches
+
+These are used by the Phase H/I E2E:
+- `invoice_pdf_render_fails`
+- `payment_link_unavailable`
+- `invoice_mail_timeout_before_send`
+- `invoice_mail_uncertain`
+- `crash_after_invoice_send`
+
+They are inert unless both shop variables are exactly stones4u-dev.
+
+### Before production
+- Fill in `company_iban` in OfferteApp production Settings; it is empty today.
+- Verify the host of the production payment URL. A custom domain must be added to `ON_ACCOUNT_PAYMENT_LINK_HOSTS`.

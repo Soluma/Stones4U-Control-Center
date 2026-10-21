@@ -1043,6 +1043,13 @@ enum OnAccountState {
   DELIVERED
   /// FIXED terms with the exact dueAt verified on Shopify; invoice not sent.
   TERMS_SET
+  /// Phase I: exactly one worker claimed building the definitive invoice
+  /// (fresh Shopify read -> snapshot -> PDF -> stored). No external effect;
+  /// a crash here is safely retried after a grace period.
+  INVOICE_GENERATING
+  /// The definitive invoice (number = Shopify order number) is stored
+  /// immutably (OnAccountInvoice); the invoice mail has not been sent yet.
+  INVOICE_READY
   /// Exactly one worker claimed the invoice send. If found here after a
   /// crash, the send outcome is UNCERTAIN — never re-sent blindly.
   INVOICE_SENDING
@@ -1088,9 +1095,10 @@ model OnAccountOrder {
   paymentTermsId String?
   termsSetAt     DateTime?
 
-  invoiceSendingAt DateTime?
-  invoiceSentAt    DateTime?
-  invoiceRecipient String?
+  invoiceGeneratingAt DateTime?
+  invoiceSendingAt    DateTime?
+  invoiceSentAt       DateTime?
+  invoiceRecipient    String?
 
   paidAt      DateTime?
   cancelledAt DateTime?
@@ -1103,9 +1111,53 @@ model OnAccountOrder {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  events OnAccountEvent[]
+  events  OnAccountEvent[]
+  invoice OnAccountInvoice?
 
   @@index([state, nextAttemptAt])
+}
+
+/// Phase I — the ONE definitive invoice of an on-account order. Invoice
+/// number = the Shopify order number (decision 2026-10-21). Immutable once
+/// written: the financial snapshot and the PDF (content-addressed object in
+/// the private R2 bucket, verified by pdfSha256) never change; only the
+/// mail-outcome columns are filled in later. Never deleted with its order.
+model OnAccountInvoice {
+  id                String         @id @default(cuid())
+  onAccountOrderId  String         @unique
+  onAccountOrder    OnAccountOrder @relation(fields: [onAccountOrderId], references: [id], onDelete: Restrict)
+  shopifyOrderGid   String         @unique
+  /// Shopify order number without "#", e.g. "1842".
+  invoiceNumber     String         @unique
+  shopifyOrderName  String
+  /// Calendar date of issue in Europe/Amsterdam, "YYYY-MM-DD".
+  invoiceDate       String
+  deliveredAt       DateTime
+  termDays          Int
+  dueAt             DateTime
+  currency          String
+  totalAmount       Decimal        @db.Decimal(12, 2)
+  taxAmount         Decimal        @db.Decimal(12, 2)
+  outstandingAmount Decimal        @db.Decimal(12, 2)
+  /// Everything printed on the PDF (Shopify amounts, company, customer).
+  snapshot          Json
+  snapshotSha256    String
+  pdfSha256         String
+  pdfSize           Int
+  storageKey        String
+  generatedAt       DateTime       @default(now())
+
+  /// Idempotency key for the mail provider: one key = at most one mail.
+  /// Only rotated by an explicit human "send again" decision.
+  sendKey              String    @unique
+  mailRecipient        String?
+  mailMessageId        String?
+  sentAt               DateTime?
+  /// Why no mail went out, e.g. PAID_BEFORE_SEND.
+  mailSuppressedReason String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 /// Every incoming trigger/event, deduplicated by (source, eventKey) — a Pick

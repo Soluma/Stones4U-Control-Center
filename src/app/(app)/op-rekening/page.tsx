@@ -27,6 +27,8 @@ export default async function OnAccountPage() {
     dueAt: r.dueAt?.toISOString() ?? null,
     invoiceSentAt: r.invoiceSentAt?.toISOString() ?? null,
     invoiceRecipient: r.invoiceRecipient,
+    invoiceNumber: r.invoice?.invoiceNumber ?? null,
+    invoiceMailSuppressed: r.invoice?.mailSuppressedReason ?? null,
     lastError: r.lastError,
     attempts: r.attempts,
     updatedAt: r.updatedAt.toISOString(),
@@ -37,7 +39,7 @@ export default async function OnAccountPage() {
       <div>
         <h1 className="text-xl font-semibold tracking-tight text-ink-primary">Op rekening</h1>
         <p className="mt-1 max-w-3xl text-sm text-ink-tertiary">
-          Orders op rekening krijgen pas een vervaldatum en betaallink op het moment van werkelijk afhalen of afleveren.
+          Orders op rekening krijgen pas een vervaldatum, factuur en betaallink op het moment van werkelijk afhalen of afleveren.
           Afhalen (Pick App) en &ldquo;direct meegegeven&rdquo; aan de kassa gaan automatisch; voor bezorging bevestig je
           hier &ldquo;Afgeleverd bij klant&rdquo;.
         </p>

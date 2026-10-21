@@ -10,6 +10,8 @@ export const ON_ACCOUNT_STATES = [
   "WAITING_FOR_DELIVERY",
   "DELIVERED",
   "TERMS_SET",
+  "INVOICE_GENERATING",
+  "INVOICE_READY",
   "INVOICE_SENDING",
   "INVOICE_SENT",
   "PAID",
@@ -26,6 +28,8 @@ export const WORKABLE_STATES: ReadonlySet<OnAccountState> = new Set([
   "PENDING_TEMP_TERMS",
   "DELIVERED",
   "TERMS_SET",
+  "INVOICE_GENERATING",
+  "INVOICE_READY",
   "INVOICE_SENDING",
 ]);
 
@@ -34,17 +38,23 @@ const TRANSITIONS: Record<OnAccountState, readonly OnAccountState[]> = {
   PENDING_TEMP_TERMS: ["WAITING_FOR_DELIVERY", "DELIVERED", "PAID", "CANCELLED", "MANUAL_REVIEW"],
   WAITING_FOR_DELIVERY: ["DELIVERED", "PAID", "CANCELLED", "MANUAL_REVIEW"],
   DELIVERED: ["TERMS_SET", "PAID", "CANCELLED", "MANUAL_REVIEW"],
-  // TERMS_SET -> INVOICE_SENT only when Shopify's own invoice_sent_at marker
-  // already says it was sent (adopt, never send a second time).
-  TERMS_SET: ["INVOICE_SENDING", "INVOICE_SENT", "PAID", "CANCELLED", "MANUAL_REVIEW"],
-  // An uncertain send never goes back to TERMS_SET automatically: that would
-  // allow a second mail. Only a verified non-send (Shopify userError) may.
-  INVOICE_SENDING: ["INVOICE_SENT", "TERMS_SET", "PAID", "CANCELLED", "MANUAL_REVIEW"],
+  // Phase I: TERMS_SET -> INVOICE_GENERATING (one worker builds the
+  // definitive invoice) -> INVOICE_READY (stored) -> INVOICE_SENDING (one
+  // worker mails it) -> INVOICE_SENT. TERMS_SET -> INVOICE_SENT is kept for
+  // adopting a Shopify invoice_sent_at marker (never mail a second time).
+  TERMS_SET: ["INVOICE_GENERATING", "INVOICE_SENDING", "INVOICE_SENT", "PAID", "CANCELLED", "MANUAL_REVIEW"],
+  // Generating has no external effect: a failure or a crash (after a grace
+  // period) safely returns to TERMS_SET; an existing invoice is reused.
+  INVOICE_GENERATING: ["INVOICE_READY", "TERMS_SET", "PAID", "CANCELLED", "MANUAL_REVIEW"],
+  INVOICE_READY: ["INVOICE_SENDING", "PAID", "CANCELLED", "MANUAL_REVIEW"],
+  // An uncertain send never goes back automatically: that would allow a
+  // second mail. Only a verified non-send may return to INVOICE_READY.
+  INVOICE_SENDING: ["INVOICE_SENT", "INVOICE_READY", "TERMS_SET", "PAID", "CANCELLED", "MANUAL_REVIEW"],
   INVOICE_SENT: ["PAID", "CANCELLED", "MANUAL_REVIEW"],
   PAID: [],
   CANCELLED: [],
   // Leaving MANUAL_REVIEW is always an explicit human action (resolveReview).
-  MANUAL_REVIEW: ["REGISTERED", "WAITING_FOR_DELIVERY", "DELIVERED", "TERMS_SET", "INVOICE_SENT", "PAID", "CANCELLED"],
+  MANUAL_REVIEW: ["REGISTERED", "WAITING_FOR_DELIVERY", "DELIVERED", "TERMS_SET", "INVOICE_READY", "INVOICE_SENT", "PAID", "CANCELLED"],
 };
 
 export class InvalidOnAccountTransitionError extends Error {
@@ -76,7 +86,14 @@ export type ReviewReason =
   | "PARTIAL_DELIVERY"
   | "ORDER_NOT_FOUND"
   | "NOT_ON_ACCOUNT"
-  | "RETRIES_EXHAUSTED";
+  | "RETRIES_EXHAUSTED"
+  | "INVOICE_ORDER_CHANGED"
+  | "INVOICE_AMOUNTS_INCONSISTENT"
+  | "INVOICE_ADDRESS_MISSING"
+  | "COMPANY_PROFILE_INCOMPLETE"
+  | "INVOICE_PDF_INTEGRITY"
+  | "PAYMENT_LINK_UNAVAILABLE"
+  | "INVOICE_MAIL_REJECTED";
 
 export const REVIEW_REASON_LABELS: Record<ReviewReason, string> = {
   TERM_DAYS_MISSING: "Betaaltermijn ontbreekt op de order",
@@ -91,6 +108,13 @@ export const REVIEW_REASON_LABELS: Record<ReviewReason, string> = {
   ORDER_NOT_FOUND: "Order niet gevonden in Shopify",
   NOT_ON_ACCOUNT: "Order is niet gemarkeerd als op rekening",
   RETRIES_EXHAUSTED: "Te vaak mislukt — handmatig controleren",
+  INVOICE_ORDER_CHANGED: "Order is gewijzigd of (deels) terugbetaald — factuur niet automatisch gemaakt",
+  INVOICE_AMOUNTS_INCONSISTENT: "Bedragen op de Shopify-order tellen niet sluitend op",
+  INVOICE_ADDRESS_MISSING: "Geen factuuradres bij klant of order",
+  COMPANY_PROFILE_INCOMPLETE: "Bedrijfsgegevens Stones4U onvolledig (naam/adres/KvK/btw/IBAN)",
+  INVOICE_PDF_INTEGRITY: "Opgeslagen factuur-PDF komt niet overeen met de checksum",
+  PAYMENT_LINK_UNAVAILABLE: "Shopify geeft (nog) geen betaallink voor deze order",
+  INVOICE_MAIL_REJECTED: "De mailvoorziening weigerde de factuurmail (niets verstuurd)",
 };
 
 /** Retry backoff: 1, 2, 4, 8 … minutes, capped at 6 hours; MANUAL_REVIEW after MAX_ATTEMPTS. */

@@ -16,6 +16,10 @@ const nextConfig: NextConfig = {
   // package.json) so local Windows builds keep working; the standalone
   // output itself needs no platform-specific handling.
   output: "standalone",
+  // pdfkit (on-account invoice PDFs) reads its built-in font metrics from its
+  // own package folder at runtime; keep it a plain node_modules dependency
+  // (traced into the standalone output) instead of bundling it.
+  serverExternalPackages: ["pdfkit"],
   // `npm run lint` remains the authoritative lint check (run separately,
   // always green) — Next's own built-in build-time lint pass is redundant
   // with that and was one of the two triggers of the Windows-only issue

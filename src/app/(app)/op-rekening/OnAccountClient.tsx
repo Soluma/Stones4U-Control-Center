@@ -18,6 +18,8 @@ export type OnAccountRowView = {
   dueAt: string | null;
   invoiceSentAt: string | null;
   invoiceRecipient: string | null;
+  invoiceNumber: string | null;
+  invoiceMailSuppressed: string | null;
   lastError: string | null;
   attempts: number;
   updatedAt: string;
@@ -30,9 +32,11 @@ const STATE_LABELS: Record<string, { label: string; tone: Tone }> = {
   PENDING_TEMP_TERMS: { label: "Opschonen tijdelijke termijn", tone: "warning" },
   WAITING_FOR_DELIVERY: { label: "Wacht op levering", tone: "neutral" },
   DELIVERED: { label: "Geleverd — termijn zetten", tone: "accent" },
-  TERMS_SET: { label: "Termijn gezet — betaallink volgt", tone: "accent" },
-  INVOICE_SENDING: { label: "Betaallink wordt verstuurd", tone: "accent" },
-  INVOICE_SENT: { label: "Betaallink verstuurd", tone: "success" },
+  TERMS_SET: { label: "Termijn gezet — factuur volgt", tone: "accent" },
+  INVOICE_GENERATING: { label: "Factuur wordt gemaakt", tone: "accent" },
+  INVOICE_READY: { label: "Factuur klaar — mail volgt", tone: "accent" },
+  INVOICE_SENDING: { label: "Factuurmail wordt verstuurd", tone: "accent" },
+  INVOICE_SENT: { label: "Factuur verstuurd", tone: "success" },
   PAID: { label: "Betaald", tone: "success" },
   CANCELLED: { label: "Geannuleerd", tone: "neutral" },
   MANUAL_REVIEW: { label: "Handmatige controle", tone: "danger" },
@@ -145,7 +149,7 @@ export function OnAccountClient({ rows, canWrite, isAdmin }: { rows: OnAccountRo
               <th className="px-3 py-2">Termijn</th>
               <th className="px-3 py-2">Geleverd</th>
               <th className="px-3 py-2">Vervaldatum</th>
-              <th className="px-3 py-2">Betaallink</th>
+              <th className="px-3 py-2">Factuur</th>
               <th className="px-3 py-2">Acties</th>
             </tr>
           </thead>
@@ -183,8 +187,18 @@ export function OnAccountClient({ rows, canWrite, isAdmin }: { rows: OnAccountRo
                   </td>
                   <td className="px-3 py-2">{fmt(r.dueAt)}</td>
                   <td className="px-3 py-2">
+                    {r.invoiceNumber && (
+                      <a href={`/api/on-account/${r.id}/invoice`} className="block text-xs font-medium text-accent-700 underline cc-focus-ring">
+                        Factuur {r.invoiceNumber} (PDF)
+                      </a>
+                    )}
                     {fmt(r.invoiceSentAt, true)}
                     {r.invoiceRecipient && <div className="text-xs text-ink-tertiary">{r.invoiceRecipient}</div>}
+                    {r.invoiceMailSuppressed && (
+                      <div className="text-xs text-ink-tertiary">
+                        geen mail: {r.invoiceMailSuppressed === "PAID_BEFORE_SEND" ? "al betaald" : r.invoiceMailSuppressed === "CANCELLED_BEFORE_SEND" ? "geannuleerd" : r.invoiceMailSuppressed}
+                      </div>
+                    )}
                   </td>
                   <td className="px-3 py-2">
                     <div className="flex flex-col items-start gap-1">
@@ -211,14 +225,14 @@ export function OnAccountClient({ rows, canWrite, isAdmin }: { rows: OnAccountRo
                         <>
                           <button
                             type="button"
-                            onClick={() => resolve(r, "MARK_INVOICE_SENT", "In Shopify gecontroleerd: de betaallink IS verstuurd?")}
+                            onClick={() => resolve(r, "MARK_INVOICE_SENT", "Gecontroleerd (mailbox/klant): de factuurmail IS verstuurd?")}
                             className="text-xs text-accent-700 cc-focus-ring"
                           >
                             Is verstuurd (vastleggen)
                           </button>
                           <button
                             type="button"
-                            onClick={() => resolve(r, "RETRY_INVOICE", "In Shopify gecontroleerd: de betaallink is NIET verstuurd? Er gaat precies één nieuwe mail uit.")}
+                            onClick={() => resolve(r, "RETRY_INVOICE", "Gecontroleerd: de factuurmail is NIET verstuurd? Er gaat precies één nieuwe mail uit met dezelfde factuur.")}
                             className="text-xs text-accent-700 cc-focus-ring"
                           >
                             Niet verstuurd — opnieuw versturen
@@ -260,7 +274,7 @@ export function OnAccountClient({ rows, canWrite, isAdmin }: { rows: OnAccountRo
             </h2>
             <p className="text-sm text-ink-secondary">
               De betaaltermijn van {deliveryFor.termDays ?? "?"} dagen start op dit moment. Daarna zet het systeem de
-              vervaldatum in Shopify en stuurt het één betaallink naar de klant.
+              vervaldatum in Shopify, maakt het de factuur en stuurt het één factuurmail met betaalknop naar de klant.
             </p>
             <label className="block text-sm">
               <span className="text-ink-tertiary">Moment van aflevering</span>

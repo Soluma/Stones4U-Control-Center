@@ -74,6 +74,7 @@ export type AuditAction =
   | "on_account.delivery_recorded"
   | "on_account.invoice_requested"
   | "on_account.terms_set"
+  | "on_account.invoice_generated"
   | "on_account.invoice_sent"
   | "on_account.manual_review"
   | "on_account.review_resolved"
