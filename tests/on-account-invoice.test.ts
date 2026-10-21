@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildInvoiceSnapshot, formatEuro, InvoiceSnapshotError, toCents, type BuildSnapshotInput } from "@/modules/on-account/invoice/snapshot";
+import { buildInvoiceSnapshot, formatEuro, InvoiceSnapshotError, isValidIban, toCents, type BuildSnapshotInput } from "@/modules/on-account/invoice/snapshot";
 import { renderInvoicePdf } from "@/modules/on-account/invoice/render";
 import { buildInvoiceMail, isAcceptablePaymentUrl } from "@/modules/on-account/invoice/mail";
 
@@ -18,7 +18,7 @@ const COMPANY = {
   website: null,
   kvk: "12345678",
   vatNumber: "NL001234567B01",
-  iban: "NL00BANK0123456789",
+  iban: "NL91ABNA0417164300",
   logo: null,
 };
 const ADDRESS = { company: "Klant B.V.", name: "Jan Klant", firstName: "Jan", lastName: "Klant", address1: "Industrieweg 12", address2: null, zip: "4000 AB", city: "Tiel", country: "Netherlands", countryCodeV2: "NL" };
@@ -106,7 +106,7 @@ describe("buildInvoiceSnapshot", () => {
     expect(s.lines[0]).toMatchObject({ quantity: 40, grossCents: 14760, discountCents: 1476, netCents: 13284, vatCents: 2305, netExclCents: 10979, unitPriceExclCents: 305 });
     expect(s.shipping[0]).toMatchObject({ title: "Transport euro pallet", netCents: 9500, vatCents: 1649, netExclCents: 7851 });
     expect(s.customer).toMatchObject({ company: "Klant B.V.", name: "Jan Klant", addressLines: ["Industrieweg 12", "4000 AB  Tiel"], vatNumber: null });
-    expect(s.supplier).toMatchObject({ kvk: "12345678", vatNumber: "NL001234567B01", iban: "NL00BANK0123456789" });
+    expect(s.supplier).toMatchObject({ kvk: "12345678", vatNumber: "NL001234567B01", iban: "NL91ABNA0417164300" });
   });
 
   it("delivery date and due date are Amsterdam calendar dates (DST-correct)", () => {
@@ -131,6 +131,14 @@ describe("buildInvoiceSnapshot", () => {
     for (const key of ["kvk", "vatNumber", "iban", "address"] as const) {
       expect(reason(() => buildInvoiceSnapshot(input({ company: { ...COMPANY, [key]: null } })))).toBe("COMPANY_PROFILE_INCOMPLETE");
     }
+  });
+
+  it("refuses a mistyped IBAN (mod-97)", () => {
+    expect(isValidIban("NL91ABNA0417164300")).toBe(true);
+    expect(isValidIban("NL91 ABNA 0417 1643 00")).toBe(true);
+    expect(isValidIban("NL66SNSB0783311141")).toBe(false);
+    expect(isValidIban("NL00BANK0123456789")).toBe(false);
+    expect(reason(() => buildInvoiceSnapshot(input({ company: { ...COMPANY, iban: "NL66SNSB0783311141" } })))).toBe("COMPANY_PROFILE_INCOMPLETE");
   });
 
   it("invoice address: billing address, else the customer's default address, else the shipping address, else refuse", () => {

@@ -32,6 +32,19 @@ export function toCents(amount: string): number {
   return m[1] ? -cents : cents;
 }
 
+/** ISO 13616 mod-97 check — an invoice must never carry a mistyped IBAN. */
+export function isValidIban(raw: string): boolean {
+  const iban = raw.replace(/\s+/g, "").toUpperCase();
+  if (!/^[A-Z]{2}\d{2}[A-Z0-9]{10,30}$/.test(iban)) return false;
+  const rearranged = iban.slice(4) + iban.slice(0, 4);
+  let remainder = 0;
+  for (const ch of rearranged) {
+    const value = /[A-Z]/.test(ch) ? String(ch.charCodeAt(0) - 55) : ch;
+    for (const digit of value) remainder = (remainder * 10 + Number(digit)) % 97;
+  }
+  return remainder === 1;
+}
+
 /** Calendar date in Europe/Amsterdam, "YYYY-MM-DD". */
 export function amsterdamDate(instant: Date): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Amsterdam", year: "numeric", month: "2-digit", day: "2-digit" }).format(instant);
@@ -154,6 +167,7 @@ export function buildInvoiceSnapshot(input: BuildSnapshotInput): InvoiceSnapshot
   // ── supplier (Stones4U) ──
   const missing = (["name", "address", "postcode", "city", "kvk", "vatNumber", "iban"] as const).filter((k) => !company[k]?.trim());
   if (missing.length) throw new InvoiceSnapshotError("COMPANY_PROFILE_INCOMPLETE", `ontbreekt: ${missing.join(", ")}`);
+  if (!isValidIban(company.iban!)) throw new InvoiceSnapshotError("COMPANY_PROFILE_INCOMPLETE", "iban is ongeldig (controlecijfers kloppen niet)");
 
   // ── customer ──
   const customerVat =

@@ -137,7 +137,7 @@ const FULL_COMPANY = {
   website: "www.stones4u.eu",
   kvk: "12345678",
   vatNumber: "NL001234567B01",
-  iban: "NL00BANK0123456789",
+  iban: "NL91ABNA0417164300",
   logo: null,
 };
 
