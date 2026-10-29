@@ -5,6 +5,7 @@ import type { LogisticsDetailResult } from "@/integrations/logistics/adapter";
 import type { OrderLogisticsDetail } from "@/integrations/logistics/types";
 import type { ShopifyOrderLineItem } from "@/integrations/shopify/order-detail";
 import { joinLogisticsLines } from "@/modules/logistics/line-join";
+import { LineWorkDetails } from "./LineWorkDetails";
 import {
   deviationLabel,
   handoffLabel,
@@ -179,6 +180,7 @@ function LogisticsDetail({
                   <div className="min-w-0">
                     <p className="font-medium text-ink-primary">{shopifyLine.title}</p>
                     {shopifyLine.variantTitle && <p className="text-xs text-ink-tertiary">{shopifyLine.variantTitle}</p>}
+                    <LineWorkDetails line={shopifyLine} />
                   </div>
                   <p className="shrink-0 text-sm tabular-nums text-ink-secondary">
                     {pick ? `${pick.pickedQuantity} / ${shopifyLine.currentQuantity}` : `— / ${shopifyLine.currentQuantity}`}
@@ -204,6 +206,7 @@ function LogisticsDetail({
                     <td className="px-4 py-2.5">
                       <p className="font-medium text-ink-primary">{shopifyLine.title}</p>
                       {shopifyLine.variantTitle && <p className="text-xs text-ink-tertiary">{shopifyLine.variantTitle}</p>}
+                      <LineWorkDetails line={shopifyLine} />
                     </td>
                     <td className="px-4 py-2.5 text-right tabular-nums text-ink-secondary">{shopifyLine.currentQuantity}</td>
                     <td className="px-4 py-2.5 text-right tabular-nums">

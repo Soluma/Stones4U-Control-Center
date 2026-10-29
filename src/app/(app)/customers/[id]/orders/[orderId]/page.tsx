@@ -12,6 +12,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { formatDateTime, formatMoney } from "@/lib/format";
 import { ActivityTimelineView } from "../../ActivityTimelineView";
 import { WarehouseLogisticsSection } from "./WarehouseLogisticsSection";
+import { OrderLinesSection } from "./OrderLinesSection";
 
 // Read-only order page. Shopify owns the order itself, OfferteApp owns
 // everything about the warehouse; this page only puts the two next to each
@@ -111,6 +112,10 @@ export default async function CustomerOrderDetailPage({ params }: PageProps) {
           {order.note && <p className="mt-3 border-t border-border-subtle pt-3 text-sm text-ink-secondary">{order.note}</p>}
         </div>
       </div>
+
+      {/* Uit de Shopify-order zelf, dus ook zichtbaar als OfferteApp niets
+          over deze order weet of niet bereikbaar is. */}
+      <OrderLinesSection lines={order.lineItems} hasMoreLineItems={order.hasMoreLineItems} />
 
       <WarehouseLogisticsSection
         result={logistics}

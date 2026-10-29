@@ -1,6 +1,7 @@
 import "server-only";
 import { shopifyGraphQL, getShopifyConfig } from "./client";
 import { buildShopifyAdminUrl } from "./admin-links";
+import { parseLineWork, type LineAttribute } from "./line-work";
 
 // Read-only. The Order as Customer 360's own order page shows it: header
 // plus the product lines.
@@ -45,6 +46,10 @@ const ORDER_DETAIL_QUERY = /* GraphQL */ `
             sku
             quantity
             currentQuantity
+            customAttributes {
+              key
+              value
+            }
           }
         }
       }
@@ -78,6 +83,7 @@ type RawLineItem = {
   sku: string | null;
   quantity: number;
   currentQuantity: number;
+  customAttributes?: LineAttribute[] | null;
 };
 
 export type ShopifyOrderLineItem = {
@@ -91,6 +97,10 @@ export type ShopifyOrderLineItem = {
   quantity: number;
   /** Quantity after edits/refunds — what the warehouse actually picks. */
   currentQuantity: number;
+  /** "Werk" line attribute — the customer's project for this line. */
+  werk: string | null;
+  /** "Referentie" line attribute — the customer's reference for this line. */
+  referentie: string | null;
 };
 
 export type ShopifyOrderDetail = {
@@ -140,6 +150,7 @@ export async function getShopifyOrderDetail(orderGid: string): Promise<ShopifyOr
       sku: node.sku,
       quantity: node.quantity,
       currentQuantity: node.currentQuantity,
+      ...parseLineWork(node.customAttributes),
     })),
     hasMoreLineItems: order.lineItems.pageInfo.hasNextPage,
     adminUrl: buildShopifyAdminUrl(config.domain, "orders", order.legacyResourceId),
